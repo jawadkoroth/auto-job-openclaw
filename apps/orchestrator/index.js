@@ -9,66 +9,88 @@ const db = require("../../packages/database");
 
 logger.scheduler.info("Starting central Orchestrator engine...", { action: "orchestrator_init" });
 
-// 1. Subscribe Telegram notifications to the decoupled Event Bus
-eventBus.on("BrowserStarted", ({ portal, taskId }) => {
-    telegramService.sendMessage(`🌐 *Browser Launched* for portal: \`${portal}\` (Task ID: \`${taskId.substring(0, 8)}\`)`);
-});
-
-eventBus.on("LoginSucceeded", ({ portal }) => {
-    telegramService.sendMessage(`🔑 *Login Success*: Authenticated successfully on \`${portal}\`.`);
-});
-
-eventBus.on("LoginFailed", ({ portal }) => {
-    telegramService.sendMessage(`⚠️ *Login Failed*: Could not verify authentication on \`${portal}\`.`);
-});
-
-eventBus.on("JobFound", ({ portal, job }) => {
-    telegramService.sendMessage(`🔍 *Job Found*: \`${job.title}\` at \`${job.company}\` (${portal}) added to database.`);
-});
-
-eventBus.on("JobApplied", ({ portal, job }) => {
-    telegramService.sendMessage(`✅ *Job Applied*: Submitted application for \`${job.title}\` at \`${job.company}\`.`);
-});
-
-eventBus.on("PluginCrashed", ({ portal, action, error, screenshotPath }) => {
-    if (screenshotPath) {
-        telegramService.sendPhoto(
-            screenshotPath,
-            `❌ *Plugin Crash*: \`${portal}.${action}\` failed.\nError: \`${error}\``
-        );
+// 1. Subscribe ONLY the required Telegram notifications to the Event Bus
+eventBus.on("WorkerFinished", async (data) => {
+    const { taskId, portal, action, success, result, error, screenshotPath } = data;
+    
+    if (success) {
+        if (action === "updateProfile") {
+            await telegramService.sendMessage(`👤 *Profile Updated*: \`${portal}\` profile updated successfully.`);
+        } else if (action === "apply") {
+            const count = result ? (result.appliedCount || 0) : 0;
+            await telegramService.sendMessage(`💼 *Jobs Applied*: Successfully applied to *${count}* matching jobs on \`${portal}\`.`);
+        }
     } else {
-        telegramService.sendMessage(`❌ *Plugin Crash*: \`${portal}.${action}\` failed.\nError: \`${error}\``);
+        // Failures
+        const errorMsg = error || "Unknown execution error";
+        if (screenshotPath) {
+            await telegramService.sendPhoto(
+                screenshotPath,
+                `❌ *Failure Alert* on \`${portal}.${action}\` (Task ID: \`${taskId.substring(0, 8)}\`)\nError: \`${errorMsg}\``
+            );
+        } else {
+            await telegramService.sendMessage(`❌ *Failure Alert* on \`${portal}.${action}\` (Task ID: \`${taskId.substring(0, 8)}\`)\nError: \`${errorMsg}\``);
+        }
     }
 });
 
-// 2. Setup Cron schedule bindings (pushing tasks to queue instead of running directly)
+// 2. Setup Cron schedule bindings at exact requested timings
 function registerCron(cronTime, label, portal, action, args = {}) {
     try {
         new CronJob(cronTime, async () => {
-            logger.scheduler.info(`Scheduled cron trigger: "${label}". Pushing to queue.`);
+            logger.scheduler.info(`Cron triggered: "${label}". Queueing task.`);
             const id = await taskQueue.push(portal, action, args);
-            logger.scheduler.info(`Task successfully registered in queue: ${id}`);
+            logger.scheduler.info(`Task queued successfully: ${id}`);
         }, null, true, "Asia/Kolkata");
-        logger.scheduler.info(`Registered scheduler job: "${label}" on cron: [${cronTime}]`);
+        logger.scheduler.info(`Registered scheduler: "${label}" -> [${cronTime}]`);
     } catch (e) {
-        logger.scheduler.error(`Failed to register scheduled job "${label}": ${e.message}`);
+        logger.scheduler.error(`Failed to register scheduler job "${label}": ${e.message}`);
     }
 }
 
-// Register crons based on configurations
-if (config.portals.naukri.scheduleUpdate) {
-    registerCron(config.portals.naukri.scheduleUpdate, "Naukri Profile Update Run", "naukri", "updateProfile");
-}
-if (config.portals.naukri.scheduleApply) {
-    registerCron(config.portals.naukri.scheduleApply, "Naukri Job Search Run", "naukri", "search", { keywords: "Software Engineer", location: "Bangalore" });
-    // Offset apply run 10 minutes later to allow search to finish
-    const offsetApplyCron = config.portals.naukri.scheduleApply.replace("5 ", "15 ");
-    registerCron(offsetApplyCron, "Naukri Job Application Run", "naukri", "apply", { limit: 5 });
-}
-if (config.portals.linkedin.scheduleApply) {
-    registerCron(config.portals.linkedin.scheduleApply, "LinkedIn Job Search Run", "linkedin", "search", { keywords: "Software Engineer" });
-    const offsetApplyCron = config.portals.linkedin.scheduleApply.replace("30 ", "40 ");
-    registerCron(offsetApplyCron, "LinkedIn Job Application Run", "linkedin", "apply", { limit: 5 });
+// 09:00 Profile Update & Job Search (populating DB)
+registerCron("0 9 * * *", "Morning Naukri Profile Update", "naukri", "updateProfile");
+registerCron("0 9 * * *", "Morning Naukri Job Search", "naukri", "search", { keywords: "Software Engineer", location: "Bangalore" });
+
+// 09:05 Apply Jobs
+registerCron("5 9 * * *", "Morning Naukri Job Apply", "naukri", "apply", { limit: 10 });
+
+// 14:00 Profile Update & Job Search
+registerCron("0 14 * * *", "Afternoon Naukri Profile Update", "naukri", "updateProfile");
+registerCron("0 14 * * *", "Afternoon Naukri Job Search", "naukri", "search", { keywords: "Software Engineer", location: "Bangalore" });
+
+// 14:05 Apply Jobs
+registerCron("5 14 * * *", "Afternoon Naukri Job Apply", "naukri", "apply", { limit: 10 });
+
+// Daily Summary cron at 20:00 (8:00 PM)
+try {
+    new CronJob("0 20 * * *", async () => {
+        logger.scheduler.info("Triggering Daily Summary metrics computation...");
+        await db.init();
+        
+        const appliedToday = await db.get(
+            "SELECT COUNT(*) as count FROM jobs WHERE applied = 1 AND date(timestamp) = date('now')"
+        );
+        const totalJobs = await db.get("SELECT COUNT(*) as count FROM jobs");
+        const failedTasks = await db.get(
+            "SELECT COUNT(*) as count FROM tasks WHERE status = 'failed' AND date(created_at) = date('now')"
+        );
+
+        const countApplied = appliedToday ? appliedToday.count : 0;
+        const countTotal = totalJobs ? totalJobs.count : 0;
+        const countFailed = failedTasks ? failedTasks.count : 0;
+
+        await telegramService.sendMessage(
+            `📊 *Daily Job Automation Summary*\n\n` +
+            `• *Jobs Applied Today*: *${countApplied}*\n` +
+            `• *Total Jobs in DB*: *${countTotal}*\n` +
+            `• *Failed Runs Today*: *${countFailed}*\n` +
+            `• *Status*: Operational 🟢`
+        );
+    }, null, true, "Asia/Kolkata");
+    logger.scheduler.info("Registered Daily Summary scheduler -> [0 20 * * *]");
+} catch (e) {
+    logger.scheduler.error(`Failed to register Daily Summary schedule: ${e.message}`);
 }
 
 // 3. Launch Telegram polling command listener
@@ -79,7 +101,7 @@ telegramService.startPolling(async (message) => {
         if (text === "/start") {
             await telegramService.sendMessage(
                 `👋 *OpenClaw AI Orchestrator Online!*\n\n` +
-                `Send natural language statements to schedule tasks:\n` +
+                `Send commands to queue operations:\n` +
                 `• _"Search for DevOps jobs in Bangalore on Naukri"_\n` +
                 `• _"Apply to jobs on Naukri"_\n` +
                 `• _"Update my Naukri profile"_\n\n` +
@@ -104,7 +126,7 @@ telegramService.startPolling(async (message) => {
         const parsed = await aiService.parseCommand(text);
         
         await telegramService.sendMessage(
-            `🎯 *Command Translated*:\n` +
+            `🎯 *Parsed Command*:\n` +
             `• *Portal*: \`${parsed.plugin}\`\n` +
             `• *Action*: \`${parsed.action}\`\n` +
             `• *Params*: \`${JSON.stringify(parsed.args)}\`\n\n` +
@@ -119,9 +141,9 @@ telegramService.startPolling(async (message) => {
     }
 });
 
-// Initialize DB and announce launch
+// Initialize DB and announce launch (Platform Started)
 db.init().then(() => {
-    telegramService.sendMessage("⚙️ *Orchestrator online*. Scheduled cron jobs and Telegram listeners active.");
+    telegramService.sendMessage("🚀 *Platform Started*: Job automation orchestrator is online and active.");
 }).catch(err => {
     console.error("Orchestrator failed starting database:", err);
 });

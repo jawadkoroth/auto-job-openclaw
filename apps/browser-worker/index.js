@@ -29,6 +29,19 @@ async function handleTask(task) {
         // 2. Load dynamic plugin instance
         const plugin = pluginManager.getPlugin(portal);
 
+        // Verify active login session before running updates or applies
+        if (action !== "login") {
+            logger.worker.info(`Verifying session health status for: ${portal}...`);
+            const isSessionHealthy = await plugin.health(page);
+            if (!isSessionHealthy) {
+                logger.worker.warn(`Session for ${portal} expired or invalid. Running re-login...`);
+                const loginSuccess = await plugin.login(page);
+                if (!loginSuccess) {
+                    throw new Error(`Failed to restore session login for ${portal}.`);
+                }
+            }
+        }
+
         // 3. Execute business logic action
         switch (action) {
             case "login": {

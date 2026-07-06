@@ -5,47 +5,57 @@
  */
 module.exports = async function login(plugin, page) {
     const { logger, config } = plugin;
-    logger.info("Naukri login flow initiated.");
+    logger.info("Naukri login routine started.");
     
-    const portalUrl = config.portals.naukri.url;
-    await page.goto(portalUrl, { waitUntil: "domcontentloaded" });
-    
-    const loginButtonSelector = "#login_Layer";
-    
-    if (await plugin.health(page)) {
-        logger.info("Already logged in to Naukri via active session profile.");
-        return true;
+    // 1. Detect existing session
+    // Navigate to profile page - if authenticated, it loads profile directly. 
+    // If not, it redirects to landing or login.
+    logger.info("Verifying active login state...");
+    try {
+        await page.goto("https://www.naukri.com/mnj/profile", { waitUntil: "domcontentloaded", timeout: 15000 });
+        if (await plugin.health(page)) {
+            logger.info("Existing authenticated session detected on profile page.");
+            return true;
+        }
+    } catch (e) {
+        logger.warn(`Session check navigation failed: ${e.message}. Proceeding to login.`);
     }
+
+    // 2. Direct to login page
+    const loginUrl = "https://www.naukri.com/nlogin/login";
+    logger.info(`Navigating to login page: ${loginUrl}`);
+    await page.goto(loginUrl, { waitUntil: "networkidle", timeout: 30000 });
     
     const email = config.portals.naukri.email;
     const password = config.portals.naukri.password;
     if (!email || !password) {
-        throw new Error("Naukri credentials are missing in configurations.");
+        throw new Error("Missing Naukri email/password in configurations.");
     }
     
-    logger.info("Clicking landing page login button...");
-    await page.click(loginButtonSelector);
+    // 3. Fill and submit credentials
+    logger.info("Filling credentials...");
+    await page.waitForSelector("#usernameField", { timeout: 10000 });
+    await page.fill("#usernameField", email);
+    await page.fill("#passwordField", password);
     
-    const usernameInput = "input[placeholder*='Username'], input[placeholder*='Email'], input[placeholder*='ID']";
-    const passwordInput = "input[placeholder*='Password']";
+    logger.info("Submitting login form...");
+    await page.click('button[type="submit"]');
     
-    await page.waitForSelector(usernameInput, { timeout: 10000 });
-    await page.fill(usernameInput, email);
-    await page.fill(passwordInput, password);
-    
-    const submitBtn = "button[type='submit']";
-    await page.click(submitBtn);
-    
-    // Wait for redirect to finish
+    // Wait for redirect to profile / dashboard
     await page.waitForNavigation({ waitUntil: "networkidle", timeout: 20000 }).catch(() => {});
     
-    // Verify successful login
+    // 4. Double check login verification
+    // Go to profile page explicitly to verify health
+    if (!page.url().includes("mnj/profile")) {
+        await page.goto("https://www.naukri.com/mnj/profile", { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
+    }
+
     const isLoggedIn = await plugin.health(page);
     if (isLoggedIn) {
-        logger.info("Naukri login completed successfully.");
+        logger.info("Authentication verification successful.");
         return true;
     } else {
-        logger.error("Naukri login verification failed.");
+        logger.error("Authentication failed. Session verification indicated offline.");
         return false;
     }
 };
