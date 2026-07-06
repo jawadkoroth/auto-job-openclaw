@@ -47,7 +47,7 @@ module.exports = async function updateProfile(plugin, page) {
         await page.keyboard.press("Control+A");
         await page.keyboard.press("Backspace");
         for (const char of targetHeadline) {
-            await page.keyboard.sendCharacter(char);
+            await page.keyboard.type(char);
             await page.waitForTimeout(Math.floor(Math.random() * 30) + 15);
         }
         const saveBtn = "button.btn-light-blue, button:has-text('Save')";

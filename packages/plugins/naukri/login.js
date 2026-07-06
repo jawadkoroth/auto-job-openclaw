@@ -41,7 +41,7 @@ module.exports = async function login(plugin, page) {
     await page.keyboard.press("Control+A");
     await page.keyboard.press("Backspace");
     for (const char of email) {
-        await page.keyboard.sendCharacter(char);
+        await page.keyboard.type(char);
         await page.waitForTimeout(Math.floor(Math.random() * 50) + 30);
     }
     
@@ -50,7 +50,7 @@ module.exports = async function login(plugin, page) {
     await page.keyboard.press("Control+A");
     await page.keyboard.press("Backspace");
     for (const char of password) {
-        await page.keyboard.sendCharacter(char);
+        await page.keyboard.type(char);
         await page.waitForTimeout(Math.floor(Math.random() * 50) + 30);
     }
     
