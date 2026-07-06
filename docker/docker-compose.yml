@@ -1,0 +1,22 @@
+services:
+  automation:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+
+    container_name: automation
+
+    working_dir: /app
+
+    volumes:
+      - ../:/app
+
+    stdin_open: true
+    tty: true
+
+    shm_size: "2gb"
+
+    environment:
+      NODE_ENV: development
+
+    restart: unless-stopped

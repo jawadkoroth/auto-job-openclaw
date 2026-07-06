@@ -1,0 +1,29 @@
+# Node
+node_modules/
+npm-debug.log
+
+# Sessions
+sessions/
+.browser-profiles/
+
+# Environment
+.env
+.env.*
+
+# Logs
+logs/
+*.log
+
+# Docker
+docker/.cache
+
+# Playwright
+test-results/
+playwright-report/
+
+# VSCode
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
