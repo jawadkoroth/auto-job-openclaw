@@ -21,16 +21,14 @@ module.exports = async function updateProfile(plugin, page) {
     await page.goto("https://www.naukri.com/", { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
     
     const viewProfileBtn = "a:has-text('View profile')";
-    const isBtnVisible = await page.locator(viewProfileBtn).count() > 0;
-    if (isBtnVisible) {
+    try {
+        logger.info("Waiting for 'View profile' button to load on homepage...");
+        await page.waitForSelector(viewProfileBtn, { timeout: 8000 });
         logger.info("Clicking 'View profile' button from homepage...");
         await page.click(viewProfileBtn);
-    } else {
-        logger.info("Directly navigating to profile edit URL...");
-        await page.goto("https://www.naukri.com/nprofile/edit", { waitUntil: "networkidle", timeout: 30000 }).catch(async () => {
-            logger.warn("Primary profile edit URL failed. Trying legacy profile URL...");
-            await page.goto("https://www.naukri.com/mnj/profile", { waitUntil: "networkidle", timeout: 30000 });
-        });
+    } catch (e) {
+        logger.warn("View profile button not found on homepage. Navigating directly to legacy profile URL...");
+        await page.goto("https://www.naukri.com/mnj/profile", { waitUntil: "networkidle", timeout: 30000 }).catch(() => {});
     }
     await page.waitForTimeout(3000);
 
