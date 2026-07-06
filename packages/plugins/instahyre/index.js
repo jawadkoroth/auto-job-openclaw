@@ -1,24 +1,33 @@
 const BasePlugin = require("../BasePlugin");
 
 class InstahyrePlugin extends BasePlugin {
-    async login() {
-        this.logger.info("Instahyre login skeleton called.", { plugin: this.name, action: "login" });
+    async login(page) {
+        this.logger.info("Instahyre login skeleton called.");
         return true;
     }
 
-    async updateProfile() {
-        this.logger.info("Instahyre profile update skeleton called.", { plugin: this.name, action: "update_profile" });
+    async logout(page) {
+        this.logger.info("Instahyre logout skeleton called.");
         return true;
     }
 
-    async search(queryOptions) {
-        this.logger.info(`Instahyre search skeleton called.`, { plugin: this.name, action: "search" });
+    async updateProfile(page) {
+        this.logger.info("Instahyre profile update skeleton called.");
+        return true;
+    }
+
+    async search(page, queryOptions) {
+        this.logger.info(`Instahyre search skeleton query: ${JSON.stringify(queryOptions)}`);
         return [];
     }
 
-    async apply(jobs, options) {
-        this.logger.info(`Instahyre apply skeleton called.`, { plugin: this.name, action: "apply" });
-        return 0;
+    async apply(page, job) {
+        this.logger.info(`Instahyre apply skeleton called for job_id: ${job.job_id}`);
+        return true;
+    }
+
+    async health(page) {
+        return true;
     }
 }
 

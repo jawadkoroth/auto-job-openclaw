@@ -1,30 +1,44 @@
 version: "3.8"
 
 services:
-  scheduler:
+  orchestrator:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    container_name: job_scheduler
+    container_name: job_orchestrator
     working_dir: /app
     volumes:
       - ../:/app
-    command: node apps/scheduler/index.js
+    command: node apps/orchestrator/index.js
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+
+  browser-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: job_browser_worker
+    working_dir: /app
+    volumes:
+      - ../:/app
+    command: node apps/browser-worker/index.js
     shm_size: "2gb"
     environment:
       - NODE_ENV=production
     restart: unless-stopped
 
-  telegram-bot:
+  dashboard:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    container_name: job_telegram_bot
+    container_name: job_dashboard
     working_dir: /app
     volumes:
       - ../:/app
-    command: node apps/telegram/start.js
-    shm_size: "2gb"
+    ports:
+      - "3000:3000"
+    command: node apps/dashboard/index.js
     environment:
       - NODE_ENV=production
     restart: unless-stopped

@@ -1,24 +1,33 @@
 const BasePlugin = require("../BasePlugin");
 
 class HiristPlugin extends BasePlugin {
-    async login() {
-        this.logger.info("Hirist login skeleton called.", { plugin: this.name, action: "login" });
+    async login(page) {
+        this.logger.info("Hirist login skeleton called.");
         return true;
     }
 
-    async updateProfile() {
-        this.logger.info("Hirist profile update skeleton called.", { plugin: this.name, action: "update_profile" });
+    async logout(page) {
+        this.logger.info("Hirist logout skeleton called.");
         return true;
     }
 
-    async search(queryOptions) {
-        this.logger.info(`Hirist search skeleton called.`, { plugin: this.name, action: "search" });
+    async updateProfile(page) {
+        this.logger.info("Hirist profile update skeleton called.");
+        return true;
+    }
+
+    async search(page, queryOptions) {
+        this.logger.info(`Hirist search skeleton query: ${JSON.stringify(queryOptions)}`);
         return [];
     }
 
-    async apply(jobs, options) {
-        this.logger.info(`Hirist apply skeleton called.`, { plugin: this.name, action: "apply" });
-        return 0;
+    async apply(page, job) {
+        this.logger.info(`Hirist apply skeleton called for job_id: ${job.job_id}`);
+        return true;
+    }
+
+    async health(page) {
+        return true;
     }
 }
 

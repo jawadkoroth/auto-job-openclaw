@@ -30,3 +30,7 @@ Thumbs.db
 
 # Screenshots
 screenshots/
+
+# Database Files
+*.sqlite
+*.db

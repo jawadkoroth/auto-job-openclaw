@@ -1,19 +1,17 @@
 /**
- * BasePlugin Interface
+ * BasePlugin Interface for business logic automation
  */
 class BasePlugin {
     /**
      * @param {Object} context
-     * @param {Object} context.browserManager
-     * @param {Object} context.logger
-     * @param {Object} context.config
-     * @param {string} context.name
+     * @param {Object} context.logger Portal specific logging channel
+     * @param {Object} context.config Application configurations
+     * @param {string} context.name Plugin lowercase identifier
      */
     constructor(context) {
         if (!context) {
             throw new Error("Plugin context must be provided.");
         }
-        this.browserManager = context.browserManager;
         this.logger = context.logger;
         this.config = context.config;
         this.name = context.name || this.constructor.name.replace("Plugin", "").toLowerCase();
@@ -21,37 +19,58 @@ class BasePlugin {
 
     /**
      * Log in to the job portal
+     * @param {import("playwright").Page} page 
      * @returns {Promise<boolean>}
      */
-    async login() {
+    async login(page) {
         throw new Error(`login() not implemented in ${this.constructor.name}`);
     }
 
     /**
-     * Update profile details on the job portal
+     * Log out from the job portal
+     * @param {import("playwright").Page} page 
      * @returns {Promise<boolean>}
      */
-    async updateProfile() {
+    async logout(page) {
+        throw new Error(`logout() not implemented in ${this.constructor.name}`);
+    }
+
+    /**
+     * Update profile details on the job portal
+     * @param {import("playwright").Page} page 
+     * @returns {Promise<boolean>}
+     */
+    async updateProfile(page) {
         throw new Error(`updateProfile() not implemented in ${this.constructor.name}`);
     }
 
     /**
-     * Search for jobs matching query/keywords
+     * Search for jobs matching keywords/location query
+     * @param {import("playwright").Page} page 
      * @param {Object} queryOptions 
-     * @returns {Promise<any[]>} List of jobs found
+     * @returns {Promise<any[]>} List of normalized jobs
      */
-    async search(queryOptions) {
+    async search(page, queryOptions) {
         throw new Error(`search() not implemented in ${this.constructor.name}`);
     }
 
     /**
-     * Apply to jobs
-     * @param {any[]} jobs
-     * @param {Object} options
-     * @returns {Promise<number>} Number of jobs successfully applied to
+     * Apply to a specific job listing
+     * @param {import("playwright").Page} page 
+     * @param {Object} job Job model row from database
+     * @returns {Promise<boolean>} Success status
      */
-    async apply(jobs, options) {
+    async apply(page, job) {
         throw new Error(`apply() not implemented in ${this.constructor.name}`);
+    }
+
+    /**
+     * Assess active session validity
+     * @param {import("playwright").Page} page 
+     * @returns {Promise<boolean>} True if logged in, false otherwise
+     */
+    async health(page) {
+        throw new Error(`health() not implemented in ${this.constructor.name}`);
     }
 }
 

@@ -1,7 +1,6 @@
 const path = require("path");
 const fs = require("fs");
 const BasePlugin = require("./BasePlugin");
-const browserManager = require("../browser/BrowserManager");
 const logger = require("../logger");
 const config = require("../config");
 
@@ -24,8 +23,7 @@ class PluginManager {
                 try {
                     const PluginClass = require(pluginPath);
                     const context = {
-                        browserManager,
-                        logger,
+                        logger: logger.plugin(dirName),
                         config,
                         name: dirName
                     };
@@ -33,12 +31,12 @@ class PluginManager {
                     const instance = new PluginClass(context);
                     if (instance instanceof BasePlugin) {
                         this.plugins.set(dirName, instance);
-                        logger.info(`Successfully loaded plugin: ${dirName}`);
+                        logger.automation.info(`Successfully loaded plugin: ${dirName}`);
                     } else {
-                        logger.error(`Plugin in ${dirName} does not extend BasePlugin`);
+                        logger.automation.error(`Plugin in ${dirName} does not extend BasePlugin`);
                     }
                 } catch (error) {
-                    logger.error(`Failed to load plugin ${dirName}: ${error.stack}`);
+                    logger.automation.error(`Failed to load plugin ${dirName}: ${error.stack}`);
                 }
             }
         }
