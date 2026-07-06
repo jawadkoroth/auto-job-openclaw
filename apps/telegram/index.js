@@ -19,7 +19,7 @@ class TelegramService {
      */
     async sendMessage(text) {
         if (!this.token || !this.chatId) {
-            logger.warn("Telegram credentials not configured. Skipping sendMessage.");
+            logger.telegram.warn("Telegram credentials not configured. Skipping sendMessage.");
             return;
         }
         try {
@@ -28,9 +28,9 @@ class TelegramService {
                 text: text,
                 parse_mode: "Markdown"
             });
-            logger.info("Telegram text alert sent.", { action: "telegram_send" });
+            logger.telegram.info("Telegram text alert sent.", { action: "telegram_send" });
         } catch (error) {
-            logger.error(`Telegram send message failed: ${error.message}`, { action: "telegram_send", success: false });
+            logger.telegram.error(`Telegram send message failed: ${error.message}`, { action: "telegram_send", success: false });
         }
     }
 
@@ -41,11 +41,11 @@ class TelegramService {
      */
     async sendPhoto(photoPath, caption) {
         if (!this.token || !this.chatId) {
-            logger.warn("Telegram credentials not configured. Skipping sendPhoto.");
+            logger.telegram.warn("Telegram credentials not configured. Skipping sendPhoto.");
             return;
         }
         if (!fs.existsSync(photoPath)) {
-            logger.warn(`Photo file not found: ${photoPath}`);
+            logger.telegram.warn(`Photo file not found: ${photoPath}`);
             return;
         }
         try {
@@ -70,9 +70,9 @@ class TelegramService {
                     "Content-Type": `multipart/form-data; boundary=${boundary}`
                 }
             });
-            logger.info(`Telegram photo alert sent: ${filename}`, { action: "telegram_send_photo" });
+            logger.telegram.info(`Telegram photo alert sent: ${filename}`, { action: "telegram_send_photo" });
         } catch (error) {
-            logger.error(`Telegram send photo failed: ${error.message}`, { action: "telegram_send_photo", success: false });
+            logger.telegram.error(`Telegram send photo failed: ${error.message}`, { action: "telegram_send_photo", success: false });
         }
     }
 
@@ -91,8 +91,7 @@ class TelegramService {
             });
             return response.data.result || [];
         } catch (error) {
-            // Keep debug logs low key during poll intervals
-            logger.debug(`Telegram poll update failed: ${error.message}`);
+            logger.telegram.debug(`Telegram poll update failed: ${error.message}`);
             return [];
         }
     }
@@ -103,12 +102,12 @@ class TelegramService {
      */
     startPolling(onMessageCallback) {
         if (!this.token) {
-            logger.warn("Telegram Bot token missing. Interactive commands listener is disabled.");
+            logger.telegram.warn("Telegram Bot token missing. Interactive commands listener is disabled.");
             return;
         }
         if (this.isPolling) return;
         this.isPolling = true;
-        logger.info("Telegram Bot updates listener thread launched.");
+        logger.telegram.info("Telegram Bot updates listener thread launched.");
         
         const poll = async () => {
             if (!this.isPolling) return;
@@ -120,13 +119,13 @@ class TelegramService {
                     
                     // Strict chat validation for server security
                     if (String(fromId) !== String(this.chatId)) {
-                        logger.warn(`Refused message from unauthorized Chat ID: ${fromId}`);
+                        logger.telegram.warn(`Refused message from unauthorized Chat ID: ${fromId}`);
                         continue;
                     }
                     try {
                         await onMessageCallback(update.message);
                     } catch (err) {
-                        logger.error(`Failed handling telegram command: ${err.stack}`);
+                        logger.telegram.error(`Failed handling telegram command: ${err.stack}`);
                     }
                 }
             }
@@ -140,7 +139,7 @@ class TelegramService {
      */
     stopPolling() {
         this.isPolling = false;
-        logger.info("Telegram Bot listener stopped.");
+        logger.telegram.info("Telegram Bot listener stopped.");
     }
 }
 
