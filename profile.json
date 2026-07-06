@@ -1,0 +1,10 @@
+{
+  "fullName": "Jawad Koroth",
+  "email": "jawad.koroth@example.com",
+  "phone": "+919999999999",
+  "location": "Bangalore",
+  "headline": "DevOps Engineer | Cloud & Automation Specialist | Docker | AWS",
+  "summary": "Results-driven Software & DevOps Engineer specializing in CI/CD pipeline automation, Docker containerization, AWS cloud migrations, and automated browser testing workflows.",
+  "skills": ["Docker", "Kubernetes", "AWS", "Linux", "Node.js", "Python", "CI/CD"],
+  "experienceYears": 5
+}

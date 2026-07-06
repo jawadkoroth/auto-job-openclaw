@@ -33,10 +33,26 @@ module.exports = async function login(plugin, page) {
     }
     
     // 3. Fill and submit credentials
-    logger.info("Filling credentials...");
+    logger.info("Entering credentials via simulated human keystrokes...");
     await page.waitForSelector("#usernameField", { timeout: 10000 });
-    await page.fill("#usernameField", email);
-    await page.fill("#passwordField", password);
+    
+    // Type email
+    await page.click("#usernameField");
+    await page.keyboard.press("Control+A");
+    await page.keyboard.press("Backspace");
+    for (const char of email) {
+        await page.keyboard.sendCharacter(char);
+        await page.waitForTimeout(Math.floor(Math.random() * 50) + 30);
+    }
+    
+    // Type password
+    await page.click("#passwordField");
+    await page.keyboard.press("Control+A");
+    await page.keyboard.press("Backspace");
+    for (const char of password) {
+        await page.keyboard.sendCharacter(char);
+        await page.waitForTimeout(Math.floor(Math.random() * 50) + 30);
+    }
     
     logger.info("Submitting login form...");
     await page.click('button[type="submit"]');
