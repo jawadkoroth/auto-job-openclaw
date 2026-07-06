@@ -1,22 +1,30 @@
+version: "3.8"
+
 services:
-  automation:
+  scheduler:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-
-    container_name: automation
-
+    container_name: job_scheduler
     working_dir: /app
-
     volumes:
       - ../:/app
-
-    stdin_open: true
-    tty: true
-
+    command: node apps/scheduler/index.js
     shm_size: "2gb"
-
     environment:
-      NODE_ENV: development
+      - NODE_ENV=production
+    restart: unless-stopped
 
+  telegram-bot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: job_telegram_bot
+    working_dir: /app
+    volumes:
+      - ../:/app
+    command: node apps/telegram/start.js
+    shm_size: "2gb"
+    environment:
+      - NODE_ENV=production
     restart: unless-stopped

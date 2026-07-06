@@ -1,13 +1,11 @@
-const { launchBrowser, closeBrowser } = require("../playwright/core/browser");
-const logger = require("../playwright/core/logger");
+const browserManager = require("../packages/browser/BrowserManager");
+const logger = require("../packages/logger");
 
 (async () => {
-    let context;
-
     try {
-        context = await launchBrowser(true);
+        await browserManager.launch("naukri");
 
-        const page = context.pages()[0] || await context.newPage();
+        const page = await browserManager.newPage();
 
         logger.info("Opening Naukri...");
 
@@ -18,21 +16,13 @@ const logger = require("../playwright/core/logger");
 
         console.log("Current Title:", await page.title());
 
-        await page.screenshot({
-            path: "./screenshots/naukri-home.png",
-            fullPage: true
-        });
+        await browserManager.takeScreenshot(page, "naukri-home");
 
         console.log("✅ Screenshot saved.");
 
     } catch (err) {
-
         console.error(err);
-
     } finally {
-
-        if (context)
-            await closeBrowser(context);
-
+        await browserManager.close();
     }
 })();
