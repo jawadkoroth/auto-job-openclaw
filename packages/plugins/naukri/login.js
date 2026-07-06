@@ -12,9 +12,9 @@ module.exports = async function login(plugin, page) {
     // If not, it redirects to landing or login.
     logger.info("Verifying active login state...");
     try {
-        await page.goto("https://www.naukri.com/mnj/profile", { waitUntil: "domcontentloaded", timeout: 15000 });
+        await page.goto("https://www.naukri.com/", { waitUntil: "domcontentloaded", timeout: 15000 });
         if (await plugin.health(page)) {
-            logger.info("Existing authenticated session detected on profile page.");
+            logger.info("Existing authenticated session detected on homepage.");
             return true;
         }
     } catch (e) {
