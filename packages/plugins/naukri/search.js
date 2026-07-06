@@ -7,76 +7,99 @@
 module.exports = async function search(plugin, page, queryOptions = {}) {
     const { logger, config } = plugin;
     
-    // Resolve search parameters from query, config, or env fallback
-    const keywords = queryOptions.keywords || 
-                     (config.portals.naukri && config.portals.naukri.keywords) || 
-                     process.env.JOB_KEYWORDS || 
-                     "Software Engineer";
-                     
-    const location = queryOptions.location || 
-                     (config.portals.naukri && config.portals.naukri.location) || 
-                     process.env.JOB_LOCATION || 
-                     "Bangalore";
+    // Retrieve lists of search options
+    const keywordsList = queryOptions.keywordsList || config.search.keywords || ["Software Engineer"];
+    const locationsList = queryOptions.locationsList || config.search.locations || ["Bangalore"];
     
-    logger.info(`Searching Naukri: keywords="${keywords}", location="${location}"`);
+    const allDiscoveredJobs = [];
+    const seenJobIds = new Set();
     
-    // Build direct SEO URL
-    const formattedKeywords = keywords.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-");
-    const formattedLoc = location ? `-jobs-in-${location.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-")}` : "-jobs";
-    const searchUrl = `https://www.naukri.com/${formattedKeywords}${formattedLoc}`;
-    
-    logger.info(`Navigating directly to search URL: ${searchUrl}`);
-    await page.goto(searchUrl, { waitUntil: "networkidle", timeout: 30000 });
-    
-    // Selectors covering multiple Naukri DOM versions (legacy and layout updates)
-    const jobSelector = "article.jobTuple, .list > article, [data-job-id], div.srp-jobtuple, article.srp-jobtuple";
-    await page.waitForSelector(jobSelector, { timeout: 15000 }).catch(() => {
-        logger.warn("Job listing selectors not found on page within timeout.");
-    });
-    
-    const jobListings = page.locator(jobSelector);
-    const count = await jobListings.count();
-    logger.info(`Found ${count} job cards on search page.`);
-    
-    const jobs = [];
-    for (let i = 0; i < Math.min(count, 30); i++) {
-        try {
-            const item = jobListings.nth(i);
-            const titleLoc = item.locator("a.title, .title, [class*='title']");
-            const title = await titleLoc.textContent();
+    for (const keywords of keywordsList) {
+        for (const location of locationsList) {
+            logger.info(`Searching Naukri: keywords="${keywords}", location="${location}"`);
             
-            const companyLoc = item.locator(".companyName, .company, a.comp-name, [class*='company']").first();
-            const company = await companyLoc.textContent();
+            // Build direct SEO URL
+            const formattedKeywords = keywords.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-");
+            const formattedLoc = location ? `-jobs-in-${location.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-")}` : "-jobs";
+            const searchUrl = `https://www.naukri.com/${formattedKeywords}${formattedLoc}`;
             
-            const url = await titleLoc.getAttribute("href");
-            if (!url) continue;
-
-            // Extract unique Job ID
-            let jobId = await item.getAttribute("data-job-id");
-            if (!jobId) {
-                const match = url.match(/-([0-9]{12})\b/);
-                if (match) jobId = match[1];
-                else jobId = url.split("?")[0].split("/").pop();
+            logger.info(`Navigating directly to search URL: ${searchUrl}`);
+            try {
+                await page.goto(searchUrl, { waitUntil: "networkidle", timeout: 30000 });
+            } catch (e) {
+                logger.error(`Navigation failed for search URL: ${searchUrl}. Error: ${e.message}`);
+                continue;
             }
             
-            if (!jobId) {
-                // absolute fallback
-                jobId = `naukri-${Buffer.from(url).toString("base64").substring(0, 16)}`;
-            }
-
-            jobs.push({
-                portal: "naukri",
-                job_id: jobId.trim(),
-                title: title.trim(),
-                company: company.trim(),
-                location: location,
-                salary: "Not Disclosed",
-                url: url
+            // Selectors for listing cards
+            const jobSelector = "article.jobTuple, div.srp-jobtuple, article.srp-jobtuple, [data-job-id]";
+            await page.waitForSelector(jobSelector, { timeout: 15000 }).catch(() => {
+                logger.warn("No job card selectors matching on page within timeout.");
             });
-        } catch (e) {
-            logger.debug(`Failed reading listing card index #${i}: ${e.message}`);
+            
+            const jobListings = page.locator(jobSelector);
+            const count = await jobListings.count();
+            logger.info(`Found ${count} job cards for keywords "${keywords}" in "${location}".`);
+            
+            for (let i = 0; i < count; i++) {
+                try {
+                    const item = jobListings.nth(i);
+                    const titleLoc = item.locator("a.title, .title, [class*='title']").first();
+                    const title = await titleLoc.textContent();
+                    
+                    const companyLoc = item.locator(".companyName, .company, a.comp-name, [class*='company']").first();
+                    const company = await companyLoc.textContent();
+                    
+                    const url = await titleLoc.getAttribute("href");
+                    if (!url) continue;
+
+                    // Extract unique Job ID
+                    let jobId = await item.getAttribute("data-job-id");
+                    if (!jobId) {
+                        const match = url.match(/-([0-9]{12})\b/);
+                        if (match) jobId = match[1];
+                        else jobId = url.split("?")[0].split("/").pop();
+                    }
+                    
+                    if (!jobId) {
+                        jobId = `naukri-${Buffer.from(url).toString("base64").substring(0, 16)}`;
+                    }
+
+                    jobId = jobId.trim();
+                    if (seenJobIds.has(jobId)) continue;
+                    seenJobIds.add(jobId);
+
+                    // Extract Experience
+                    const expLoc = item.locator(".expwdde, .experience, span.exp, span.exp-wrap, [class*='experience']").first();
+                    const experience = (await expLoc.count() > 0) ? (await expLoc.textContent()) : "0-0 Yrs";
+                    
+                    // Extract Location (could be list of multiple cities)
+                    const locLoc = item.locator(".locWd, .location, span.loc, span.loc-wrap, [class*='location']").first();
+                    const jobLocation = (await locLoc.count() > 0) ? (await locLoc.textContent()) : location;
+                    
+                    // Extract Salary
+                    const salLoc = item.locator(".sal, .salary, span.sal, span.sal-wrap, [class*='salary']").first();
+                    const salary = (await salLoc.count() > 0) ? (await salLoc.textContent()) : "Not Disclosed";
+
+                    allDiscoveredJobs.push({
+                        portal: "naukri",
+                        job_id: jobId,
+                        title: title.trim(),
+                        company: company.trim(),
+                        location: jobLocation.trim(),
+                        experience: experience.trim(),
+                        salary: salary.trim(),
+                        url: url
+                    });
+                } catch (e) {
+                    logger.debug(`Failed reading listing card index #${i}: ${e.message}`);
+                }
+            }
+            
+            // Random delay between search steps to bypass rate limits
+            await page.waitForTimeout(Math.floor(Math.random() * 3000) + 2000);
         }
     }
     
-    return jobs;
+    return allDiscoveredJobs;
 };

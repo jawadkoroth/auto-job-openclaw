@@ -44,6 +44,16 @@ module.exports = {
         model: "google/gemini-2.5-flash" // Recommended fast default model
     },
 
+    search: {
+        keywords: (process.env.SEARCH_KEYWORDS || "Software Engineer").split(",").map(s => s.trim()),
+        locations: (process.env.SEARCH_LOCATIONS || "Bangalore").split(",").map(s => s.trim()),
+        minExperience: getEnvInt("MIN_EXPERIENCE", 0),
+        maxExperience: getEnvInt("MAX_EXPERIENCE", 10),
+        maxJobAgeDays: getEnvInt("MAX_JOB_AGE_DAYS", 7),
+        maxApplicationsPerRun: getEnvInt("MAX_APPLICATIONS_PER_RUN", 5),
+        dryRun: getEnvBool("DRY_RUN", true)
+    },
+
     portals: {
         naukri: {
             url: "https://www.naukri.com",

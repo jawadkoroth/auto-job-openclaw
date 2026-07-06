@@ -57,6 +57,7 @@ class Database {
                     company TEXT,
                     title TEXT,
                     location TEXT,
+                    experience TEXT,
                     salary TEXT,
                     applied INTEGER DEFAULT 0,
                     ignored INTEGER DEFAULT 0,
@@ -65,6 +66,8 @@ class Database {
                     UNIQUE(portal, job_id)
                 )
             `);
+            // Safe migration step for existing databases
+            await this.run("ALTER TABLE jobs ADD COLUMN experience TEXT").catch(() => {});
 
             // Isolated session audit logs
             await this.run(`
