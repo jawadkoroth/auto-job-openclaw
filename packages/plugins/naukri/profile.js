@@ -17,7 +17,22 @@ module.exports = async function updateProfile(plugin, page) {
     }
     
     logger.info("Navigating to Naukri profile page...");
-    await page.goto("https://www.naukri.com/mnj/profile", { waitUntil: "networkidle", timeout: 30000 });
+    // Go to homepage first to leverage UI navigation
+    await page.goto("https://www.naukri.com/", { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
+    
+    const viewProfileBtn = "a:has-text('View profile')";
+    const isBtnVisible = await page.locator(viewProfileBtn).count() > 0;
+    if (isBtnVisible) {
+        logger.info("Clicking 'View profile' button from homepage...");
+        await page.click(viewProfileBtn);
+    } else {
+        logger.info("Directly navigating to profile edit URL...");
+        await page.goto("https://www.naukri.com/nprofile/edit", { waitUntil: "networkidle", timeout: 30000 }).catch(async () => {
+            logger.warn("Primary profile edit URL failed. Trying legacy profile URL...");
+            await page.goto("https://www.naukri.com/mnj/profile", { waitUntil: "networkidle", timeout: 30000 });
+        });
+    }
+    await page.waitForTimeout(3000);
 
     const profileData = await profileManager.getProfile();
     let targetHeadline = profileData.headline;
@@ -69,8 +84,8 @@ module.exports = async function updateProfile(plugin, page) {
 
     if (resumePath) {
         logger.info(`Uploading resume file to Naukri from: ${resumePath}`);
-        const fileInputSelector = "input[type='file']#attachCV";
-        await page.waitForSelector(fileInputSelector, { timeout: 10000 });
+        const fileInputSelector = "input[type='file']";
+        await page.waitForSelector(fileInputSelector, { timeout: 15000 });
         await page.setInputFiles(fileInputSelector, resumePath);
         logger.info("Resume file submitted. Waiting for success verification...");
         
