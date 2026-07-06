@@ -35,6 +35,7 @@ class BrowserInstance {
         try {
             this.context = await chromium.launchPersistentContext(sessionPath, {
                 headless: config.browser.headless,
+                channel: "chrome",
                 viewport: config.browser.viewport,
                 userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 args: config.browser.args,
