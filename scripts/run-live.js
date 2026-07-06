@@ -222,7 +222,7 @@ function sanitizeFilename(str) {
                 }
                 
                 // D. Questionnaire requiring manual answers pre-apply
-                const chatbotSelector = ".chatbot-container, .questionnaire-container, :has-text('Submit answers'), :has-text('Answer questions')";
+                const chatbotSelector = ".chatbot-container, .questionnaire-container, :has-text('Submit answers'), :has-text('Answer questions'), :has-text('recruiter\\'s questions'), :has-text('questions to successfully apply'), [class*='chatbot'], [class*='chatbot-']";
                 const isQuestionnaire = await page.locator(chatbotSelector).count() > 0;
                 if (isQuestionnaire) {
                     stats.questionnaire++;
@@ -313,7 +313,7 @@ function sanitizeFilename(str) {
                 }
                 
                 // 6. Verify Application Success State
-                const toastSelector = ".toastMessage, .success-toast, :has-text('successfully applied'), :has-text('uploaded successfully'), button:has-text('Applied'), span:has-text('Applied')";
+                const toastSelector = ".toastMessage, .success-toast, :has-text('successfully applied'), :has-text('uploaded successfully'), button:has-text('Applied'), span:has-text('Applied'), :has-text('Applied to'), .applied-to";
                 const appliedSuccessful = await page.locator(toastSelector).count() > 0;
                 
                 if (appliedSuccessful) {
