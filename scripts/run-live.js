@@ -26,29 +26,54 @@ function sanitizeFilename(str) {
 }
 
 (async () => {
-    logger.automation.info("=== Starting Controlled Live Naukri Run ===");
+    logger.automation.info("=== Starting Hardened Live Naukri Run ===");
+    const runStart = Date.now();
+    let applyDurations = [];
     
     let browserInstance = null;
     let page = null;
     let plugin = null;
     
-    const maxApplicationsLimit = config.search.maxApplicationsPerRun || 5;
+    const maxApplicationsLimit = parseInt(process.env.LIVE_MAX_APPLICATIONS || "5", 10);
     let appliedCount = 0;
     let restartCount = 0;
     
     let stats = {
         found: 0,
-        eligible: 0,
-        applied: 0,
-        alreadyApplied: 0,
-        external: 0,
+        matchingFilters: 0,
+        internalApply: 0,
+        externalApply: 0,
         questionnaire: 0,
-        experienceMismatch: 0,
-        keywordMismatch: 0,
-        duplicates: 0,
-        failed: 0,
-        skipped: 0
+        successfullyApplied: 0,
+        alreadyApplied: 0,
+        skipped: 0,
+        failed: 0
     };
+
+    // Graceful Shutdown variables
+    let isShuttingDown = false;
+    let currentJobPromise = Promise.resolve();
+
+    async function handleGracefulShutdown(signal) {
+        if (isShuttingDown) return;
+        isShuttingDown = true;
+        logger.automation.info(`Received ${signal}. Graceful shutdown initiated...`);
+        
+        // Wait for the active job promise to complete
+        await currentJobPromise.catch(() => {});
+        
+        logger.automation.info("Active job processed. Terminating browser sessions...");
+        await browserPool.closeAll().catch(() => {});
+        
+        const shutdownMsg = "⚠️ *Run stopped safely.*";
+        await telegramService.sendMessage(shutdownMsg).catch(() => {});
+        
+        logger.automation.info("Graceful shutdown complete.");
+        process.exit(0);
+    }
+
+    process.on("SIGINT", () => handleGracefulShutdown("SIGINT"));
+    process.on("SIGTERM", () => handleGracefulShutdown("SIGTERM"));
 
     async function initBrowser() {
         if (browserInstance) {
@@ -104,13 +129,9 @@ function sanitizeFilename(str) {
             );
             
             if (existingJob) {
-                stats.duplicates++;
-                if (existingJob.applied === 1 || existingJob.status === "Applied") {
-                    stats.alreadyApplied++;
-                    logger.automation.info(`[SKIP] Duplicate (Already Applied in DB): "${job.title}" at "${job.company}"`);
-                } else {
-                    logger.automation.info(`[SKIP] Duplicate (Skipped/Failed in DB): "${job.title}" at "${job.company}"`);
-                }
+                stats.skipped++;
+                stats.alreadyApplied++;
+                logger.automation.info(`[SKIP] Duplicate (Already Applied/Skipped in DB): "${job.title}" at "${job.company}"`);
                 continue;
             }
             
@@ -119,7 +140,7 @@ function sanitizeFilename(str) {
                 job.title.toLowerCase().includes(kw.toLowerCase())
             );
             if (!matchesKeyword) {
-                stats.keywordMismatch++;
+                stats.skipped++;
                 logger.automation.info(`[SKIP] Title keyword mismatch: "${job.title}" does not contain configured keywords.`);
                 await db.run(
                     "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 'Skipped', 'Keyword mismatch')",
@@ -133,7 +154,7 @@ function sanitizeFilename(str) {
                 job.location.toLowerCase().includes(loc.toLowerCase())
             );
             if (!matchesLocation) {
-                stats.keywordMismatch++; // Track under keyword/criteria mismatch
+                stats.skipped++;
                 logger.automation.info(`[SKIP] Location mismatch: "${job.location}" does not match configured locations.`);
                 await db.run(
                     "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 'Skipped', 'Location mismatch')",
@@ -146,7 +167,7 @@ function sanitizeFilename(str) {
             const jobExp = parseExperience(job.experience);
             const matchesExp = (config.search.minExperience <= jobExp.max) && (config.search.maxExperience >= jobExp.min);
             if (!matchesExp) {
-                stats.experienceMismatch++;
+                stats.skipped++;
                 logger.automation.info(`[SKIP] Experience mismatch: Job requires ${job.experience}, but config range is ${config.search.minExperience}-${config.search.maxExperience} yrs.`);
                 await db.run(
                     "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 'Skipped', 'Experience mismatch')",
@@ -158,13 +179,18 @@ function sanitizeFilename(str) {
             candidateJobs.push(job);
         }
         
-        stats.eligible = candidateJobs.length;
+        stats.matchingFilters = candidateJobs.length;
         logger.automation.info(`Discovered ${candidateJobs.length} eligible matching jobs. Commencing application submissions...`);
         
         let jobIndex = 0;
         
         while (jobIndex < candidateJobs.length && appliedCount < maxApplicationsLimit) {
+            if (isShuttingDown) break;
             const job = candidateJobs[jobIndex];
+            
+            // Anchor active process to promise hook for graceful shutdown
+            let resolveJob;
+            currentJobPromise = new Promise(r => resolveJob = r);
             
             try {
                 logger.automation.info(`Processing job details for: "${job.title}" at "${job.company}"`);
@@ -187,6 +213,7 @@ function sanitizeFilename(str) {
                             [job.portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
                         ).catch(() => {});
                         jobIndex++;
+                        resolveJob();
                         continue;
                     }
                 }
@@ -203,6 +230,7 @@ function sanitizeFilename(str) {
                         [job.portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
                     ).catch(() => {});
                     jobIndex++;
+                    resolveJob();
                     continue;
                 }
                 
@@ -210,7 +238,7 @@ function sanitizeFilename(str) {
                 const externalApplySelector = "button:has-text('Apply on company website'), a:has-text('Apply on company website'), button:has-text('Apply on company site')";
                 const isExternal = await page.locator(externalApplySelector).count() > 0;
                 if (isExternal) {
-                    stats.external++;
+                    stats.externalApply++;
                     stats.skipped++;
                     logger.automation.info(`[SKIP] External website redirect required for: "${job.title}"`);
                     await db.run(
@@ -218,6 +246,7 @@ function sanitizeFilename(str) {
                         [job.portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
                     ).catch(() => {});
                     jobIndex++;
+                    resolveJob();
                     continue;
                 }
                 
@@ -233,6 +262,7 @@ function sanitizeFilename(str) {
                         [job.portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
                     ).catch(() => {});
                     jobIndex++;
+                    resolveJob();
                     continue;
                 }
                 
@@ -246,6 +276,7 @@ function sanitizeFilename(str) {
                         [job.portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
                     ).catch(() => {});
                     jobIndex++;
+                    resolveJob();
                     continue;
                 }
                 
@@ -260,6 +291,7 @@ function sanitizeFilename(str) {
                         [job.portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
                     ).catch(() => {});
                     jobIndex++;
+                    resolveJob();
                     continue;
                 }
                 
@@ -274,10 +306,14 @@ function sanitizeFilename(str) {
                         [job.portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
                     ).catch(() => {});
                     jobIndex++;
+                    resolveJob();
                     continue;
                 }
                 
-                // 3. Take Before Screenshot
+                // Job counts as an Internal Apply candidate
+                stats.internalApply++;
+                
+                // 3. Take Before Screenshot (every attempt has before.png)
                 const dateStr = new Date().toISOString().split("T")[0];
                 const screenshotDir = path.join(process.cwd(), "screenshots", dateStr);
                 fs.mkdirSync(screenshotDir, { recursive: true });
@@ -288,19 +324,36 @@ function sanitizeFilename(str) {
                 await page.screenshot({ path: beforeScreenshotPath, fullPage: false }).catch(() => {});
                 
                 // 4. Click Apply
+                const applyStart = Date.now();
                 logger.automation.info(`Submitting application for: "${job.title}" at "${job.company}"`);
                 await page.click(applyBtnSelector);
                 
-                // Wait for page transition
+                // Wait for page transition / success indicators
                 await page.waitForTimeout(4000);
                 
-                // 5. Post-Apply Questionnaire / Chatbot Prompt Detection
-                const hasPostQuestionnaire = await page.locator(chatbotSelector).count() > 0;
+                // 5. Success state check / Post-Apply Questionnaire / Chatbot Detection
+                const toastSelector = ".toastMessage, .success-toast, :has-text('successfully applied'), :has-text('uploaded successfully'), button:has-text('Applied'), span:has-text('Applied'), :has-text('Applied to'), .applied-to";
+                let appliedSuccessful = await page.locator(toastSelector).count() > 0;
+                let hasPostQuestionnaire = await page.locator(chatbotSelector).count() > 0;
+                
+                // Retry logic: If click did nothing (neither successful nor questionnaire triggered), click again
+                if (!appliedSuccessful && !hasPostQuestionnaire) {
+                    logger.automation.warn(`Apply click did not register transition. Waiting 3 seconds and retrying once...`);
+                    await page.waitForTimeout(3000);
+                    await page.click(applyBtnSelector).catch(() => {});
+                    await page.waitForTimeout(4000);
+                    
+                    appliedSuccessful = await page.locator(toastSelector).count() > 0;
+                    hasPostQuestionnaire = await page.locator(chatbotSelector).count() > 0;
+                }
+                
+                // Handle Post-Apply Questionnaire skip
                 if (hasPostQuestionnaire) {
                     stats.questionnaire++;
                     stats.skipped++;
                     logger.automation.warn(`Job triggered a post-apply chatbot/questionnaire for: "${job.title}". Skipping application.`);
                     
+                    // Take failed.png for unsuccessful chatbot skip
                     const failedScreenshotPath = path.join(screenshotDir, `${compClean}_${roleClean}_failed.png`);
                     await page.screenshot({ path: failedScreenshotPath }).catch(() => {});
                     
@@ -308,19 +361,19 @@ function sanitizeFilename(str) {
                         "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 'Skipped', 'Questionnaire')",
                         [job.portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
                     ).catch(() => {});
+                    
                     jobIndex++;
+                    resolveJob();
                     continue;
                 }
                 
-                // 6. Verify Application Success State
-                const toastSelector = ".toastMessage, .success-toast, :has-text('successfully applied'), :has-text('uploaded successfully'), button:has-text('Applied'), span:has-text('Applied'), :has-text('Applied to'), .applied-to";
-                const appliedSuccessful = await page.locator(toastSelector).count() > 0;
-                
+                // Handle Verification Success
                 if (appliedSuccessful) {
                     appliedCount++;
-                    stats.applied++;
+                    stats.successfullyApplied++;
+                    applyDurations.push(Date.now() - applyStart);
                     
-                    // Take success after screenshot
+                    // Take after.png for successful submit
                     const afterScreenshotPath = path.join(screenshotDir, `${compClean}_${roleClean}_after.png`);
                     await page.screenshot({ path: afterScreenshotPath }).catch(() => {});
                     
@@ -329,7 +382,6 @@ function sanitizeFilename(str) {
                         "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'Applied')",
                         [job.portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
                     ).catch(async () => {
-                        // In case it already exists in DB
                         await db.run(
                             "UPDATE jobs SET applied = 1, status = 'Applied', timestamp = CURRENT_TIMESTAMP WHERE portal = 'naukri' AND job_id = ?",
                             [job.job_id]
@@ -338,29 +390,56 @@ function sanitizeFilename(str) {
                     
                     logger.automation.info(`Applied successfully: "${job.title}" at "${job.company}"`);
                     
-                    // Dispatched immediate Telegram alert
+                    // Dispatched immediate Telegram alert with running total
+                    const runningTotalMsg = `Application ${appliedCount} / ${maxApplicationsLimit} completed.`;
                     const applyMsg = `✅ *Applied Successfully*\n\n` +
                                      `• *Company*: ${job.company}\n` +
                                      `• *Role*: ${job.title}\n` +
                                      `• *Location*: ${job.location}\n` +
                                      `• *Experience*: ${job.experience}\n` +
+                                     `• *Timestamp*: ${new Date().toISOString()}\n` +
                                      `• *URL*: ${job.url}\n\n` +
-                                     `_Application #${appliedCount} of ${maxApplicationsLimit}_`;
+                                     `_${runningTotalMsg}_`;
                     await telegramService.sendMessage(applyMsg);
                 } else {
+                    // Verification Failed state (unsuccessful attempt)
                     stats.failed++;
-                    logger.automation.warn(`Could not verify application success state for: "${job.title}"`);
+                    logger.automation.error(`Verification Failed for: "${job.title}" at "${job.company}"`);
                     
+                    // Take failed.png for unsuccessful attempt
                     const failedScreenshotPath = path.join(screenshotDir, `${compClean}_${roleClean}_failed.png`);
                     await page.screenshot({ path: failedScreenshotPath }).catch(() => {});
                     
+                    // Extract Apply button Outer HTML diagnostic snippet
+                    let outerHtml = "";
+                    let btnInfo = "";
+                    try {
+                        btnInfo = await page.locator(applyBtnSelector).first().evaluate(el => ({
+                            outerHTML: el.outerHTML,
+                            innerText: el.innerText,
+                            id: el.id,
+                            className: el.className
+                        }));
+                        outerHtml = btnInfo.outerHTML;
+                    } catch (e) {
+                        outerHtml = `Button locator failed: ${e.message}`;
+                    }
+                    
+                    logger.automation.error(`Selector diagnostics for "${job.title}": applyBtnSelector="${applyBtnSelector}". button outerHTML:\n${outerHtml}`);
+                    
+                    // Save outerHTML snippet to file next to screenshot
+                    const snippetPath = path.join(screenshotDir, `${compClean}_${roleClean}_snippet.html`);
+                    fs.writeFileSync(snippetPath, outerHtml);
+                    logger.automation.info(`Saved HTML outerHTML snippet to: ${snippetPath}`);
+                    
                     await db.run(
-                        "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 'Failed', 'Verification timeout')",
+                        "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 'Failed', 'Verification Failed')",
                         [job.portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
                     ).catch(() => {});
                 }
                 
                 jobIndex++;
+                resolveJob();
             } catch (unexpectedJobErr) {
                 // If it is an unexpected loop error (playwright context, navigation failure, page crash)
                 logger.automation.error(`Unexpected loop error: ${unexpectedJobErr.message}`);
@@ -379,28 +458,33 @@ function sanitizeFilename(str) {
                     await initBrowser();
                     logger.automation.info("Browser context restarted. Resuming job application...");
                     // Do not increment jobIndex so we retry the current job
+                    resolveJob();
                     continue;
                 }
                 
                 // If it's the second crash, bubble up to the main catch block
+                resolveJob();
                 throw unexpectedJobErr;
             }
         }
+        
+        // Calculate durations
+        const runDuration = ((Date.now() - runStart) / 1000).toFixed(1);
+        const avgApplyTime = applyDurations.length ? (applyDurations.reduce((a, b) => a + b, 0) / applyDurations.length / 1000).toFixed(1) : 0;
         
         // Print Summary Report
         console.log("\n====================================================");
         console.log("               NAUKRI LIVE RUN SUMMARY              ");
         console.log("====================================================");
-        console.log(`Jobs Found:          ${stats.found}`);
-        console.log(`Eligible:            ${stats.eligible}`);
-        console.log(`Applied:             ${stats.applied}`);
-        console.log(`Already Applied:     ${stats.alreadyApplied}`);
-        console.log(`External:            ${stats.external}`);
-        console.log(`Questionnaire:       ${stats.questionnaire}`);
-        console.log(`Experience Mismatch: ${stats.experienceMismatch}`);
-        console.log(`Keyword Mismatch:    ${stats.keywordMismatch}`);
-        console.log(`Duplicates:          ${stats.duplicates}`);
-        console.log(`Failed:              ${stats.failed}`);
+        console.log(`Jobs Found:           ${stats.found}`);
+        console.log(`Matching Filters:     ${stats.matchingFilters}`);
+        console.log(`Internal Apply:       ${stats.internalApply}`);
+        console.log(`External Apply:       ${stats.externalApply}`);
+        console.log(`Questionnaire:        ${stats.questionnaire}`);
+        console.log(`Successfully Applied: ${stats.successfullyApplied}`);
+        console.log(`Already Applied:      ${stats.alreadyApplied}`);
+        console.log(`Skipped:              ${stats.skipped}`);
+        console.log(`Failed:               ${stats.failed}`);
         console.log("====================================================\n");
         
         // Compute Remaining Daily limit (Naukri default daily limit is 50)
@@ -409,18 +493,19 @@ function sanitizeFilename(str) {
         );
         const remainingDaily = Math.max(0, 50 - (todayApplied ? todayApplied.count : 0));
         
-        // Send final detailed summary report to Telegram
+        // Send final detailed summary report to Telegram matching the reporting terminology
         const tgSummary = `🏁 *LIVE RUN COMPLETE*\n\n` +
                           `• *Jobs Found*: ${stats.found}\n` +
-                          `• *Eligible*: ${stats.eligible}\n` +
-                          `• *Applied*: ${stats.applied}\n` +
-                          `• *Already Applied*: ${stats.alreadyApplied}\n` +
-                          `• *External*: ${stats.external}\n` +
+                          `• *Matching Filters*: ${stats.matchingFilters}\n` +
+                          `• *Internal Apply*: ${stats.internalApply}\n` +
+                          `• *External Apply*: ${stats.externalApply}\n` +
                           `• *Questionnaire*: ${stats.questionnaire}\n` +
-                          `• *Experience Mismatch*: ${stats.experienceMismatch}\n` +
-                          `• *Keyword Mismatch*: ${stats.keywordMismatch}\n` +
-                          `• *Duplicates*: ${stats.duplicates}\n` +
+                          `• *Successfully Applied*: ${stats.successfullyApplied}\n` +
+                          `• *Already Applied*: ${stats.alreadyApplied}\n` +
+                          `• *Skipped*: ${stats.skipped}\n` +
                           `• *Failed*: ${stats.failed}\n` +
+                          `• *Runtime*: ${runDuration} seconds\n` +
+                          `• *Average Apply Time*: ${avgApplyTime} seconds\n` +
                           `• *Remaining Daily Limit*: ${remainingDaily}`;
         await telegramService.sendMessage(tgSummary);
         
