@@ -19,6 +19,7 @@ module.exports = async function login(plugin, page) {
         }
     } catch (e) {
         logger.warn(`Session check navigation failed: ${e.message}. Proceeding to login.`);
+        await page.goto("about:blank").catch(() => {});
     }
 
     // 2. Direct to login page
