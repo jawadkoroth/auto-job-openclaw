@@ -59,9 +59,10 @@ class NaukriPlugin extends BasePlugin {
      * @param {import("playwright").Page} page 
      */
     async health(page) {
-        const loggedInSelector = "a[href*='naukri.com/mnj/profile'], .nICM-profile-header, a:has-text('View profile')";
+        const loggedInSelector = "a[href*='naukri.com/mnj/profile'], .nICM-profile-header, a:has-text('View profile'), .user-name, a:has-text('Logout'), div.nI-gNb-drawer";
         try {
-            return await page.locator(loggedInSelector).count() > 0;
+            await page.waitForSelector(loggedInSelector, { timeout: 5000 });
+            return true;
         } catch (e) {
             return false;
         }
