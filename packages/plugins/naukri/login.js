@@ -57,15 +57,15 @@ module.exports = async function login(plugin, page) {
     logger.info("Submitting login form...");
     await page.click('button[type="submit"]');
     
-    // Wait for redirect to profile / dashboard
-    await page.waitForNavigation({ waitUntil: "networkidle", timeout: 20000 }).catch(() => {});
+    // Wait for redirect to profile page to complete naturally
+    logger.info("Waiting for post-login redirection to complete...");
+    await page.waitForURL("**/mnj/profile**", { timeout: 25000 }).catch(() => {
+        logger.warn("Did not detect redirect to profile page within timeout.");
+    });
     
-    // 4. Double check login verification
-    // Go to profile page explicitly to verify health
-    if (!page.url().includes("mnj/profile")) {
-        await page.goto("https://www.naukri.com/mnj/profile", { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
-    }
-
+    // Settle delay to let session cookies write to persistent context
+    await page.waitForTimeout(5000);
+    
     const isLoggedIn = await plugin.health(page);
     if (isLoggedIn) {
         logger.info("Authentication verification successful.");
