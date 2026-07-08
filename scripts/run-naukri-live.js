@@ -223,6 +223,14 @@ function parseExperience(expStr) {
         
     } catch (err) {
         logger.automation.error(`Live verification run failure: ${err.message}`);
+        if (browserInstance && page) {
+            try {
+                const sp = await browserInstance.takeScreenshot(page, "live_verification_failed");
+                logger.automation.info(`Saved error screenshot to: ${sp}`);
+            } catch (snapErr) {
+                logger.automation.error(`Failed to capture screenshot: ${snapErr.message}`);
+            }
+        }
         await browserPool.closeAll().catch(() => {});
         process.exit(1);
     }

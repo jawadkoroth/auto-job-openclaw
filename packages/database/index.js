@@ -68,6 +68,8 @@ class Database {
             `);
             // Safe migration step for existing databases
             await this.run("ALTER TABLE jobs ADD COLUMN experience TEXT").catch(() => {});
+            await this.run("ALTER TABLE jobs ADD COLUMN url TEXT").catch(() => {});
+            await this.run("ALTER TABLE jobs ADD COLUMN status TEXT").catch(() => {});
 
             // Isolated session audit logs
             await this.run(`

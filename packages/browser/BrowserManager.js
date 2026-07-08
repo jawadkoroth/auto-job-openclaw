@@ -30,14 +30,14 @@ class BrowserManager {
             if (await this.healthCheck()) {
                 return this.context;
             }
-            logger.warn(`Existing browser context for ${portalName} is unhealthy. Recreating...`, {
+            logger.browser.warn(`Existing browser context for ${portalName} is unhealthy. Recreating...`, {
                 plugin: normPortal,
                 action: "browser_launch"
             });
             await this.close();
         } else if (this.context) {
             // Context is for a different portal, close it to switch
-            logger.info(`Switching portal context from ${this.currentPortal} to ${normPortal}. Closing current...`, {
+            logger.browser.info(`Switching portal context from ${this.currentPortal} to ${normPortal}. Closing current...`, {
                 plugin: normPortal,
                 action: "browser_switch"
             });
@@ -47,7 +47,7 @@ class BrowserManager {
         this.currentPortal = normPortal;
         const sessionPath = sessionManager.getSessionPath(this.currentPortal);
 
-        logger.info(`Launching persistent browser context for ${portalName}`, {
+        logger.browser.info(`Launching persistent browser context for ${portalName}`, {
             plugin: portalName,
             action: "browser_launch"
         });
@@ -66,7 +66,7 @@ class BrowserManager {
             // Handle unexpected closure
             this.context.on("close", () => {
                 if (this.intentionalClose) return;
-                logger.warn("Browser context closed unexpectedly.", {
+                logger.browser.warn("Browser context closed unexpectedly.", {
                     plugin: this.currentPortal,
                     action: "browser_close_event"
                 });
@@ -75,7 +75,7 @@ class BrowserManager {
 
             return this.context;
         } catch (error) {
-            logger.error(`Failed to launch browser context: ${error.message}`, {
+            logger.browser.error(`Failed to launch browser context: ${error.message}`, {
                 plugin: portalName,
                 action: "browser_launch",
                 success: false
@@ -100,7 +100,7 @@ class BrowserManager {
             }
             return await this.context.newPage();
         } catch (error) {
-            logger.error(`Failed to retrieve/create page: ${error.message}. Triggering recovery...`, {
+            logger.browser.error(`Failed to retrieve/create page: ${error.message}. Triggering recovery...`, {
                 plugin: this.currentPortal,
                 action: "new_page",
                 success: false
@@ -115,7 +115,7 @@ class BrowserManager {
      */
     async close() {
         if (this.context) {
-            logger.info(`Closing browser context for ${this.currentPortal}`, {
+            logger.browser.info(`Closing browser context for ${this.currentPortal}`, {
                 plugin: this.currentPortal,
                 action: "browser_close"
             });
@@ -123,7 +123,7 @@ class BrowserManager {
                 this.intentionalClose = true;
                 await this.context.close();
             } catch (error) {
-                logger.error(`Error closing browser context: ${error.message}`, {
+                logger.browser.error(`Error closing browser context: ${error.message}`, {
                     plugin: this.currentPortal,
                     action: "browser_close",
                     success: false
@@ -152,7 +152,7 @@ class BrowserManager {
             }
             return true;
         } catch (error) {
-            logger.warn(`Browser health check failed: ${error.message}`, {
+            logger.browser.warn(`Browser health check failed: ${error.message}`, {
                 plugin: this.currentPortal,
                 action: "health_check"
             });
@@ -169,7 +169,7 @@ class BrowserManager {
             throw new Error("No active portal context to restart.");
         }
         const portal = this.currentPortal;
-        logger.info(`Restarting browser context for portal: ${portal}`, {
+        logger.browser.info(`Restarting browser context for portal: ${portal}`, {
             plugin: portal,
             action: "browser_restart"
         });
@@ -185,7 +185,7 @@ class BrowserManager {
      */
     async takeScreenshot(page, name) {
         if (!page) {
-            logger.warn("No active page provided to take screenshot.");
+            logger.browser.warn("No active page provided to take screenshot.");
             return null;
         }
         const filename = `${Date.now()}-${name.replace(/[^a-zA-Z0-9_-]/g, "_")}.png`;
@@ -197,13 +197,13 @@ class BrowserManager {
                 fullPage: true,
                 timeout: 10000
             });
-            logger.info(`Screenshot captured: ${filename}`, {
+            logger.browser.info(`Screenshot captured: ${filename}`, {
                 plugin: this.currentPortal,
                 action: "screenshot"
             });
             return fullPath;
         } catch (error) {
-            logger.error(`Failed to capture screenshot: ${error.message}`, {
+            logger.browser.error(`Failed to capture screenshot: ${error.message}`, {
                 plugin: this.currentPortal,
                 action: "screenshot",
                 success: false

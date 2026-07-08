@@ -1,5 +1,5 @@
 const browserManager = require("../packages/browser/BrowserManager");
-const logger = require("../packages/logger");
+const { automation: logger } = require("../packages/logger");
 
 (async () => {
     try {

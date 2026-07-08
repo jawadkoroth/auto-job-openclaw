@@ -1,0 +1,8 @@
+{
+  "default": "resume.pdf",
+  "devops": "devops_resume.pdf",
+  "naukri": {
+    "devops": "devops_resume.pdf",
+    "default": "resume.pdf"
+  }
+}
