@@ -444,6 +444,11 @@ function sanitizeFilename(str) {
                 // If it is an unexpected loop error (playwright context, navigation failure, page crash)
                 logger.automation.error(`Unexpected loop error: ${unexpectedJobErr.message}`);
                 
+                if (unexpectedJobErr.message.includes("Access Denied")) {
+                    resolveJob();
+                    throw unexpectedJobErr;
+                }
+                
                 if (restartCount === 0) {
                     restartCount++;
                     logger.automation.warn("Attempting to restart browser context once to recover loop...");
