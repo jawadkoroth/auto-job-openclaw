@@ -4,6 +4,7 @@ const logger = require("../logger");
 const contextManager = require("./ContextManager");
 const path = require("path");
 const fs = require("fs-extra");
+const os = require("os");
 
 class BrowserInstance {
     /**
@@ -33,12 +34,61 @@ class BrowserInstance {
         logger.browser.info(`Launching isolated BrowserInstance for: ${this.portalName}`);
 
         try {
-            this.context = await chromium.launchPersistentContext(sessionPath, {
+            const isLinux = os.platform() === "linux";
+            const userAgent = isLinux ? undefined : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+            const launchOptions = {
                 headless: config.browser.headless,
                 viewport: config.browser.viewport,
-                userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                userAgent: userAgent,
+                timezoneId: "Asia/Kolkata",
+                locale: "en-IN",
+                extraHTTPHeaders: {
+                    "Accept-Language": "en-IN,en;q=0.9"
+                },
                 args: config.browser.args,
                 timeout: config.browser.timeout
+            };
+
+            logger.browser.info(`Complete browser launch options: ${JSON.stringify(launchOptions, null, 2)}`);
+
+            this.context = await chromium.launchPersistentContext(sessionPath, launchOptions);
+
+            // Configure init scripts to ensure standard window/navigator properties
+            await this.context.addInitScript(() => {
+                // Ensure window.chrome exists
+                if (!window.chrome) {
+                    window.chrome = {
+                        runtime: {},
+                        loadTimes: function() {},
+                        csi: function() {},
+                        app: {}
+                    };
+                }
+                
+                // Ensure navigator.plugins is populated
+                if (!navigator.plugins || navigator.plugins.length === 0) {
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => {
+                            const mockPlugins = [
+                                { name: "PDF Viewer", filename: "internal-pdf-viewer", description: "Portable Document Format" },
+                                { name: "Chrome PDF Viewer", filename: "mhjfbgoafeeigndgjbbefjhhakeomjia", description: "Portable Document Format" },
+                                { name: "Chromium PDF Viewer", filename: "internal-pdf-viewer", description: "Portable Document Format" },
+                                { name: "Microsoft Edge PDF Viewer", filename: "internal-pdf-viewer", description: "Portable Document Format" },
+                                { name: "WebKit built-in PDF", filename: "internal-pdf-viewer", description: "Portable Document Format" }
+                            ];
+                            mockPlugins.item = function(index) { return this[index]; };
+                            mockPlugins.namedItem = function(name) { return this.find(p => p.name === name); };
+                            mockPlugins.refresh = function() {};
+                            return mockPlugins;
+                        }
+                    });
+                }
+
+                // Ensure navigator.languages returns ["en-IN", "en"]
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ["en-IN", "en"]
+                });
             });
 
             this.context.setDefaultTimeout(config.browser.timeout);
