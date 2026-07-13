@@ -1,33 +1,44 @@
 const BasePlugin = require("../BasePlugin");
+const login = require("./login");
+const profile = require("./profile");
+const search = require("./search");
+const apply = require("./apply");
 
 class InstahyrePlugin extends BasePlugin {
     async login(page) {
-        this.logger.info("Instahyre login skeleton called.");
-        return true;
+        return login(this, page);
     }
 
     async logout(page) {
-        this.logger.info("Instahyre logout skeleton called.");
+        this.logger.info("Instahyre logout initiated.");
+        try {
+            await page.click("a:has-text('Logout')").catch(() => {});
+        } catch (e) {
+            // ignore
+        }
         return true;
     }
 
     async updateProfile(page) {
-        this.logger.info("Instahyre profile update skeleton called.");
-        return true;
+        return profile(this, page);
     }
 
     async search(page, queryOptions) {
-        this.logger.info(`Instahyre search skeleton query: ${JSON.stringify(queryOptions)}`);
-        return [];
+        return search(this, page, queryOptions);
     }
 
     async apply(page, job) {
-        this.logger.info(`Instahyre apply skeleton called for job_id: ${job.job_id}`);
-        return true;
+        return apply(this, page, job);
     }
 
     async health(page) {
-        return true;
+        try {
+            await page.waitForTimeout(2000);
+            const count = await page.locator("a[href*='/candidate/opportunities/'], a[href*='/candidate/profile/'], a:has-text('Opportunities'), a:has-text('Profile')").count();
+            return count > 0;
+        } catch (e) {
+            return false;
+        }
     }
 }
 

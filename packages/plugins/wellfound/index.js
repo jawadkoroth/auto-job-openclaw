@@ -4,13 +4,13 @@ const profile = require("./profile");
 const search = require("./search");
 const apply = require("./apply");
 
-class FounditPlugin extends BasePlugin {
+class WellfoundPlugin extends BasePlugin {
     async login(page) {
         return login(this, page);
     }
 
     async logout(page) {
-        this.logger.info("Foundit logout initiated.");
+        this.logger.info("Wellfound logout initiated.");
         try {
             await page.click("a:has-text('Logout')").catch(() => {});
         } catch (e) {
@@ -34,7 +34,7 @@ class FounditPlugin extends BasePlugin {
     async health(page) {
         try {
             await page.waitForTimeout(2000);
-            const count = await page.locator("a[href*='/seeker/profile'], a:has-text('Profile'), a:has-text('Logout'), .profile-name, .userName").count();
+            const count = await page.locator("a[href*='/profile/edit'], a:has-text('Profile'), a:has-text('Logout'), img[alt*='avatar']").count();
             return count > 0;
         } catch (e) {
             return false;
@@ -42,4 +42,4 @@ class FounditPlugin extends BasePlugin {
     }
 }
 
-module.exports = FounditPlugin;
+module.exports = WellfoundPlugin;

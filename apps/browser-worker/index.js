@@ -73,8 +73,8 @@ async function handleTask(task) {
                 for (const job of jobs) {
                     try {
                         const insertSql = `
-                            INSERT INTO jobs (portal, job_id, company, title, location, salary, applied, ignored)
-                            VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+                            INSERT INTO jobs (portal, job_id, company, title, location, salary, experience, url, applied, ignored)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
                         `;
                         await db.run(insertSql, [
                             job.portal, 
@@ -82,7 +82,9 @@ async function handleTask(task) {
                             job.company, 
                             job.title, 
                             job.location, 
-                            job.salary
+                            job.salary,
+                            job.experience,
+                            job.url
                         ]);
                         foundCount++;
                         eventBus.emit("JobFound", { portal, job });

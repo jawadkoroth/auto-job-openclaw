@@ -4,18 +4,12 @@ const profile = require("./profile");
 const search = require("./search");
 const apply = require("./apply");
 
-class FounditPlugin extends BasePlugin {
+class RemoteOKPlugin extends BasePlugin {
     async login(page) {
         return login(this, page);
     }
 
     async logout(page) {
-        this.logger.info("Foundit logout initiated.");
-        try {
-            await page.click("a:has-text('Logout')").catch(() => {});
-        } catch (e) {
-            // ignore
-        }
         return true;
     }
 
@@ -32,14 +26,8 @@ class FounditPlugin extends BasePlugin {
     }
 
     async health(page) {
-        try {
-            await page.waitForTimeout(2000);
-            const count = await page.locator("a[href*='/seeker/profile'], a:has-text('Profile'), a:has-text('Logout'), .profile-name, .userName").count();
-            return count > 0;
-        } catch (e) {
-            return false;
-        }
+        return true;
     }
 }
 
-module.exports = FounditPlugin;
+module.exports = RemoteOKPlugin;

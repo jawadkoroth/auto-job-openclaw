@@ -13,7 +13,7 @@ class PluginManager {
      * Scan the packages/plugins/ directory and load all active plugins
      */
     loadPlugins() {
-        const pluginDirs = ["naukri", "linkedin", "foundit", "hirist", "instahyre"];
+        const pluginDirs = ["naukri", "linkedin", "foundit", "hirist", "instahyre", "wellfound", "remoteok", "weworkremotely"];
         
         for (const dirName of pluginDirs) {
             const pluginPath = path.join(__dirname, dirName);

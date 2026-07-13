@@ -45,10 +45,10 @@ module.exports = {
     },
 
     search: {
-        keywords: (process.env.SEARCH_KEYWORDS || "Software Engineer").split(",").map(s => s.trim()),
-        locations: (process.env.SEARCH_LOCATIONS || "Bangalore").split(",").map(s => s.trim()),
-        minExperience: getEnvInt("MIN_EXPERIENCE", 0),
-        maxExperience: getEnvInt("MAX_EXPERIENCE", 10),
+        keywords: (process.env.SEARCH_KEYWORDS || "DevOps Engineer, Cloud Engineer, Platform Engineer, Site Reliability Engineer, Infrastructure Engineer").split(",").map(s => s.trim()),
+        locations: (process.env.SEARCH_LOCATIONS || "Bangalore, Hyderabad, Chennai, Kochi, Trivandrum, Remote").split(",").map(s => s.trim()),
+        minExperience: getEnvInt("MIN_EXPERIENCE", 2),
+        maxExperience: getEnvInt("MAX_EXPERIENCE", 5),
         maxJobAgeDays: getEnvInt("MAX_JOB_AGE_DAYS", 7),
         maxApplicationsPerRun: getEnvInt("MAX_APPLICATIONS_PER_RUN", 5),
         dryRun: getEnvBool("DRY_RUN", true)
@@ -70,18 +70,29 @@ module.exports = {
         },
         foundit: {
             url: "https://www.foundit.in",
-            email: process.env.FOUNDIT_EMAIL || "",
-            password: process.env.FOUNDIT_PASSWORD || ""
+            email: process.env.FOUNDIT_EMAIL || process.env.NAUKRI_EMAIL || "",
+            password: process.env.FOUNDIT_PASSWORD || process.env.NAUKRI_PASSWORD || ""
         },
         hirist: {
             url: "https://www.hirist.tech",
-            email: process.env.HIRIST_EMAIL || "",
-            password: process.env.HIRIST_PASSWORD || ""
+            email: process.env.HIRIST_EMAIL || process.env.NAUKRI_EMAIL || "",
+            password: process.env.HIRIST_PASSWORD || process.env.NAUKRI_PASSWORD || ""
         },
         instahyre: {
             url: "https://www.instahyre.com",
-            email: process.env.INSTAHYRE_EMAIL || "",
-            password: process.env.INSTAHYRE_PASSWORD || ""
+            email: process.env.INSTAHYRE_EMAIL || process.env.NAUKRI_EMAIL || "",
+            password: process.env.INSTAHYRE_PASSWORD || process.env.NAUKRI_PASSWORD || ""
+        },
+        wellfound: {
+            url: "https://wellfound.com",
+            email: process.env.WELLFOUND_EMAIL || process.env.NAUKRI_EMAIL || "",
+            password: process.env.WELLFOUND_PASSWORD || process.env.NAUKRI_PASSWORD || ""
+        },
+        remoteok: {
+            url: "https://remoteok.com"
+        },
+        weworkremotely: {
+            url: "https://weworkremotely.com"
         }
     }
 };
