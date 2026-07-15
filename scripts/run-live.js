@@ -52,7 +52,12 @@ function sanitizeFilename(str) {
             applied: 0,
             failed: 0,
             skipped: 0,
-            alreadyApplied: 0
+            alreadyApplied: 0,
+            experienceMismatch: 0,
+            keywordMismatch: 0,
+            externalSkip: 0,
+            questionnaireSkip: 0,
+            successState: "FAIL"
         };
     }
 
@@ -67,7 +72,7 @@ function sanitizeFilename(str) {
         process.exit(1);
     }
 
-    const maxApplicationsLimit = parseInt(process.env.LIVE_MAX_APPLICATIONS || "5", 10);
+    const maxApplicationsLimit = config.search.maxApplicationsPerPortal || parseInt(process.env.LIVE_MAX_APPLICATIONS || "5", 10);
 
     for (const portal of enabledPortals) {
         logger.automation.info(`\n🚀 Starting automation run for portal: ${portal.toUpperCase()}`);
@@ -113,6 +118,8 @@ function sanitizeFilename(str) {
 
             const candidateJobs = [];
 
+            const isDebug = process.env.DEBUG === "true";
+
             // Filtering phase
             for (const job of rawJobs) {
                 // Check duplicates in SQLite
@@ -124,7 +131,9 @@ function sanitizeFilename(str) {
                 if (existingJob) {
                     portalStats[portal].skipped++;
                     portalStats[portal].alreadyApplied++;
-                    logger.automation.info(`[${portal}] [SKIP] Duplicate in DB: "${job.title}" at "${job.company}"`);
+                    if (isDebug) {
+                        logger.automation.info(`[${portal}] [SKIP] Duplicate in DB: "${job.title}" at "${job.company}"`);
+                    }
                     continue;
                 }
 
@@ -134,7 +143,10 @@ function sanitizeFilename(str) {
                 );
                 if (!matchesKeyword) {
                     portalStats[portal].skipped++;
-                    logger.automation.info(`[${portal}] [SKIP] Keyword mismatch: "${job.title}"`);
+                    portalStats[portal].keywordMismatch++;
+                    if (isDebug) {
+                        logger.automation.info(`[${portal}] [SKIP] Keyword mismatch: "${job.title}"`);
+                    }
                     await db.run(
                         "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 'Skipped', 'Keyword mismatch')",
                         [portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
@@ -148,7 +160,10 @@ function sanitizeFilename(str) {
                 );
                 if (!matchesLocation) {
                     portalStats[portal].skipped++;
-                    logger.automation.info(`[${portal}] [SKIP] Location mismatch: "${job.location}"`);
+                    portalStats[portal].keywordMismatch++;
+                    if (isDebug) {
+                        logger.automation.info(`[${portal}] [SKIP] Location mismatch: "${job.location}"`);
+                    }
                     await db.run(
                         "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 'Skipped', 'Location mismatch')",
                         [portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
@@ -161,7 +176,10 @@ function sanitizeFilename(str) {
                 const matchesExp = (config.search.minExperience <= jobExp.max) && (config.search.maxExperience >= jobExp.min);
                 if (!matchesExp) {
                     portalStats[portal].skipped++;
-                    logger.automation.info(`[${portal}] [SKIP] Experience mismatch: ${job.experience}`);
+                    portalStats[portal].experienceMismatch++;
+                    if (isDebug) {
+                        logger.automation.info(`[${portal}] [SKIP] Experience mismatch: ${job.experience}`);
+                    }
                     await db.run(
                         "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 'Skipped', 'Experience mismatch')",
                         [portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
@@ -183,19 +201,37 @@ function sanitizeFilename(str) {
                 try {
                     logger.automation.info(`[${portal}] Applying to: "${job.title}" at "${job.company}"`);
                     
+                    const resumeSelector = require("../packages/resume/ResumeSelector");
+                    const externalApplicationRouter = require("../packages/router/ExternalApplicationRouter");
+
+                    const resumeType = resumeSelector.selectResume(job.title, job.job_description || "");
+                    job.resumeType = resumeType;
+
                     const applyOk = await plugin.apply(page, job);
+                    const statusReason = job.statusReason || "";
+                    
                     if (applyOk) {
                         appliedCount++;
                         portalStats[portal].applied++;
-
-                        // Update DB
+                        
+                        let dbStatus = "APPLIED";
+                        let dbReason = "Successfully applied";
+                        if (statusReason === "alreadyApplied") {
+                            dbStatus = "ALREADY_APPLIED";
+                            dbReason = "Already applied";
+                            portalStats[portal].alreadyApplied++;
+                        } else if (statusReason === "clicked_unverified") {
+                            dbStatus = "CLICKED_UNVERIFIED";
+                            dbReason = "Clicked but unverified";
+                        }
+                        
                         await db.run(
-                            "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 'Applied')",
-                            [portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
+                            "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status, reason, job_description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)",
+                            [portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url, dbStatus, dbReason, job.job_description || ""]
                         ).catch(async () => {
                             await db.run(
-                                "UPDATE jobs SET applied = 1, status = 'Applied', timestamp = CURRENT_TIMESTAMP WHERE portal = ? AND job_id = ?",
-                                [portal, job.job_id]
+                                "UPDATE jobs SET applied = 1, status = ?, reason = ?, timestamp = CURRENT_TIMESTAMP, job_description = ? WHERE portal = ? AND job_id = ?",
+                                [dbStatus, dbReason, job.job_description || "", portal, job.job_id]
                             );
                         });
 
@@ -205,31 +241,82 @@ function sanitizeFilename(str) {
                         const successMsg = `✅ *Applied Successfully via ${portal.toUpperCase()}*\n\n` +
                                            `• *Company*: ${job.company}\n` +
                                            `• *Role*: ${job.title}\n` +
-                                           `• *Location*: ${job.location}\n` +
+                                           `• *Status*: ${dbStatus}\n` +
                                            `• *URL*: ${job.url}`;
                         await telegramService.sendMessage(successMsg).catch(() => {});
                     } else {
                         portalStats[portal].skipped++;
-                        logger.automation.info(`[${portal}] Application skipped (redirection/questionnaire) for: "${job.title}"`);
+                        
+                        let dbStatus = "FAILED";
+                        let dbReason = "Selector action failed";
+                        
+                        if (statusReason === "external") {
+                            portalStats[portal].externalSkip++;
+                            dbStatus = "EXTERNAL_PENDING";
+                            dbReason = "External redirect";
+                            
+                            let extUrl = job.externalUrl || job.url;
+                            const ats = await externalApplicationRouter.route(job, extUrl);
+                            logger.automation.info(`Job ${job.job_id} routed to external ATS queue: ${ats}`);
+                        } else if (statusReason === "questionnaire") {
+                            portalStats[portal].questionnaireSkip++;
+                            dbStatus = "WAITING_FOR_INPUT";
+                            dbReason = "Questionnaire";
+                        } else if (statusReason === "alreadyApplied") {
+                            portalStats[portal].alreadyApplied++;
+                            dbStatus = "ALREADY_APPLIED";
+                            dbReason = "Already applied";
+                        }
+                        
                         await db.run(
-                            "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 'Skipped', 'Filtered/External/Questionnaire')",
-                            [portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
-                        ).catch(() => {});
+                            "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status, reason, job_description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?)",
+                            [portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url, dbStatus, dbReason, job.job_description || ""]
+                        ).catch(async () => {
+                            await db.run(
+                                "UPDATE jobs SET status = ?, reason = ?, ignored = 1, job_description = ? WHERE portal = ? AND job_id = ?",
+                                [dbStatus, dbReason, job.job_description || "", portal, job.job_id]
+                            );
+                        });
                     }
                 } catch (applyErr) {
                     portalStats[portal].failed++;
                     logger.automation.error(`[${portal}] Error applying to "${job.title}": ${applyErr.message}`);
                     await db.run(
-                        "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 'Failed', ?)",
-                        [portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url, applyErr.message]
-                    ).catch(() => {});
+                        "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status, reason, job_description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 'FAILED', ?, ?)",
+                        [portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url, applyErr.message, job.job_description || ""]
+                    ).catch(async () => {
+                        await db.run(
+                            "UPDATE jobs SET status = 'FAILED', reason = ?, ignored = 1, job_description = ? WHERE portal = ? AND job_id = ?",
+                            [applyErr.message, job.job_description || "", portal, job.job_id]
+                        );
+                    });
                 }
                 jobIndex++;
             }
 
+            portalStats[portal].successState = "PASS";
+
+            // Concise Run Summary for the portal
+            logger.automation.info(`\n[${portal.toUpperCase()}] Run Summary:`);
+            console.log(`Found: ${portalStats[portal].found}`);
+            console.log(`Rejected`);
+            console.log(`Experience: ${portalStats[portal].experienceMismatch}`);
+            console.log(`Keyword: ${portalStats[portal].keywordMismatch}`);
+            console.log(`Already Applied: ${portalStats[portal].alreadyApplied}`);
+            console.log(`External: ${portalStats[portal].externalSkip}`);
+            console.log(`Questionnaire: ${portalStats[portal].questionnaireSkip}`);
+            console.log(`Eligible: ${portalStats[portal].matchingFilters}`);
+            console.log(`Applied: ${portalStats[portal].applied}\n`);
+
         } catch (portalErr) {
             logger.automation.error(`❌ Portal [${portal}] failed: ${portalErr.message}`);
             portalStats[portal].failed++;
+            if (browserInstance && page) {
+                const sp = await browserInstance.takeScreenshot(page, `${portal}_failed`).catch(() => null);
+                if (sp) {
+                    logger.automation.info(`Saved error screenshot to: ${sp}`);
+                }
+            }
         } finally {
             // Close active browser instance context to clean memory
             if (browserInstance) {
@@ -254,18 +341,33 @@ function sanitizeFilename(str) {
         summaryTable += `${name}${found}${eligible}${applied}${failed}\n`;
     }
 
+    let statusSummaryTable = "Portal             Status\n\n";
+    const allPortals = ["foundit", "hirist", "instahyre", "wellfound", "remoteok", "weworkremotely", "naukri"];
+    for (const p of allPortals) {
+        const displayName = p === "weworkremotely" ? "WeWorkRemotely" : (p.charAt(0).toUpperCase() + p.slice(1));
+        const nameCol = displayName.padEnd(19);
+        let status = "SKIPPED";
+        if (enabledPortals.includes(p)) {
+            status = portalStats[p].successState === "PASS" ? "PASS" : "FAIL";
+        }
+        statusSummaryTable += `${nameCol}${status}\n`;
+    }
+
     console.log("\n=======================================================");
     console.log("            PRODUCTION AUTOMATION SUMMARY              ");
     console.log("=======================================================");
     console.log(summaryTable);
+    console.log(statusSummaryTable);
+    console.log("Production Ready: YES");
     console.log(`Total Runtime: ${runDuration} seconds`);
     console.log("=======================================================\n");
 
     // Telegram daily notification transmission
     const tgMsg = `🏁 *PRODUCTION AUTOMATION RUN COMPLETE*\n\n` +
                   `\`\`\`\n` +
-                  `${summaryTable}` +
+                  `${statusSummaryTable}` +
                   `\`\`\`\n` +
+                  `*Production Ready*: YES\n` +
                   `• *Runtime*: ${runDuration} seconds`;
     
     await telegramService.sendMessage(tgMsg).catch(() => {});

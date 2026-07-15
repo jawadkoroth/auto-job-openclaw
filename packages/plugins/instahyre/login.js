@@ -8,6 +8,8 @@ module.exports = async function login(plugin, page) {
         logger.info("Verifying active login state on Instahyre...");
         try {
             await page.goto("https://www.instahyre.com/candidate/opportunities/", { waitUntil: "domcontentloaded", timeout: 20000 });
+            await page.waitForLoadState("domcontentloaded");
+            await page.waitForTimeout(2000);
             if (await plugin.health(page)) {
                 logger.info("Existing authenticated session detected on opportunities page.");
                 return true;
@@ -18,7 +20,22 @@ module.exports = async function login(plugin, page) {
 
         const loginUrl = "https://www.instahyre.com/login/";
         logger.info(`Navigating to Instahyre login page: ${loginUrl}`);
-        await page.goto(loginUrl, { waitUntil: "networkidle", timeout: 30000 });
+        await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+        await page.waitForLoadState("domcontentloaded");
+        await page.waitForTimeout(2000);
+
+        if (process.env.HEADFUL_AUTH_SETUP === "true") {
+            logger.info("HEADFUL_AUTH_SETUP is true. Please perform Instahyre login manually in the open browser window...");
+            for (let i = 0; i < 150; i++) {
+                await page.waitForTimeout(2000);
+                if (await plugin.health(page)) {
+                    logger.info("Manual Instahyre login detected successfully!");
+                    return true;
+                }
+            }
+            logger.error("Timed out waiting for manual Instahyre login.");
+            return false;
+        }
 
         const email = config.portals.instahyre.email;
         const password = config.portals.instahyre.password;

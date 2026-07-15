@@ -1,0 +1,19 @@
+[Unit]
+Description=Job Automation Orchestrator Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/job-automation
+ExecStart=/usr/bin/node apps/orchestrator/index.js
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/job-automation/.env
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=job-orchestrator
+
+[Install]
+WantedBy=multi-user.target

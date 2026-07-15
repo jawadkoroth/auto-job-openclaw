@@ -14,7 +14,9 @@ module.exports = async function updateProfile(plugin, page) {
     }
 
     logger.info("Navigating to profile edit page...");
-    await page.goto("https://www.instahyre.com/candidate/profile/", { waitUntil: "networkidle", timeout: 30000 });
+    await page.goto("https://www.instahyre.com/candidate/profile/", { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.waitForLoadState("domcontentloaded");
+    await page.waitForTimeout(2000);
 
     const resumePath = await resumeManager.getResumePath(plugin.name).catch(() => null);
     if (resumePath) {

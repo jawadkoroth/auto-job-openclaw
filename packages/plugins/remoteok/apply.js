@@ -9,6 +9,15 @@ module.exports = async function apply(plugin, page, job) {
     await page.goto(job.url, { waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForTimeout(2000);
 
+    // Scrape description
+    const descSelector = ".description, .job-description, #job-description, #job-details";
+    const descText = await page.locator(descSelector).first().innerText().catch(() => "");
+    if (descText) {
+        job.job_description = descText;
+        const db = require("../../database");
+        await db.run("UPDATE jobs SET job_description = ? WHERE id = ?", [descText, job.id]).catch(() => {});
+    }
+
     const applyBtnSelector = "a:has-text('Apply for this job'), button:has-text('Apply for this job'), .apply";
     const hasApplyBtn = await page.locator(applyBtnSelector).count() > 0;
 
@@ -16,6 +25,7 @@ module.exports = async function apply(plugin, page, job) {
         const ctaHref = await page.locator(applyBtnSelector).first().getAttribute("href");
         if (ctaHref && (ctaHref.startsWith("http") && !ctaHref.includes("remoteok.com"))) {
             logger.warn(`Job application redirects to external site: ${ctaHref}. Skipping.`);
+            job.statusReason = "external";
             return false;
         }
 
@@ -30,14 +40,17 @@ module.exports = async function apply(plugin, page, job) {
                 await page.click(submitBtn);
                 await page.waitForTimeout(3000);
                 logger.info(`Applied successfully via direct form on RemoteOK`);
+                job.statusReason = "applied";
                 return true;
             }
         }
         
         logger.warn(`No internal apply form found. External redirection required. Skipping.`);
+        job.statusReason = "external";
         return false;
     } else {
         logger.warn(`No standard apply CTA found. Skipping.`);
+        job.statusReason = "external";
         return false;
     }
 };

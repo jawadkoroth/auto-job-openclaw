@@ -22,15 +22,26 @@ class TelegramService {
             logger.telegram.warn("Telegram credentials not configured. Skipping sendMessage.");
             return;
         }
+        const endpoint = `${this.baseUrl}/sendMessage`;
+        const payload = {
+            chat_id: this.chatId,
+            text: text,
+            parse_mode: "Markdown"
+        };
+        logger.telegram.info(`Telegram send payload: ${JSON.stringify(payload)}`);
         try {
-            await axios.post(`${this.baseUrl}/sendMessage`, {
-                chat_id: this.chatId,
-                text: text,
-                parse_mode: "Markdown"
-            });
+            await axios.post(endpoint, payload);
             logger.telegram.info("Telegram text alert sent.", { action: "telegram_send" });
         } catch (error) {
-            logger.telegram.error(`Telegram send message failed: ${error.message}`, { action: "telegram_send", success: false });
+            if (error.response && error.response.status === 400) {
+                logger.telegram.error("Telegram 400 Bad Request:", {
+                    endpoint: endpoint,
+                    payload: payload,
+                    responseBody: error.response.data
+                });
+            } else {
+                logger.telegram.error(`Telegram send message failed: ${error.message}`, { action: "telegram_send", success: false });
+            }
         }
     }
 
@@ -48,6 +59,13 @@ class TelegramService {
             logger.telegram.warn(`Photo file not found: ${photoPath}`);
             return;
         }
+        const endpoint = `${this.baseUrl}/sendPhoto`;
+        const payload = {
+            chat_id: this.chatId,
+            caption: caption,
+            photoPath: photoPath
+        };
+        logger.telegram.info(`Telegram send photo payload: ${JSON.stringify(payload)}`);
         try {
             const boundary = "----WebKitFormBoundary" + Math.random().toString(36).substring(2);
             const fileBuffer = fs.readFileSync(photoPath);
@@ -65,14 +83,22 @@ class TelegramService {
                 Buffer.from(`\r\n--${boundary}--\r\n`)
             ]);
 
-            await axios.post(`${this.baseUrl}/sendPhoto`, body, {
+            await axios.post(endpoint, body, {
                 headers: {
                     "Content-Type": `multipart/form-data; boundary=${boundary}`
                 }
             });
             logger.telegram.info(`Telegram photo alert sent: ${filename}`, { action: "telegram_send_photo" });
         } catch (error) {
-            logger.telegram.error(`Telegram send photo failed: ${error.message}`, { action: "telegram_send_photo", success: false });
+            if (error.response && error.response.status === 400) {
+                logger.telegram.error("Telegram 400 Bad Request:", {
+                    endpoint: endpoint,
+                    payload: payload,
+                    responseBody: error.response.data
+                });
+            } else {
+                logger.telegram.error(`Telegram send photo failed: ${error.message}`, { action: "telegram_send_photo", success: false });
+            }
         }
     }
 

@@ -37,8 +37,9 @@ class BrowserInstance {
             const isLinux = os.platform() === "linux";
             const userAgent = isLinux ? undefined : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
+            const isHeadfulAuth = process.env.HEADFUL_AUTH_SETUP === "true";
             const launchOptions = {
-                headless: config.browser.headless,
+                headless: isHeadfulAuth ? false : config.browser.headless,
                 viewport: config.browser.viewport,
                 userAgent: userAgent,
                 timezoneId: "Asia/Kolkata",

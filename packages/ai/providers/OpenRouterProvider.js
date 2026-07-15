@@ -40,6 +40,29 @@ class OpenRouterProvider extends BaseProvider {
         }
         return JSON.parse(content);
     }
+
+    async generateText(promptText, systemPrompt) {
+        logger.automation.info(`Executing AI completion via OpenRouter (${this.model}).`);
+        const response = await axios.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            {
+                model: this.model,
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: promptText }
+                ],
+                temperature: 0.3
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${this.apiKey}`,
+                    "Content-Type": "application/json"
+                },
+                timeout: 25000
+            }
+        );
+        return response.data.choices[0].message.content.trim();
+    }
 }
 
 module.exports = OpenRouterProvider;

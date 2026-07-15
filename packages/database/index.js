@@ -70,6 +70,27 @@ class Database {
             await this.run("ALTER TABLE jobs ADD COLUMN experience TEXT").catch(() => {});
             await this.run("ALTER TABLE jobs ADD COLUMN url TEXT").catch(() => {});
             await this.run("ALTER TABLE jobs ADD COLUMN status TEXT").catch(() => {});
+            await this.run("ALTER TABLE jobs ADD COLUMN external_url TEXT").catch(() => {});
+            await this.run("ALTER TABLE jobs ADD COLUMN ats TEXT").catch(() => {});
+            await this.run("ALTER TABLE jobs ADD COLUMN job_description TEXT").catch(() => {});
+            await this.run("ALTER TABLE jobs ADD COLUMN pending_question TEXT").catch(() => {});
+            await this.run("ALTER TABLE jobs ADD COLUMN pending_suggested_answer TEXT").catch(() => {});
+
+            // Create Q&A memory table
+            await this.run(`
+                CREATE TABLE IF NOT EXISTS qna_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    question_normalized TEXT UNIQUE NOT NULL,
+                    question_raw TEXT,
+                    answer TEXT NOT NULL,
+                    answer_type TEXT,
+                    source TEXT,
+                    confidence TEXT,
+                    approved INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_used_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
 
             // Isolated session audit logs
             await this.run(`

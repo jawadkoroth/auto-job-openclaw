@@ -19,6 +19,19 @@ module.exports = async function login(plugin, page) {
         await page.goto(loginUrl, { waitUntil: "domcontentloaded", timeout: 35000 });
         await page.waitForTimeout(3000);
 
+        if (process.env.HEADFUL_AUTH_SETUP === "true") {
+            logger.info("HEADFUL_AUTH_SETUP is true. Please perform Wellfound login manually in the open browser window...");
+            for (let i = 0; i < 150; i++) {
+                await page.waitForTimeout(2000);
+                if (await plugin.health(page)) {
+                    logger.info("Manual Wellfound login detected successfully!");
+                    return true;
+                }
+            }
+            logger.error("Timed out waiting for manual Wellfound login.");
+            return false;
+        }
+
         const email = config.portals.wellfound.email;
         const password = config.portals.wellfound.password;
         if (!email || !password) {
@@ -26,20 +39,22 @@ module.exports = async function login(plugin, page) {
         }
 
         logger.info("Entering Wellfound credentials...");
-        await page.waitForSelector("#user_email, input[name='email']", { timeout: 10000 });
-
-        await page.click("#user_email, input[name='email']");
+        const emailInput = page.locator("input[type='email'], input[name='email'], input#user_email, input#email").first();
+        await emailInput.waitFor({ timeout: 15000 });
+        await emailInput.click();
         await page.keyboard.press("Control+A");
         await page.keyboard.press("Backspace");
-        await page.keyboard.type(email, { delay: 40 });
+        await emailInput.fill(email);
 
-        await page.click("#user_password, input[name='password']");
+        const passwordInput = page.locator("input[type='password'], input[name='password'], input#user_password, input#password").first();
+        await passwordInput.click();
         await page.keyboard.press("Control+A");
         await page.keyboard.press("Backspace");
-        await page.keyboard.type(password, { delay: 40 });
+        await passwordInput.fill(password);
 
         logger.info("Submitting login form...");
-        await page.click("input[type='submit'], button[type='submit'], button:has-text('Log in')");
+        const submitBtn = page.locator("input[type='submit'], button[type='submit'], button:has-text('Log in'), button:has-text('Sign in')").first();
+        await submitBtn.click();
 
         logger.info("Waiting for dashboard redirect...");
         await page.waitForTimeout(5000);

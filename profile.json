@@ -3,8 +3,39 @@
   "email": "jawad.koroth@example.com",
   "phone": "+919999999999",
   "location": "Bangalore",
-  "headline": "DevOps Engineer | Cloud & Automation Specialist | Docker | AWS",
-  "summary": "Results-driven Software & DevOps Engineer specializing in CI/CD pipeline automation, Docker containerization, AWS cloud migrations, and automated browser testing workflows.",
-  "skills": ["Docker", "Kubernetes", "AWS", "Linux", "Node.js", "Python", "CI/CD"],
-  "experienceYears": 5
+  "preferredLocations": [
+    "Bangalore",
+    "Remote"
+  ],
+  "experienceYears": 5,
+  "currentCompany": "Example Corp",
+  "previousCompanies": [
+    "DevOps Tech Inc",
+    "Software Solutions Ltd"
+  ],
+  "noticePeriod": "30 days",
+  "immediateJoiner": "No",
+  "expectedSalary": "2000000 INR",
+  "workAuthorization": "India",
+  "visaRequirement": "No",
+  "relocationPreference": "No",
+  "remotePreference": "Yes",
+  "education": {
+    "degree": "B.Tech in Computer Science",
+    "graduationYear": 2021,
+    "university": "VTU"
+  },
+  "socials": {
+    "linkedin": "https://linkedin.com/in/jawadkoroth",
+    "github": "https://github.com/jawadkoroth",
+    "portfolio": "https://jawadkoroth.dev"
+  },
+  "qna": {
+    "Why are you interested in this role?": "I am passionate about automating infrastructure and application deployment pipelines, and this role aligns perfectly with my DevOps and cloud experience.",
+    "Describe your DevOps experience.": "I have 5 years of experience configuring CI/CD pipelines, containerizing applications with Docker, managing Kubernetes clusters, and automating cloud infrastructure.",
+    "Describe your cloud experience.": "Extensive experience with AWS services including EC2, EKS, RDS, S3, IAM, CloudWatch, and VPC architectures.",
+    "Describe CI/CD experience.": "Hands-on experience building and optimizing automated pipelines using Jenkins, GitHub Actions, and GitLab CI.",
+    "Describe Kubernetes experience.": "Proficient in configuring EKS/K8s clusters, writing deployment manifests, service meshes, helm charts, and managing cluster security.",
+    "Describe monitoring experience.": "Experienced setting up Prometheus, Grafana, and ELK stack for log monitoring and real-time infrastructure alerting."
+  }
 }

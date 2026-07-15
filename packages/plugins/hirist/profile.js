@@ -19,11 +19,16 @@ module.exports = async function updateProfile(plugin, page) {
     const resumePath = await resumeManager.getResumePath(plugin.name).catch(() => null);
     if (resumePath) {
         logger.info(`Uploading resume file to Hirist from: ${resumePath}`);
-        const fileInputSelector = "input[type='file']";
-        await page.waitForSelector(fileInputSelector, { timeout: 15000 });
-        await page.setInputFiles(fileInputSelector, resumePath);
-        logger.info("Resume file submitted.");
-        await page.waitForTimeout(4000);
+        try {
+            const fileInputSelector = "input[type='file']";
+            await page.waitForSelector(fileInputSelector, { timeout: 15000 });
+            await page.setInputFiles(fileInputSelector, resumePath);
+            logger.info("Resume file submitted.");
+            await page.waitForTimeout(4000);
+            logger.info("Resume upload succeeded.");
+        } catch (uploadErr) {
+            logger.warn(`Resume upload failed: ${uploadErr.message}. Continuing execution.`);
+        }
     }
 
     return true;

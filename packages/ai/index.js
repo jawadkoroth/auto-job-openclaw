@@ -126,6 +126,19 @@ Structure:
             args: { keywords, location }
         };
     }
+
+    async generateText(promptText, systemPrompt) {
+        if (!this.provider) {
+            throw new Error("No active AI Provider credentials found.");
+        }
+        if (typeof this.provider.generateText === "function") {
+            return this.provider.generateText(promptText, systemPrompt);
+        }
+        
+        logger.automation.warn("generateText not implemented on active provider. Attempting parseCommand format fallback.");
+        const resObj = await this.provider.parseCommand(promptText, systemPrompt);
+        return typeof resObj === "string" ? resObj : JSON.stringify(resObj);
+    }
 }
 
 module.exports = new AiService();

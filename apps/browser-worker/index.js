@@ -102,29 +102,144 @@ async function handleTask(task) {
                 break;
             }
             case "apply": {
-                // Apply to deduplicated database jobs
-                const limit = task.args.limit || 5;
+                const maxPortalLimit = parseInt(process.env.MAX_APPLICATIONS_PER_PORTAL || "5", 10);
+                const maxRunLimit = parseInt(process.env.MAX_APPLICATIONS_PER_RUN || "20", 10);
+                
+                // Track daily portal application counts
+                const todayPortalApplied = await db.get(
+                    "SELECT COUNT(*) as count FROM jobs WHERE portal = ? AND (applied = 1 OR status = 'APPLIED') AND date(timestamp) = date('now')",
+                    [portal]
+                );
+                const portalCount = todayPortalApplied ? todayPortalApplied.count : 0;
+                
+                const todayTotalApplied = await db.get(
+                    "SELECT COUNT(*) as count FROM jobs WHERE (applied = 1 OR status = 'APPLIED') AND date(timestamp) = date('now')"
+                );
+                const totalCount = todayTotalApplied ? todayTotalApplied.count : 0;
+                
+                if (portalCount >= maxPortalLimit) {
+                    logger.worker.info(`Daily application limit reached for ${portal} (${portalCount}/${maxPortalLimit}). Skipping remaining applications.`);
+                    result = { appliedCount: 0 };
+                    break;
+                }
+                
+                if (totalCount >= maxRunLimit) {
+                    logger.worker.info(`Daily run application limit reached (${totalCount}/${maxRunLimit}). Skipping remaining applications.`);
+                    result = { appliedCount: 0 };
+                    break;
+                }
+
+                // Query eligible jobs
+                const limit = Math.min(task.args.limit || 5, maxPortalLimit - portalCount);
                 const jobsToApply = await db.all(
-                    "SELECT * FROM jobs WHERE portal = ? AND applied = 0 AND ignored = 0 LIMIT ?",
+                    `SELECT * FROM jobs 
+                     WHERE portal = ? 
+                       AND applied = 0 
+                       AND ignored = 0 
+                       AND (status IS NULL OR status IN ('DISCOVERED', 'ELIGIBLE', 'FAILED'))
+                     LIMIT ?`,
                     [portal, limit]
                 );
                 
-                logger.worker.info(`Found ${jobsToApply.length} deduplicated jobs to process on ${portal}`);
+                logger.worker.info(`Found ${jobsToApply.length} eligible jobs to process on ${portal}`);
                 let appliedCount = 0;
                 
-                for (const job of jobsToApply) {
+                const resumeSelector = require("../../packages/resume/ResumeSelector");
+                const externalApplicationRouter = require("../../packages/router/ExternalApplicationRouter");
+
+                for (let i = 0; i < jobsToApply.length; i++) {
+                    const job = jobsToApply[i];
+                    
+                    // Double check limit dynamically inside loop
+                    const currentPortalCount = (await db.get(
+                        "SELECT COUNT(*) as count FROM jobs WHERE portal = ? AND (applied = 1 OR status = 'APPLIED') AND date(timestamp) = date('now')",
+                        [portal]
+                    )).count;
+                    const currentTotalCount = (await db.get(
+                        "SELECT COUNT(*) as count FROM jobs WHERE (applied = 1 OR status = 'APPLIED') AND date(timestamp) = date('now')"
+                    )).count;
+                    
+                    if (currentPortalCount >= maxPortalLimit) {
+                        logger.worker.info(`Portal daily application limit of ${maxPortalLimit} hit dynamically in loop. Skipping.`);
+                        break;
+                    }
+                    if (currentTotalCount >= maxRunLimit) {
+                        logger.worker.info(`Run daily application limit of ${maxRunLimit} hit dynamically in loop. Skipping.`);
+                        break;
+                    }
+                    
+                    // Duplicate check (portal, job_id, url)
+                    const alreadyApplied = await db.get(
+                        `SELECT id FROM jobs 
+                         WHERE ((portal = ? AND job_id = ?) OR (url = ? AND url IS NOT NULL AND url != ''))
+                           AND (applied = 1 OR status IN ('APPLIED', 'ALREADY_APPLIED'))`,
+                        [portal, job.job_id, job.url]
+                    );
+                    if (alreadyApplied) {
+                        logger.worker.info(`Skipping duplicate job: "${job.title}" at "${job.company}".`);
+                        await db.run("UPDATE jobs SET status = 'ALREADY_APPLIED', ignored = 1, reason = 'Already applied' WHERE id = ?", [job.id]);
+                        continue;
+                    }
+
+                    // Randomized delay before executing the apply action (except first)
+                    if (i > 0) {
+                        const minD = parseInt(process.env.MIN_DELAY_BETWEEN_APPLICATIONS_SECONDS || "20", 10);
+                        const maxD = parseInt(process.env.MAX_DELAY_BETWEEN_APPLICATIONS_SECONDS || "60", 10);
+                        const delaySec = Math.floor(Math.random() * (maxD - minD + 1)) + minD;
+                        logger.worker.info(`Waiting for ${delaySec} seconds before the next application...`);
+                        await new Promise(resolve => setTimeout(resolve, delaySec * 1000));
+                    }
+                    
                     try {
+                        // Mark state as APPLYING
+                        await db.run("UPDATE jobs SET status = 'APPLYING' WHERE id = ?", [job.id]);
+                        
+                        // Select resume variant
+                        const resumeType = resumeSelector.selectResume(job.title, job.job_description || "");
+                        job.resumeType = resumeType;
+                        
                         const applyOk = await plugin.apply(page, job);
+                        const statusReason = job.statusReason || "";
+                        
                         if (applyOk) {
-                            await db.run("UPDATE jobs SET applied = 1, timestamp = CURRENT_TIMESTAMP WHERE id = ?", [job.id]);
+                            if (statusReason === "alreadyApplied") {
+                                await db.run(
+                                    "UPDATE jobs SET applied = 1, status = 'ALREADY_APPLIED', reason = 'Already applied', timestamp = CURRENT_TIMESTAMP WHERE id = ?",
+                                    [job.id]
+                                );
+                            } else if (statusReason === "clicked_unverified") {
+                                await db.run(
+                                    "UPDATE jobs SET applied = 1, status = 'CLICKED_UNVERIFIED', reason = 'Clicked but unverified', timestamp = CURRENT_TIMESTAMP WHERE id = ?",
+                                    [job.id]
+                                );
+                            } else {
+                                await db.run(
+                                    "UPDATE jobs SET applied = 1, status = 'APPLIED', reason = 'Successfully applied', timestamp = CURRENT_TIMESTAMP WHERE id = ?",
+                                    [job.id]
+                                );
+                            }
                             appliedCount++;
                             eventBus.emit("JobApplied", { portal, job });
                         } else {
-                            await db.run("UPDATE jobs SET ignored = 1, reason = 'Selector action failed' WHERE id = ?", [job.id]);
+                            if (statusReason === "questionnaire") {
+                                await db.run(
+                                    "UPDATE jobs SET status = 'WAITING_FOR_INPUT', reason = 'Questionnaire' WHERE id = ?",
+                                    [job.id]
+                                );
+                            } else if (statusReason === "external") {
+                                let extUrl = job.externalUrl || job.url;
+                                const ats = await externalApplicationRouter.route(job, extUrl);
+                                logger.worker.info(`Job ${job.job_id} routed to external ATS queue: ${ats}`);
+                            } else {
+                                await db.run(
+                                    "UPDATE jobs SET status = 'FAILED', reason = 'Selector action failed' WHERE id = ?",
+                                    [job.id]
+                                );
+                            }
                         }
                     } catch (applyErr) {
                         logger.worker.error(`Application crash for job ${job.job_id}: ${applyErr.message}`);
-                        await db.run("UPDATE jobs SET ignored = 1, reason = ? WHERE id = ?", [applyErr.message, job.id]);
+                        await db.run("UPDATE jobs SET status = 'FAILED', reason = ? WHERE id = ?", [applyErr.message, job.id]);
                     }
                 }
                 result = { appliedCount };

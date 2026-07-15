@@ -18,7 +18,7 @@ module.exports = async function search(plugin, page, queryOptions = {}) {
             continue;
         }
 
-        const cardSelector = ".new-listing-container";
+        const cardSelector = "li.new-listing-container";
         await page.waitForSelector(cardSelector, { timeout: 15000 }).catch(() => {
             logger.warn("No job listings found matching card selector on WeWorkRemotely.");
         });
@@ -32,6 +32,7 @@ module.exports = async function search(plugin, page, queryOptions = {}) {
                 const item = jobListings.nth(i);
                 
                 const linkLoc = item.locator("a[href*='/remote-jobs/']").first();
+                if (await linkLoc.count() === 0) continue;
                 let url = await linkLoc.getAttribute("href");
                 if (!url) continue;
 

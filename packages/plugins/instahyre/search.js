@@ -9,7 +9,9 @@ module.exports = async function search(plugin, page, queryOptions = {}) {
 
     logger.info("Navigating to Instahyre Opportunities page...");
     try {
-        await page.goto("https://www.instahyre.com/candidate/opportunities/", { waitUntil: "networkidle", timeout: 30000 });
+        await page.goto("https://www.instahyre.com/candidate/opportunities/", { waitUntil: "domcontentloaded", timeout: 30000 });
+        await page.waitForLoadState("domcontentloaded");
+        await page.waitForTimeout(2000);
     } catch (e) {
         logger.error(`Navigation failed: ${e.message}`);
         return [];

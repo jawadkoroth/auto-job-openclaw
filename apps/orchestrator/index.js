@@ -48,144 +48,144 @@ function registerCron(cronTime, label, portal, action, args = {}) {
     }
 }
 
-// 09:00 Profile Update & Job Search (populating DB) - Naukri is ON HOLD
-// registerCron("0 9 * * *", "Morning Naukri Profile Update", "naukri", "updateProfile");
-// registerCron("0 9 * * *", "Morning Naukri Job Search", "naukri", "search", { keywords: "Software Engineer", location: "Bangalore" });
+// Determine active portals dynamically from configuration and environment flags
+const portals = Object.keys(config.portals || {});
+const activePortals = portals.filter(portal => {
+    if (portal === "naukri" || portal === "linkedin") return false;
+    const envKey = `ENABLE_${portal.toUpperCase()}`;
+    let envVal = process.env[envKey];
+    if (portal === "weworkremotely" && envVal === undefined) {
+        envVal = process.env.ENABLE_WWR;
+    }
+    if (envVal !== undefined) {
+        return envVal.toLowerCase() === "true";
+    }
+    return true; // default enabled
+});
 
-// 09:05 Apply Jobs - Naukri is ON HOLD
-// registerCron("5 9 * * *", "Morning Naukri Job Apply", "naukri", "apply", { limit: 10 });
+logger.scheduler.info(`Active portals loaded: ${activePortals.join(", ")}`);
 
-// 14:00 Profile Update & Job Search - Naukri is ON HOLD
-// registerCron("0 14 * * *", "Afternoon Naukri Profile Update", "naukri", "updateProfile");
-// registerCron("0 14 * * *", "Afternoon Naukri Job Search", "naukri", "search", { keywords: "Software Engineer", location: "Bangalore" });
-
-// 14:05 Apply Jobs - Naukri is ON HOLD
-// registerCron("5 14 * * *", "Afternoon Naukri Job Apply", "naukri", "apply", { limit: 10 });
-
-// Register production schedules for each active portal independently
-const activePortals = ["instahyre", "hirist", "foundit", "wellfound", "remoteok", "weworkremotely"];
-
+// Setup Cron schedules for enabled active portals
 for (const portal of activePortals) {
+    const keywords = process.env.SEARCH_KEYWORDS || "DevOps Engineer";
+    
     // 09:00 Profile Refresh & Search
     registerCron("0 9 * * *", `Morning ${portal} Profile Refresh`, portal, "updateProfile");
-    registerCron("0 9 * * *", `Morning ${portal} Job Search`, portal, "search");
+    registerCron("0 9 * * *", `Morning ${portal} Job Search`, portal, "search", { keywords });
     
     // 09:05 Apply
     registerCron("5 9 * * *", `Morning ${portal} Job Apply`, portal, "apply", { limit: 10 });
     
     // 14:00 Profile Refresh & Search
     registerCron("0 14 * * *", `Afternoon ${portal} Profile Refresh`, portal, "updateProfile");
-    registerCron("0 14 * * *", `Afternoon ${portal} Job Search`, portal, "search");
+    registerCron("0 14 * * *", `Afternoon ${portal} Job Search`, portal, "search", { keywords });
     
     // 14:05 Apply
     registerCron("5 14 * * *", `Afternoon ${portal} Job Apply`, portal, "apply", { limit: 10 });
 }
 
-// Daily Summary cron at 20:00 (8:00 PM)
+// Daily Summary cron at 20:00 (8:00 PM IST)
 try {
     new CronJob("0 20 * * *", async () => {
         logger.scheduler.info("Triggering Daily Summary metrics computation...");
         await db.init();
         
         let summaryRows = [];
-        for (const portal of activePortals) {
+        let totalJobsFound = 0;
+        let totalEligible = 0;
+        let successfullyApplied = 0;
+        let waitingForInput = 0;
+        let externalUnsupported = 0;
+        let failed = 0;
+
+        for (const portal of ["foundit", "hirist", "instahyre", "wellfound", "remoteok", "weworkremotely"]) {
             try {
-                // Jobs Found today
+                // Found today
                 const foundRes = await db.get(
                     "SELECT COUNT(*) as count FROM jobs WHERE portal = ? AND date(timestamp) = date('now')",
                     [portal]
                 );
                 const found = foundRes ? foundRes.count : 0;
+                totalJobsFound += found;
+                
+                // Eligible today
+                const eligibleRes = await db.get(
+                    `SELECT COUNT(*) as count FROM jobs 
+                     WHERE portal = ? 
+                       AND (applied = 1 OR status IN ('ELIGIBLE', 'APPLIED', 'CLICKED_UNVERIFIED', 'EXTERNAL_PENDING', 'WAITING_FOR_INPUT'))
+                       AND date(timestamp) = date('now')`,
+                    [portal]
+                );
+                const eligible = eligibleRes ? eligibleRes.count : 0;
+                totalEligible += eligible;
                 
                 // Applied today
                 const appliedRes = await db.get(
-                    "SELECT COUNT(*) as count FROM jobs WHERE portal = ? AND applied = 1 AND date(timestamp) = date('now')",
+                    `SELECT COUNT(*) as count FROM jobs 
+                     WHERE portal = ? AND (applied = 1 OR status = 'APPLIED') AND date(timestamp) = date('now')`,
                     [portal]
                 );
                 const applied = appliedRes ? appliedRes.count : 0;
-                
-                // Already Applied today
-                const alreadyAppliedRes = await db.get(
-                    "SELECT COUNT(*) as count FROM jobs WHERE portal = ? AND ignored = 1 AND reason = 'Already applied' AND date(timestamp) = date('now')",
-                    [portal]
-                );
-                const alreadyApplied = alreadyAppliedRes ? alreadyAppliedRes.count : 0;
+                successfullyApplied += applied;
                 
                 // External today
                 const externalRes = await db.get(
-                    "SELECT COUNT(*) as count FROM jobs WHERE portal = ? AND ignored = 1 AND reason = 'External redirect' AND date(timestamp) = date('now')",
+                    `SELECT COUNT(*) as count FROM jobs 
+                     WHERE portal = ? AND status = 'EXTERNAL_PENDING' AND date(timestamp) = date('now')`,
                     [portal]
                 );
                 const external = externalRes ? externalRes.count : 0;
+                externalUnsupported += external;
                 
-                // Questionnaire today
-                const questionnaireRes = await db.get(
-                    "SELECT COUNT(*) as count FROM jobs WHERE portal = ? AND ignored = 1 AND reason = 'Questionnaire' AND date(timestamp) = date('now')",
+                // Waiting today
+                const waitingRes = await db.get(
+                    `SELECT COUNT(*) as count FROM jobs 
+                     WHERE portal = ? AND status = 'WAITING_FOR_INPUT' AND date(timestamp) = date('now')`,
                     [portal]
                 );
-                const questionnaire = questionnaireRes ? questionnaireRes.count : 0;
+                const waiting = waitingRes ? waitingRes.count : 0;
+                waitingForInput += waiting;
 
                 // Failed today
                 const failedRes = await db.get(
-                    "SELECT COUNT(*) as count FROM jobs WHERE portal = ? AND ignored = 1 AND reason = 'Verification Failed' AND date(timestamp) = date('now')",
+                    `SELECT COUNT(*) as count FROM jobs 
+                     WHERE portal = ? AND status = 'FAILED' AND date(timestamp) = date('now')`,
                     [portal]
                 );
-                const failed = failedRes ? failedRes.count : 0;
-                
-                // Skipped today
-                const skippedRes = await db.get(
-                    "SELECT COUNT(*) as count FROM jobs WHERE portal = ? AND ignored = 1 AND date(timestamp) = date('now')",
-                    [portal]
-                );
-                const skipped = skippedRes ? skippedRes.count : 0;
-                
-                // Eligible today (Found - Filter Mismatches)
-                const mismatchRes = await db.get(
-                    "SELECT COUNT(*) as count FROM jobs WHERE portal = ? AND ignored = 1 AND reason IN ('Keyword mismatch', 'Location mismatch', 'Experience mismatch') AND date(timestamp) = date('now')",
-                    [portal]
-                );
-                const mismatchCount = mismatchRes ? mismatchRes.count : 0;
-                const eligible = Math.max(0, found - mismatchCount);
-                
-                // Execution Time (duration of tasks today)
-                const tasksToday = await db.all(
-                    "SELECT created_at, updated_at FROM tasks WHERE portal = ? AND date(created_at) = date('now')",
-                    [portal]
-                );
-                let totalSec = 0;
-                for (const t of tasksToday) {
-                    const diff = new Date(t.updated_at) - new Date(t.created_at);
-                    if (diff > 0) totalSec += diff / 1000;
-                }
-                const execTime = totalSec > 60 ? `${Math.floor(totalSec / 60)}m ${Math.floor(totalSec % 60)}s` : `${Math.floor(totalSec)}s`;
+                const failedCount = failedRes ? failedRes.count : 0;
+                failed += failedCount;
                 
                 summaryRows.push({
                     portal,
                     found,
                     eligible,
                     applied,
-                    skipped,
-                    alreadyApplied,
                     external,
-                    questionnaire,
-                    failed,
-                    execTime
+                    waiting,
+                    failed: failedCount
                 });
             } catch (err) {
                 logger.scheduler.error(`Failed to collect summary for ${portal}: ${err.message}`);
             }
         }
 
-        // Format Daily Summary message as requested
-        let message = `📊 *Daily Job Automation Summary*\n\n`;
-        message += "```\n";
-        message += "Portal | Found | Eligible | Applied | Skipped | Already | External | Quest | Failed | Time\n";
-        message += "-----------------------------------------------------------------------------------------\n";
+        // Format Daily Summary message exactly as requested
+        let message = `🏁 *JOB AUTOMATION DAILY SUMMARY*\n\n`;
+        message += "Portal | Found | Eligible | Applied | External | Waiting | Failed\n";
+        message += "---------------------------------------------------------\n";
         for (const row of summaryRows) {
-            message += `${row.portal} | ${row.found} | ${row.eligible} | ${row.applied} | ${row.skipped} | ${row.alreadyApplied} | ${row.external} | ${row.questionnaire} | ${row.failed} | ${row.execTime}\n`;
+            message += `${row.portal} | ${row.found} | ${row.eligible} | ${row.applied} | ${row.external} | ${row.waiting} | ${row.failed}\n`;
         }
-        message += "```\n";
-        message += `Status: Operational 🟢`;
+        message += "\n";
+        message += `• *Total Jobs Found*: ${totalJobsFound}\n`;
+        message += `• *Total Eligible*: ${totalEligible}\n`;
+        message += `• *Successfully Applied*: ${successfullyApplied}\n`;
+        message += `• *Waiting for Input*: ${waitingForInput}\n`;
+        message += `• *External Unsupported*: ${externalUnsupported}\n`;
+        message += `• *Failed*: ${failed}\n\n`;
+        
+        // Next Scheduled Run Calculation
+        message += `📅 *Next Scheduled Run*: Tomorrow 09:00 IST`;
 
         await telegramService.sendMessage(message);
     }, null, true, "Asia/Kolkata");
@@ -203,9 +203,9 @@ telegramService.startPolling(async (message) => {
             await telegramService.sendMessage(
                 `👋 *OpenClaw AI Orchestrator Online!*\n\n` +
                 `Send commands to queue operations:\n` +
-                `• _"Search for DevOps jobs in Bangalore on Naukri"_\n` +
-                `• _"Apply to jobs on Naukri"_\n` +
-                `• _"Update my Naukri profile"_\n\n` +
+                `• _"Search for DevOps jobs"_ \n` +
+                `• _"Apply to jobs on Hirist"_\n` +
+                `• _"Update my profile"_\n\n` +
                 `Use /status to inspect queue health.`
             );
         } else if (text === "/status") {
@@ -214,6 +214,45 @@ telegramService.startPolling(async (message) => {
                 `🟢 *System Health*: Operational\n` +
                 `• *Queued tasks*: ${pendingCount}\n` +
                 `• *Scheduler*: active`
+            );
+        } else if (text.startsWith("/approve")) {
+            const parts = text.split(" ");
+            const jobId = parts[1];
+            if (!jobId) {
+                await telegramService.sendMessage("❌ Usage: `/approve <job_id> [optional custom answer]`");
+                return;
+            }
+            
+            await db.init();
+            const job = await db.get("SELECT * FROM jobs WHERE id = ?", [jobId]);
+            if (!job) {
+                await telegramService.sendMessage(`❌ Job with ID \`${jobId}\` not found in database.`);
+                return;
+            }
+            
+            let finalAnswer = parts.slice(2).join(" ").trim();
+            if (!finalAnswer) {
+                finalAnswer = job.pending_suggested_answer || "Yes";
+            }
+            
+            // Save to Q&A memory
+            const normalizedQ = job.pending_question ? job.pending_question.toLowerCase().replace(/[^a-z0-9]/g, "").trim() : "default_q";
+            await db.run(
+                `INSERT OR REPLACE INTO qna_memory (question_normalized, question_raw, answer, answer_type, source, approved)
+                 VALUES (?, ?, ?, 'APPROVED', 'TELEGRAM', 1)`,
+                [normalizedQ, job.pending_question, finalAnswer]
+            );
+            
+            // Set job back to ELIGIBLE (or status = 'ELIGIBLE') and clear pending
+            await db.run(
+                "UPDATE jobs SET status = 'ELIGIBLE', ignored = 0, applied = 0, pending_question = NULL, pending_suggested_answer = NULL WHERE id = ?",
+                [jobId]
+            );
+            
+            await telegramService.sendMessage(
+                `✅ *Approved answer for ${job.company} - ${job.title}*:\n` +
+                `_"${finalAnswer}"_\n\n` +
+                `The job has been marked as *ELIGIBLE* and will be applied to during the next scheduler run.`
             );
         } else {
             await telegramService.sendMessage(`❓ Command not recognized. Send /start to get help.`);
