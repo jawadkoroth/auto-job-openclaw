@@ -51,7 +51,7 @@ async function checkHealth() {
     }
 
     // 3. Telegram config
-    const hasTgToken = !!config.telegram.token;
+    const hasTgToken = !!config.telegram.botToken;
     const hasTgChat = !!config.telegram.chatId;
     health.telegram = (hasTgToken && hasTgChat) ? "OK" : "MISSING CONFIG";
 
@@ -80,25 +80,25 @@ async function checkHealth() {
 
     // Print summary stats from SQLite
     let enabledPortals = [];
+    let portalStatuses = [];
     let lastRun = "N/A";
     let lastApplication = "N/A";
     let pendingExternal = 0;
     let waitingForInput = 0;
 
     if (health.database === "OK") {
-        const portalsList = Object.keys(config.portals || {});
-        enabledPortals = portalsList.filter(portal => {
-            if (portal === "naukri" || portal === "linkedin") return false;
-            const envKey = `ENABLE_${portal.toUpperCase()}`;
-            let envVal = process.env[envKey];
-            if (portal === "weworkremotely" && envVal === undefined) {
-                envVal = process.env.ENABLE_WWR;
+        const { validatePortalConfig } = require("../packages/config/validation");
+        const portalsList = ["foundit", "hirist", "instahyre", "wellfound", "remoteok", "weworkremotely"];
+        
+        for (const portal of portalsList) {
+            const validation = await validatePortalConfig(portal);
+            if (validation.status !== "SKIPPED") {
+                enabledPortals.push(portal);
+                portalStatuses.push(`${portal}: ${validation.status}`);
+            } else {
+                portalStatuses.push(`${portal}: SKIPPED`);
             }
-            if (envVal !== undefined) {
-                return envVal.toLowerCase() === "true";
-            }
-            return true;
-        });
+        }
 
         // Last task run
         const lastTask = await db.get("SELECT updated_at FROM tasks ORDER BY updated_at DESC LIMIT 1");
@@ -134,6 +134,9 @@ async function checkHealth() {
     console.log(`Candidate Profile: ${hasProfile ? "FOUND" : "MISSING"}`);
     console.log("");
     console.log(`Enabled Portals: ${enabledPortals.join(", ") || "None"}`);
+    console.log(`Portal Statuses:`);
+    portalStatuses.forEach(s => console.log(`  - ${s}`));
+    console.log("");
     console.log(`Last Run: ${lastRun}`);
     console.log(`Last Application: ${lastApplication}`);
     console.log(`Pending External Applications: ${pendingExternal}`);

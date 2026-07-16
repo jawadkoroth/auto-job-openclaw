@@ -28,19 +28,23 @@ function sanitizeFilename(str) {
     logger.automation.info("=== Starting Production Job Automation ===");
     const runStart = Date.now();
     
-    // Determine enabled portals from config and env flags
+    // Determine enabled portals from config and env flags using validation
+    const { validatePortalConfig } = require("../packages/config/validation");
     const portals = Object.keys(config.portals);
-    const enabledPortals = portals.filter(portal => {
-        const envKey = `ENABLE_${portal.toUpperCase()}`;
-        const envVal = process.env[envKey];
-        if (envVal !== undefined) {
-            return envVal.toLowerCase() === "true";
+    const enabledPortals = [];
+    const portalStatuses = {};
+
+    for (const portal of portals) {
+        const validation = await validatePortalConfig(portal);
+        portalStatuses[portal] = validation.status;
+        if (validation.status === "PASS") {
+            enabledPortals.push(portal);
+        } else if (validation.status === "CONFIG_REQUIRED") {
+            logger.automation.warn(`[${portal}] CONFIG_REQUIRED: Missing authentication configuration. Required: ${validation.requiredMessage}`);
+        } else if (validation.status === "AUTH_REQUIRED") {
+            logger.automation.warn(`[${portal}] AUTH_REQUIRED: Session expired. Skipping portal.`);
         }
-        // Defaults if not specified
-        if (portal === "linkedin") return false;
-        if (portal === "naukri") return false;
-        return true;
-    });
+    }
 
     logger.automation.info(`Active portals for this run: ${enabledPortals.join(", ")}`);
 
@@ -346,19 +350,22 @@ function sanitizeFilename(str) {
     for (const p of allPortals) {
         const displayName = p === "weworkremotely" ? "WeWorkRemotely" : (p.charAt(0).toUpperCase() + p.slice(1));
         const nameCol = displayName.padEnd(19);
-        let status = "SKIPPED";
+        let status = portalStatuses[p] || "SKIPPED";
         if (enabledPortals.includes(p)) {
             status = portalStats[p].successState === "PASS" ? "PASS" : "FAIL";
         }
         statusSummaryTable += `${nameCol}${status}\n`;
     }
 
+    const hasConfigRequired = Object.values(portalStatuses).some(s => s === "CONFIG_REQUIRED");
+    const isProductionReady = hasConfigRequired ? "NO" : "YES";
+
     console.log("\n=======================================================");
     console.log("            PRODUCTION AUTOMATION SUMMARY              ");
     console.log("=======================================================");
     console.log(summaryTable);
     console.log(statusSummaryTable);
-    console.log("Production Ready: YES");
+    console.log(`Production Ready: ${isProductionReady}`);
     console.log(`Total Runtime: ${runDuration} seconds`);
     console.log("=======================================================\n");
 
@@ -367,7 +374,7 @@ function sanitizeFilename(str) {
                   `\`\`\`\n` +
                   `${statusSummaryTable}` +
                   `\`\`\`\n` +
-                  `*Production Ready*: YES\n` +
+                  `*Production Ready*: ${isProductionReady}\n` +
                   `• *Runtime*: ${runDuration} seconds`;
     
     await telegramService.sendMessage(tgMsg).catch(() => {});

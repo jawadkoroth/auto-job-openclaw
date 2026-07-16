@@ -49,40 +49,58 @@ function registerCron(cronTime, label, portal, action, args = {}) {
 }
 
 // Determine active portals dynamically from configuration and environment flags
-const portals = Object.keys(config.portals || {});
-const activePortals = portals.filter(portal => {
-    if (portal === "naukri" || portal === "linkedin") return false;
-    const envKey = `ENABLE_${portal.toUpperCase()}`;
-    let envVal = process.env[envKey];
-    if (portal === "weworkremotely" && envVal === undefined) {
-        envVal = process.env.ENABLE_WWR;
-    }
-    if (envVal !== undefined) {
-        return envVal.toLowerCase() === "true";
-    }
-    return true; // default enabled
-});
+const { validatePortalConfig } = require("../../packages/config/validation");
 
-logger.scheduler.info(`Active portals loaded: ${activePortals.join(", ")}`);
+// Initialize schedules after database and portal validation
+(async () => {
+    await db.init();
 
-// Setup Cron schedules for enabled active portals
-for (const portal of activePortals) {
-    const keywords = process.env.SEARCH_KEYWORDS || "DevOps Engineer";
-    
-    // 09:00 Profile Refresh & Search
-    registerCron("0 9 * * *", `Morning ${portal} Profile Refresh`, portal, "updateProfile");
-    registerCron("0 9 * * *", `Morning ${portal} Job Search`, portal, "search", { keywords });
-    
-    // 09:05 Apply
-    registerCron("5 9 * * *", `Morning ${portal} Job Apply`, portal, "apply", { limit: 10 });
-    
-    // 14:00 Profile Refresh & Search
-    registerCron("0 14 * * *", `Afternoon ${portal} Profile Refresh`, portal, "updateProfile");
-    registerCron("0 14 * * *", `Afternoon ${portal} Job Search`, portal, "search", { keywords });
-    
-    // 14:05 Apply
-    registerCron("5 14 * * *", `Afternoon ${portal} Job Apply`, portal, "apply", { limit: 10 });
-}
+    const portals = Object.keys(config.portals || {});
+    const activePortals = [];
+
+    for (const portal of portals) {
+        try {
+            const validation = await validatePortalConfig(portal);
+            if (validation.status === "SKIPPED") {
+                logger.scheduler.info(`Portal [${portal}] is disabled/skipped.`);
+                continue;
+            }
+            if (validation.status === "CONFIG_REQUIRED") {
+                logger.scheduler.warn(`[${portal}] CONFIG_REQUIRED: Missing authentication configuration.`);
+                logger.scheduler.warn(`Required: ${validation.requiredMessage}`);
+                continue;
+            }
+            if (validation.status === "AUTH_REQUIRED") {
+                logger.scheduler.warn(`[${portal}] AUTH_REQUIRED: Session expired. Skipping automatic runs.`);
+                continue;
+            }
+            activePortals.push(portal);
+        } catch (err) {
+            logger.scheduler.error(`Failed to validate config for portal ${portal}: ${err.message}`);
+        }
+    }
+
+    logger.scheduler.info(`Active configured portals for scheduled runs: ${activePortals.join(", ")}`);
+
+    // Setup Cron schedules for enabled and configured active portals
+    for (const portal of activePortals) {
+        const keywords = process.env.SEARCH_KEYWORDS || "DevOps Engineer";
+        
+        // 09:00 Profile Maintenance / Update Tasks
+        registerCron("0 9 * * *", `Morning ${portal} Profile Refresh`, portal, "updateProfile");
+        
+        // 09:05 Job Search and Application run
+        registerCron("5 9 * * *", `Morning ${portal} Job Search`, portal, "search", { keywords });
+        registerCron("5 9 * * *", `Morning ${portal} Job Apply`, portal, "apply", { limit: 10 });
+        
+        // 14:00 Profile Maintenance / Update Tasks
+        registerCron("0 14 * * *", `Afternoon ${portal} Profile Refresh`, portal, "updateProfile");
+        
+        // 14:05 Job Search and Application run
+        registerCron("5 14 * * *", `Afternoon ${portal} Job Search`, portal, "search", { keywords });
+        registerCron("5 14 * * *", `Afternoon ${portal} Job Apply`, portal, "apply", { limit: 10 });
+    }
+})();
 
 // Daily Summary cron at 20:00 (8:00 PM IST)
 try {
@@ -94,12 +112,31 @@ try {
         let totalJobsFound = 0;
         let totalEligible = 0;
         let successfullyApplied = 0;
-        let waitingForInput = 0;
-        let externalUnsupported = 0;
-        let failed = 0;
+        let totalAlreadyApplied = 0;
+        let totalExternalPending = 0;
+        let totalWaitingForInput = 0;
+        let totalQuestionnaireSkipped = 0;
+        let totalFailed = 0;
 
-        for (const portal of ["foundit", "hirist", "instahyre", "wellfound", "remoteok", "weworkremotely"]) {
+        const portalsList = ["foundit", "hirist", "instahyre", "wellfound", "remoteok", "weworkremotely"];
+
+        for (const portal of portalsList) {
             try {
+                // Get portal execution status (PASS/FAIL/CONFIG_REQUIRED/AUTH_REQUIRED/SKIPPED)
+                const validation = await validatePortalConfig(portal);
+                let portalStatus = validation.status;
+
+                if (portalStatus === "PASS") {
+                    // Check if there was any task failure today for this portal
+                    const taskFail = await db.get(
+                        "SELECT COUNT(*) as count FROM tasks WHERE portal = ? AND status = 'failed' AND date(created_at) = date('now')",
+                        [portal]
+                    );
+                    if (taskFail && taskFail.count > 0) {
+                        portalStatus = "FAIL";
+                    }
+                }
+
                 // Found today
                 const foundRes = await db.get(
                     "SELECT COUNT(*) as count FROM jobs WHERE portal = ? AND date(timestamp) = date('now')",
@@ -128,6 +165,15 @@ try {
                 const applied = appliedRes ? appliedRes.count : 0;
                 successfullyApplied += applied;
                 
+                // Already Applied today
+                const alreadyAppliedRes = await db.get(
+                    `SELECT COUNT(*) as count FROM jobs 
+                     WHERE portal = ? AND status = 'ALREADY_APPLIED' AND date(timestamp) = date('now')`,
+                    [portal]
+                );
+                const alreadyApplied = alreadyAppliedRes ? alreadyAppliedRes.count : 0;
+                totalAlreadyApplied += alreadyApplied;
+
                 // External today
                 const externalRes = await db.get(
                     `SELECT COUNT(*) as count FROM jobs 
@@ -135,7 +181,7 @@ try {
                     [portal]
                 );
                 const external = externalRes ? externalRes.count : 0;
-                externalUnsupported += external;
+                totalExternalPending += external;
                 
                 // Waiting today
                 const waitingRes = await db.get(
@@ -144,7 +190,16 @@ try {
                     [portal]
                 );
                 const waiting = waitingRes ? waitingRes.count : 0;
-                waitingForInput += waiting;
+                totalWaitingForInput += waiting;
+
+                // Questionnaire Skipped today
+                const qnSkippedRes = await db.get(
+                    `SELECT COUNT(*) as count FROM jobs 
+                     WHERE portal = ? AND status = 'QUESTIONNAIRE_SKIPPED' AND date(timestamp) = date('now')`,
+                    [portal]
+                );
+                const qnSkipped = qnSkippedRes ? qnSkippedRes.count : 0;
+                totalQuestionnaireSkipped += qnSkipped;
 
                 // Failed today
                 const failedRes = await db.get(
@@ -153,36 +208,47 @@ try {
                     [portal]
                 );
                 const failedCount = failedRes ? failedRes.count : 0;
-                failed += failedCount;
+                totalFailed += failedCount;
                 
                 summaryRows.push({
                     portal,
                     found,
                     eligible,
                     applied,
+                    alreadyApplied,
                     external,
                     waiting,
-                    failed: failedCount
+                    qnSkipped,
+                    failed: failedCount,
+                    status: portalStatus
                 });
             } catch (err) {
                 logger.scheduler.error(`Failed to collect summary for ${portal}: ${err.message}`);
             }
         }
 
+        // Fetch remaining limits and counts across all time
+        const dbWaitingCount = (await db.get("SELECT COUNT(*) as count FROM jobs WHERE status = 'WAITING_FOR_INPUT'")).count;
+        const dbExternalCount = (await db.get("SELECT COUNT(*) as count FROM jobs WHERE status = 'EXTERNAL_PENDING'")).count;
+
+        const maxRunLimit = parseInt(process.env.MAX_APPLICATIONS_PER_RUN || "20", 10);
+        const remainingLimit = Math.max(0, maxRunLimit - successfullyApplied);
+
         // Format Daily Summary message exactly as requested
         let message = `🏁 *JOB AUTOMATION DAILY SUMMARY*\n\n`;
-        message += "Portal | Found | Eligible | Applied | External | Waiting | Failed\n";
-        message += "---------------------------------------------------------\n";
+        message += "```\n";
+        message += "Portal | Found | Eligible | Applied | Already | External | Waiting | QnSkip | Failed | Status\n";
+        message += "------------------------------------------------------------------------------------------\n";
         for (const row of summaryRows) {
-            message += `${row.portal} | ${row.found} | ${row.eligible} | ${row.applied} | ${row.external} | ${row.waiting} | ${row.failed}\n`;
+            message += `${row.portal.padEnd(8)} | ${String(row.found).padEnd(5)} | ${String(row.eligible).padEnd(8)} | ${String(row.applied).padEnd(7)} | ${String(row.alreadyApplied).padEnd(7)} | ${String(row.external).padEnd(8)} | ${String(row.waiting).padEnd(7)} | ${String(row.qnSkipped).padEnd(6)} | ${String(row.failed).padEnd(6)} | ${row.status}\n`;
         }
-        message += "\n";
-        message += `• *Total Jobs Found*: ${totalJobsFound}\n`;
-        message += `• *Total Eligible*: ${totalEligible}\n`;
-        message += `• *Successfully Applied*: ${successfullyApplied}\n`;
-        message += `• *Waiting for Input*: ${waitingForInput}\n`;
-        message += `• *External Unsupported*: ${externalUnsupported}\n`;
-        message += `• *Failed*: ${failed}\n\n`;
+        message += "```\n\n";
+        message += `• *Total Applications Today*: ${successfullyApplied}\n`;
+        message += `• *Remaining Application Limit*: ${remainingLimit}\n`;
+        message += `• *Pending External Applications*: ${dbExternalCount}\n`;
+        message += `• *Waiting for User Input*: ${dbWaitingCount}\n`;
+        message += `• *Scheduler Status*: active\n`;
+        message += `• *Worker Status*: active\n\n`;
         
         // Next Scheduled Run Calculation
         message += `📅 *Next Scheduled Run*: Tomorrow 09:00 IST`;

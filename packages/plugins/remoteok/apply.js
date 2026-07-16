@@ -25,6 +25,7 @@ module.exports = async function apply(plugin, page, job) {
         const ctaHref = await page.locator(applyBtnSelector).first().getAttribute("href");
         if (ctaHref && (ctaHref.startsWith("http") && !ctaHref.includes("remoteok.com"))) {
             logger.warn(`Job application redirects to external site: ${ctaHref}. Skipping.`);
+            job.externalUrl = ctaHref;
             job.statusReason = "external";
             return false;
         }

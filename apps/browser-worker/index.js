@@ -32,12 +32,25 @@ async function handleTask(task) {
         // Verify active login session before running updates or applies
         if (action !== "login") {
             logger.worker.info(`Verifying session health status for: ${portal}...`);
-            const isSessionHealthy = await plugin.health(page);
+            let isSessionHealthy = false;
+            try {
+                isSessionHealthy = await plugin.health(page);
+            } catch (healthErr) {
+                logger.worker.warn(`Session health check failed: ${healthErr.message}`);
+            }
             if (!isSessionHealthy) {
                 logger.worker.warn(`Session for ${portal} expired or invalid. Running re-login...`);
-                const loginSuccess = await plugin.login(page);
-                if (!loginSuccess) {
-                    throw new Error(`Failed to restore session login for ${portal}.`);
+                try {
+                    const loginSuccess = await plugin.login(page);
+                    if (!loginSuccess) {
+                        const contextManager = require("../../packages/browser/ContextManager");
+                        await contextManager.updateMetadata(portal, { sessionHealth: "auth_required" });
+                        throw new Error(`AUTH_REQUIRED: Failed to restore session login for ${portal}. Credentials may be invalid or session has expired.`);
+                    }
+                } catch (loginErr) {
+                    const contextManager = require("../../packages/browser/ContextManager");
+                    await contextManager.updateMetadata(portal, { sessionHealth: "auth_required" });
+                    throw new Error(`AUTH_REQUIRED: Login crashed or failed for ${portal}: ${loginErr.message}`);
                 }
             }
         }
@@ -45,13 +58,24 @@ async function handleTask(task) {
         // 3. Execute business logic action
         switch (action) {
             case "login": {
-                const loginOk = await plugin.login(page);
-                if (loginOk) {
-                    eventBus.emit("LoginSucceeded", { portal, taskId: task.id });
-                    result = { success: true };
-                } else {
+                try {
+                    const loginOk = await plugin.login(page);
+                    if (loginOk) {
+                        const contextManager = require("../../packages/browser/ContextManager");
+                        await contextManager.updateMetadata(portal, { sessionHealth: "healthy" });
+                        eventBus.emit("LoginSucceeded", { portal, taskId: task.id });
+                        result = { success: true };
+                    } else {
+                        const contextManager = require("../../packages/browser/ContextManager");
+                        await contextManager.updateMetadata(portal, { sessionHealth: "auth_required" });
+                        eventBus.emit("LoginFailed", { portal, taskId: task.id });
+                        throw new Error("AUTH_REQUIRED: Plugin login failed verification.");
+                    }
+                } catch (loginErr) {
+                    const contextManager = require("../../packages/browser/ContextManager");
+                    await contextManager.updateMetadata(portal, { sessionHealth: "auth_required" });
                     eventBus.emit("LoginFailed", { portal, taskId: task.id });
-                    throw new Error("Plugin login failed verification.");
+                    throw new Error(`AUTH_REQUIRED: Login crashed: ${loginErr.message}`);
                 }
                 break;
             }
@@ -136,7 +160,7 @@ async function handleTask(task) {
                      WHERE portal = ? 
                        AND applied = 0 
                        AND ignored = 0 
-                       AND (status IS NULL OR status IN ('DISCOVERED', 'ELIGIBLE', 'FAILED'))
+                       AND (status IS NULL OR status IN ('DISCOVERED', 'ELIGIBLE', 'FAILED', 'EXTERNAL_PENDING'))
                      LIMIT ?`,
                     [portal, limit]
                 );
@@ -198,7 +222,13 @@ async function handleTask(task) {
                         const resumeType = resumeSelector.selectResume(job.title, job.job_description || "");
                         job.resumeType = resumeType;
                         
-                        const applyOk = await plugin.apply(page, job);
+                        let applyOk = false;
+                        if (job.status === "EXTERNAL_PENDING") {
+                            const externalAtsAutomation = require("../../packages/automation/ExternalAtsAutomation");
+                            applyOk = await externalAtsAutomation.apply(page, job);
+                        } else {
+                            applyOk = await plugin.apply(page, job);
+                        }
                         const statusReason = job.statusReason || "";
                         
                         if (applyOk) {

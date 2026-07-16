@@ -4,13 +4,13 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/opt/job-automation
-ExecStart=/usr/bin/node apps/orchestrator/index.js
+User=ubuntu
+WorkingDirectory=/home/ubuntu/automation
+ExecStart=/usr/bin/node /home/ubuntu/automation/apps/orchestrator/index.js
 Restart=always
 RestartSec=10
 Environment=NODE_ENV=production
-EnvironmentFile=/opt/job-automation/.env
+EnvironmentFile=/home/ubuntu/automation/.env
 StandardOutput=syslog
 StandardError=syslog
 SyslogIdentifier=job-orchestrator

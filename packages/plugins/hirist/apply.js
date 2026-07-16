@@ -1,5 +1,124 @@
 const resumeManager = require("../../resume/ResumeManager");
 
+async function handleHiristCoverLetter(plugin, page, job, descText) {
+    const { logger } = plugin;
+    
+    const checkboxLocators = [
+        page.locator("input[type='checkbox']#cover-letter"),
+        page.locator("input[type='checkbox'][name*='cover' i]"),
+        page.locator("input[type='checkbox'][id*='cover' i]"),
+        page.locator("label:has-text('cover letter')").locator("input[type='checkbox']"),
+        page.locator("label:has-text('Cover Letter')").locator("input[type='checkbox']"),
+        page.locator("label:has-text('Add Cover Letter')").locator("input[type='checkbox']"),
+        page.locator("label:has-text('Add Cover Letter')"),
+        page.locator("span:has-text('Add Cover Letter')"),
+        page.locator("span:has-text('Add cover letter')")
+    ];
+
+    let foundCheckbox = null;
+    for (const loc of checkboxLocators) {
+        if (await loc.count() > 0 && await loc.first().isVisible()) {
+            foundCheckbox = loc.first();
+            break;
+        }
+    }
+
+    if (!foundCheckbox) {
+        return false;
+    }
+
+    logger.info("[hirist] Cover letter option detected.");
+
+    let isChecked = false;
+    const tagName = await foundCheckbox.evaluate(el => el.tagName.toLowerCase()).catch(() => "");
+    const typeAttr = await foundCheckbox.getAttribute("type").catch(() => "");
+    
+    if (tagName === "input" && typeAttr === "checkbox") {
+        isChecked = await foundCheckbox.isChecked();
+        if (!isChecked) {
+            await foundCheckbox.check();
+            await page.waitForTimeout(1000);
+            isChecked = await foundCheckbox.isChecked();
+            if (isChecked) {
+                logger.info("[hirist] Cover letter enabled.");
+            } else {
+                await foundCheckbox.click();
+                await page.waitForTimeout(1000);
+                isChecked = await foundCheckbox.isChecked();
+                if (isChecked) {
+                    logger.info("[hirist] Cover letter enabled.");
+                }
+            }
+        } else {
+            logger.info("[hirist] Cover letter enabled.");
+        }
+    } else {
+        await foundCheckbox.click();
+        await page.waitForTimeout(1000);
+        logger.info("[hirist] Cover letter enabled.");
+    }
+
+    const textareaLocators = [
+        page.locator("textarea[name*='cover' i]"),
+        page.locator("textarea[id*='cover' i]"),
+        page.locator("textarea[placeholder*='cover' i]"),
+        page.locator("textarea[placeholder*='Cover' i]"),
+        page.locator("textarea")
+    ];
+
+    let foundTextarea = null;
+    for (const loc of textareaLocators) {
+        if (await loc.count() > 0 && await loc.first().isVisible()) {
+            foundTextarea = loc.first();
+            break;
+        }
+    }
+
+    if (!foundTextarea) {
+        logger.error("[hirist] Cover letter checkbox was checked, but cover letter textarea could not be found.");
+        return true;
+    }
+
+    // Check if textarea is already filled
+    const existingVal = await foundTextarea.inputValue().catch(() => "");
+    if (existingVal && existingVal.trim().length > 10) {
+        logger.info("[hirist] Cover letter attached/filled successfully.");
+        return true;
+    }
+
+    let coverLetterText = "";
+    try {
+        const profileManager = require("../../profile/ProfileManager");
+        const profile = await profileManager.getProfile();
+        const aiService = require("../../ai");
+        
+        const systemPrompt = `
+You are an expert cover letter writer.
+Generate a concise, professional cover letter (1 paragraph, max 100 words) for a DevOps/Cloud/Platform/Infrastructure Engineer role.
+Tailor it to the job title and company, using the candidate profile details.
+Be concise and focus on cloud automation, CI/CD, and infrastructure-as-code.
+Candidate Profile:
+${JSON.stringify(profile, null, 2)}
+`;
+        const prompt = `Write a short cover letter for the role: "${job.title}" at "${job.company}". Job Description: "${descText || ''}"`;
+        coverLetterText = await aiService.generateText(prompt, systemPrompt);
+        
+        if (!coverLetterText || coverLetterText.trim().length === 0) {
+            throw new Error("AI generated empty cover letter text.");
+        }
+    } catch (err) {
+        logger.error(`[hirist] AI cover-letter generation failed: ${err.message}. Using safe fallback.`);
+        const profileManager = require("../../profile/ProfileManager");
+        const profile = await profileManager.getProfile().catch(() => ({ fullName: "Jawad Koroth" }));
+        coverLetterText = `Dear Hiring Team,\n\nI am writing to express my strong interest in the ${job.title || 'DevOps/Cloud/Platform Engineer'} position at ${job.company || 'your company'}. With my strong background in automating infrastructure, optimizing CI/CD pipelines, and managing containerized applications on AWS and Kubernetes, I am confident I can contribute effectively to your engineering goals.\n\nSincerely,\n${profile.fullName || 'Jawad Koroth'}`;
+    }
+
+    await foundTextarea.fill(coverLetterText);
+    await page.waitForTimeout(1000);
+    logger.info("[hirist] Cover letter attached/filled successfully.");
+    return true;
+}
+
 module.exports = async function apply(plugin, page, job) {
     const { logger } = plugin;
     logger.info(`Processing application for Hirist job: "${job.title}" at "${job.company}"`);
@@ -38,9 +157,30 @@ module.exports = async function apply(plugin, page, job) {
     }
 
     if (hasApplyBtn) {
+        // Attempt cover letter handling before clicking Apply
+        let coverLetterHandled = false;
+        try {
+            coverLetterHandled = await handleHiristCoverLetter(plugin, page, job, descText);
+        } catch (coverErr) {
+            logger.error(`[hirist] Cover letter handling encountered an error: ${coverErr.message}`);
+        }
+
         logger.info("Clicking the Hirist Apply button...");
         await page.click(applyBtnSelector);
         await page.waitForTimeout(4000);
+
+        // Attempt cover letter handling after clicking Apply if not handled before
+        if (!coverLetterHandled) {
+            try {
+                coverLetterHandled = await handleHiristCoverLetter(plugin, page, job, descText);
+            } catch (coverErr) {
+                logger.error(`[hirist] Cover letter handling encountered an error after click: ${coverErr.message}`);
+            }
+        }
+
+        if (!coverLetterHandled) {
+            logger.info("[hirist] Cover letter option not available for this application.");
+        }
 
         const chatbotSelector = ".chatbot-container, :has-text('Submit answers'), :has-text('Answer questions'), :has-text('recruiter\\'s questions')";
         if (await page.locator(chatbotSelector).count() > 0) {
@@ -109,3 +249,4 @@ module.exports = async function apply(plugin, page, job) {
         return false;
     }
 };
+
