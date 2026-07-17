@@ -8,6 +8,7 @@ const args = process.argv.slice(2);
 const isPushRequested = args.includes("--push");
 const isLiveRun = args.includes("--live");
 const isHealthCheck = args.includes("--health");
+const isHiristOnly = args.includes("--hirist");
 
 // Load remote configs from .env
 const remoteHost = process.env.REMOTE_HOST;
@@ -82,7 +83,9 @@ fi
 
 echo "=== Running Target Task on VM ==="
 ${
-    isHealthCheck
+    isHiristOnly
+        ? "DRY_RUN=true ALLOW_LIVE_APPLICATIONS=false node scripts/test-hirist-remote.js"
+        : isHealthCheck
         ? "node scripts/production-health.js"
         : isLiveRun
         ? "DRY_RUN=false ALLOW_LIVE_APPLICATIONS=true node scripts/run-live.js"
@@ -100,7 +103,17 @@ const sshArgs = [
 ];
 
 console.log(`🚀 Executing SSH remote command...`);
-const sshProcess = spawn("ssh", sshArgs, { stdio: "inherit" });
+const sshProcess = spawn("ssh", sshArgs);
+
+sshProcess.stdout.on("data", (data) => {
+    const cleanStr = data.toString().replace(/\r\r\n/g, "\n").replace(/\r\n/g, "\n");
+    process.stdout.write(cleanStr);
+});
+
+sshProcess.stderr.on("data", (data) => {
+    const cleanStr = data.toString().replace(/\r\r\n/g, "\n").replace(/\r\n/g, "\n");
+    process.stderr.write(cleanStr);
+});
 
 sshProcess.on("close", (code) => {
     if (code === 0) {
