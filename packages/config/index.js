@@ -52,7 +52,8 @@ module.exports = {
         maxJobAgeDays: getEnvInt("MAX_JOB_AGE_DAYS", 7),
         maxApplicationsPerRun: getEnvInt("MAX_APPLICATIONS_PER_RUN", 5),
         maxApplicationsPerPortal: getEnvInt("MAX_APPLICATIONS_PER_PORTAL", 5),
-        dryRun: getEnvBool("DRY_RUN", true)
+        dryRun: getEnvBool("DRY_RUN", true),
+        allowLiveApplications: getEnvBool("ALLOW_LIVE_APPLICATIONS", false)
     },
 
     portals: {

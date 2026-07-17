@@ -86,15 +86,31 @@ async function checkHealth() {
     let pendingExternal = 0;
     let waitingForInput = 0;
 
+    let hasFailedPortal = false;
     if (health.database === "OK") {
         const { validatePortalConfig } = require("../packages/config/validation");
         const portalsList = ["foundit", "hirist", "instahyre", "wellfound", "remoteok", "weworkremotely"];
         
         for (const portal of portalsList) {
             const validation = await validatePortalConfig(portal);
-            if (validation.status !== "SKIPPED") {
+            let portalStatus = validation.status;
+            if (portalStatus !== "SKIPPED") {
                 enabledPortals.push(portal);
-                portalStatuses.push(`${portal}: ${validation.status}`);
+                
+                if (portalStatus === "PASS") {
+                    // Check if there was any task failure today or in the last 24 hours
+                    const taskFail = await db.get(
+                        "SELECT COUNT(*) as count FROM tasks WHERE portal = ? AND status = 'failed' AND created_at > datetime('now', '-24 hours')",
+                        [portal]
+                    );
+                    if (taskFail && taskFail.count > 0) {
+                        portalStatus = "FAIL (Task failed recently)";
+                        hasFailedPortal = true;
+                    }
+                } else {
+                    hasFailedPortal = true;
+                }
+                portalStatuses.push(`${portal}: ${portalStatus}`);
             } else {
                 portalStatuses.push(`${portal}: SKIPPED`);
             }
@@ -116,14 +132,16 @@ async function checkHealth() {
         waitingForInput = waitRes ? waitRes.count : 0;
     }
 
-    // Compute overall status
+    // Compute overall status and readiness
     let overall = "HEALTHY";
     const values = Object.values(health);
-    if (values.some(v => v.includes("DOWN") || v.includes("ERROR") || v.includes("MISSING"))) {
+    if (values.some(v => v.includes("DOWN") || v.includes("ERROR") || v.includes("MISSING")) || hasFailedPortal || !hasProfile) {
         overall = "DOWN";
     } else if (values.some(v => v.includes("DEGRADED") || v.includes("NO PDF"))) {
         overall = "DEGRADED";
     }
+
+    const isProductionReady = (overall === "HEALTHY") ? "YES" : "NO";
 
     console.log(`Scheduler: ${health.scheduler}`);
     console.log(`Worker: ${health.worker}`);
@@ -142,6 +160,7 @@ async function checkHealth() {
     console.log(`Pending External Applications: ${pendingExternal}`);
     console.log(`Waiting-for-input Count: ${waitingForInput}`);
     console.log("---------------------------------");
+    console.log(`Production Ready: ${isProductionReady}`);
     console.log(`Overall: ${overall}`);
     console.log("=================================");
 

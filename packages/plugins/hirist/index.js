@@ -33,9 +33,17 @@ class HiristPlugin extends BasePlugin {
 
     async health(page) {
         try {
-            await page.waitForTimeout(2000);
-            const count = await page.locator("a[href*='/profile.html'], a:has-text('Profile'), a:has-text('Logout'), .profile-img").count();
-            return count > 0;
+            const currentUrl = page.url();
+            if (!currentUrl.includes("hirist.tech/profile.html")) {
+                await page.goto("https://www.hirist.tech/profile.html", { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
+            }
+            
+            // Wait up to 10 seconds for either the profile form or the login indicator to render
+            const indicator = page.locator("input[type='file'], p.login, p:has-text('Login'), button:has-text('Login'), a:has-text('Login')").first();
+            await indicator.waitFor({ state: "attached", timeout: 10000 }).catch(() => {});
+            
+            const loggedInCount = await page.locator("input[type='file'], a:has-text('Logout'), a[href*='logout']").count();
+            return loggedInCount > 0;
         } catch (e) {
             return false;
         }

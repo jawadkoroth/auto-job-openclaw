@@ -4,7 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "remote:health": "node scripts/remote-deploy-test.js --health",
+    "remote:test": "node scripts/remote-deploy-test.js",
+    "remote:live": "node scripts/remote-deploy-test.js --live"
   },
   "keywords": [],
   "author": "",

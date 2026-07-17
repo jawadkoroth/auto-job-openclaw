@@ -33,6 +33,10 @@ class FounditPlugin extends BasePlugin {
 
     async health(page) {
         try {
+            const currentUrl = page.url();
+            if (!currentUrl.includes("foundit.in/seeker/dashboard") && !currentUrl.includes("foundit.in/seeker/profile")) {
+                await page.goto("https://www.foundit.in/seeker/dashboard", { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
+            }
             await page.waitForTimeout(2000);
             const count = await page.locator("a[href*='/seeker/profile'], a:has-text('Profile'), a:has-text('Logout'), .profile-name, .userName").count();
             return count > 0;

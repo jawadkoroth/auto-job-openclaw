@@ -33,6 +33,10 @@ class InstahyrePlugin extends BasePlugin {
 
     async health(page) {
         try {
+            const currentUrl = page.url();
+            if (!currentUrl.includes("instahyre.com/candidate/opportunities")) {
+                await page.goto("https://www.instahyre.com/candidate/opportunities/", { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
+            }
             await page.waitForTimeout(2000);
             const count = await page.locator("a[href*='/candidate/opportunities/'], a[href*='/candidate/profile/'], a:has-text('Opportunities'), a:has-text('Profile')").count();
             return count > 0;

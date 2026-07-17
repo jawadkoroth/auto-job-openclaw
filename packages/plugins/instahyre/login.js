@@ -24,6 +24,11 @@ module.exports = async function login(plugin, page) {
         await page.waitForLoadState("domcontentloaded");
         await page.waitForTimeout(2000);
 
+        if (page.url().includes("/candidate/opportunities") || await plugin.health(page)) {
+            logger.info("Redirected to candidate opportunities page. Already logged in!");
+            return true;
+        }
+
         if (process.env.HEADFUL_AUTH_SETUP === "true") {
             logger.info("HEADFUL_AUTH_SETUP is true. Please perform Instahyre login manually in the open browser window...");
             for (let i = 0; i < 150; i++) {
@@ -71,10 +76,22 @@ module.exports = async function login(plugin, page) {
             return true;
         } else {
             logger.error("Authentication failed. Session health check returned false.");
-            return false;
+            throw new Error("Authentication failed. Session health check returned false.");
         }
     } catch (err) {
         logger.error(`Login process failed: ${err.message}`);
+        try {
+            const fs = require("fs-extra");
+            const path = require("path");
+            const failDir = path.join(process.cwd(), "sessions", "instahyre");
+            await fs.ensureDir(failDir);
+            await page.screenshot({ path: path.join(failDir, "login_failure.png") }).catch(() => {});
+            const html = await page.content().catch(() => "");
+            await fs.writeFile(path.join(failDir, "login_failure.html"), html).catch(() => {});
+            logger.info(`Saved diagnostic HTML + screenshot to ${failDir}`);
+        } catch (e) {
+            logger.warn(`Could not save login failure diagnostics: ${e.message}`);
+        }
         throw err;
     }
 };

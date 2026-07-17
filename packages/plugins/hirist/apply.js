@@ -157,6 +157,14 @@ module.exports = async function apply(plugin, page, job) {
     }
 
     if (hasApplyBtn) {
+        const config = require("../../config");
+        const isDryRun = config.search.dryRun || !config.search.allowLiveApplications;
+        if (isDryRun) {
+            logger.info(`[DRY RUN] Would apply to: "${job.title}" at "${job.company}"`);
+            job.statusReason = "dry_run_validated";
+            return true;
+        }
+
         // Attempt cover letter handling before clicking Apply
         let coverLetterHandled = false;
         try {
@@ -231,6 +239,15 @@ module.exports = async function apply(plugin, page, job) {
             }
         }
 
+        // If a drawer/modal is still visible and has not been submitted, click the drawer submit button to finalize
+        const drawerSubmitSelector = "div[class*='drawer'] button:has-text('Apply'), div[class*='drawer'] button:has-text('Submit'), div[class*='modal'] button:has-text('Apply'), div[class*='modal'] button:has-text('Submit'), button:has-text('Confirm Apply'), button:has-text('Submit Application'), button#submit-apply";
+        const drawerSubmitBtn = page.locator(drawerSubmitSelector).filter({ visible: true }).first();
+        if (await drawerSubmitBtn.count() > 0) {
+            logger.info("Found drawer/modal submit button. Clicking it to finalize application...");
+            await drawerSubmitBtn.click({ force: true });
+            await page.waitForTimeout(4000);
+        }
+
         // Verify successful application
         const successConfirmSelector = ".already-applied, button:has-text('Applied'), span:has-text('Applied'), :has-text('You have applied'), :has-text('Applied successfully'), :has-text('Application Submitted')";
         const isConfirmed = await page.locator(successConfirmSelector).count() > 0;
@@ -241,6 +258,19 @@ module.exports = async function apply(plugin, page, job) {
         } else {
             logger.warn(`Click action performed but application confirmation not detected on Hirist. Marking as CLICKED_UNVERIFIED.`);
             job.statusReason = "clicked_unverified";
+            
+            // Trigger Telegram alert for unverified submission!
+            const telegramService = require("../../../apps/telegram");
+            await telegramService.sendMessage(
+                `⚠️ *Unverified Application Alert*\n\n` +
+                `• *Portal*: \`Hirist\`\n` +
+                `• *Company*: *${job.company}*\n` +
+                `• *Role*: *${job.title}*\n` +
+                `• *Status*: \`CLICKED_UNVERIFIED\`\n\n` +
+                `The apply button was clicked, but we could not verify submission confirmation. Please check manually.\n` +
+                `🔗 *Job URL*: ${job.url}`
+            ).catch(e => logger.error(`[hirist] Failed to send Telegram alert for unverified submission: ${e.message}`));
+            
             return true;
         }
     } else {

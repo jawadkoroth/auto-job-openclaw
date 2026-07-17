@@ -71,6 +71,13 @@ class ExternalAtsAutomation {
             }
             
             // Click Submit
+            const isDryRun = config.search.dryRun || !config.search.allowLiveApplications;
+            if (isDryRun) {
+                logger.worker.info(`[DRY RUN] Would submit external application: "${externalUrl}"`);
+                job.statusReason = "dry_run_validated";
+                return true;
+            }
+
             await submitBtn.click();
             await page.waitForTimeout(5000);
             

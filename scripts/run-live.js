@@ -26,6 +26,20 @@ function sanitizeFilename(str) {
 
 (async () => {
     logger.automation.info("=== Starting Production Job Automation ===");
+    logger.automation.info(`[LIMITS] Max applications per run: ${config.search.maxApplicationsPerRun}`);
+    logger.automation.info(`[LIMITS] Max applications per portal: ${config.search.maxApplicationsPerPortal}`);
+    
+    const isLiveMode = (config.search.dryRun === false || process.env.DRY_RUN === "false") && 
+                       (config.search.allowLiveApplications === true || process.env.ALLOW_LIVE_APPLICATIONS === "true");
+    if (isLiveMode) {
+        logger.automation.info("=================================");
+        logger.automation.info("  LIVE APPLICATION MODE ENABLED  ");
+        logger.automation.info("=================================");
+    } else {
+        logger.automation.info("=================================");
+        logger.automation.info("        DRY RUN VALIDATION       ");
+        logger.automation.info("=================================");
+    }
     const runStart = Date.now();
     
     // Determine enabled portals from config and env flags using validation
@@ -218,36 +232,40 @@ function sanitizeFilename(str) {
                         appliedCount++;
                         portalStats[portal].applied++;
                         
-                        let dbStatus = "APPLIED";
-                        let dbReason = "Successfully applied";
-                        if (statusReason === "alreadyApplied") {
-                            dbStatus = "ALREADY_APPLIED";
-                            dbReason = "Already applied";
-                            portalStats[portal].alreadyApplied++;
-                        } else if (statusReason === "clicked_unverified") {
-                            dbStatus = "CLICKED_UNVERIFIED";
-                            dbReason = "Clicked but unverified";
-                        }
-                        
-                        await db.run(
-                            "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status, reason, job_description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)",
-                            [portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url, dbStatus, dbReason, job.job_description || ""]
-                        ).catch(async () => {
+                        if (statusReason === "dry_run_validated") {
+                            logger.automation.info(`[${portal}] [DRY RUN] Validation pass successful for: "${job.title}" (Skipped database write and Telegram notification)`);
+                        } else {
+                            let dbStatus = "APPLIED";
+                            let dbReason = "Successfully applied";
+                            if (statusReason === "alreadyApplied") {
+                                dbStatus = "ALREADY_APPLIED";
+                                dbReason = "Already applied";
+                                portalStats[portal].alreadyApplied++;
+                            } else if (statusReason === "clicked_unverified") {
+                                dbStatus = "CLICKED_UNVERIFIED";
+                                dbReason = "Clicked but unverified";
+                            }
+                            
                             await db.run(
-                                "UPDATE jobs SET applied = 1, status = ?, reason = ?, timestamp = CURRENT_TIMESTAMP, job_description = ? WHERE portal = ? AND job_id = ?",
-                                [dbStatus, dbReason, job.job_description || "", portal, job.job_id]
-                            );
-                        });
+                                "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status, reason, job_description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)",
+                                [portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url, dbStatus, dbReason, job.job_description || ""]
+                            ).catch(async () => {
+                                await db.run(
+                                    "UPDATE jobs SET applied = 1, status = ?, reason = ?, timestamp = CURRENT_TIMESTAMP, job_description = ? WHERE portal = ? AND job_id = ?",
+                                    [dbStatus, dbReason, job.job_description || "", portal, job.job_id]
+                                );
+                            });
 
-                        logger.automation.info(`[${portal}] Successfully applied to: "${job.title}"`);
+                            logger.automation.info(`[${portal}] Successfully applied to: "${job.title}"`);
 
-                        // Telegram notification
-                        const successMsg = `✅ *Applied Successfully via ${portal.toUpperCase()}*\n\n` +
-                                           `• *Company*: ${job.company}\n` +
-                                           `• *Role*: ${job.title}\n` +
-                                           `• *Status*: ${dbStatus}\n` +
-                                           `• *URL*: ${job.url}`;
-                        await telegramService.sendMessage(successMsg).catch(() => {});
+                            // Telegram notification
+                            const successMsg = `✅ *Applied Successfully via ${portal.toUpperCase()}*\n\n` +
+                                               `• *Company*: ${job.company}\n` +
+                                               `• *Role*: ${job.title}\n` +
+                                               `• *Status*: ${dbStatus}\n` +
+                                               `• *URL*: ${job.url}`;
+                            await telegramService.sendMessage(successMsg).catch(() => {});
+                        }
                     } else {
                         portalStats[portal].skipped++;
                         
@@ -358,7 +376,8 @@ function sanitizeFilename(str) {
     }
 
     const hasConfigRequired = Object.values(portalStatuses).some(s => s === "CONFIG_REQUIRED");
-    const isProductionReady = hasConfigRequired ? "NO" : "YES";
+    const hasFailedPortal = enabledPortals.some(p => portalStats[p].successState !== "PASS");
+    const isProductionReady = (hasConfigRequired || hasFailedPortal) ? "NO" : "YES";
 
     console.log("\n=======================================================");
     console.log("            PRODUCTION AUTOMATION SUMMARY              ");

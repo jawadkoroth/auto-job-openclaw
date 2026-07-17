@@ -20,6 +20,24 @@ module.exports = async function login(plugin, page) {
         await page.waitForLoadState("domcontentloaded");
         await page.waitForTimeout(2000);
 
+        if (page.url().includes("/seeker/dashboard") || await plugin.health(page)) {
+            logger.info("Redirected to seeker dashboard. Already logged in!");
+            return true;
+        }
+
+        if (process.env.HEADFUL_AUTH_SETUP === "true") {
+            logger.info("HEADFUL_AUTH_SETUP is true. Please perform Foundit login manually in the open browser window...");
+            for (let i = 0; i < 150; i++) {
+                await page.waitForTimeout(2000);
+                if (await plugin.health(page)) {
+                    logger.info("Manual Foundit login detected successfully!");
+                    return true;
+                }
+            }
+            logger.error("Timed out waiting for manual Foundit login.");
+            return false;
+        }
+
         // Accept cookie consent if visible
         try {
             const acceptCookie = page.locator("button#acceptAll, button:has-text('Okay'), button:has-text('Accept All')").first();
@@ -39,15 +57,15 @@ module.exports = async function login(plugin, page) {
 
         logger.info("Entering Foundit credentials...");
 
-        // Select login via password option if visible
+        // Select login via password option
+        logger.info("Opening login form via Password...");
+        const pwdLoginOpt = page.locator("span:has-text('Login via Password')").first();
         try {
-            const pwdLoginOpt = page.locator("span:has-text('Login via Password'), :has-text('Login via Password')").first();
-            if (await pwdLoginOpt.count() > 0 && await pwdLoginOpt.isVisible()) {
-                await pwdLoginOpt.click();
-                await page.waitForTimeout(1000);
-            }
+            await pwdLoginOpt.waitFor({ state: "visible", timeout: 8000 });
+            await pwdLoginOpt.click({ force: true });
+            await page.waitForTimeout(1500);
         } catch (e) {
-            logger.debug(`Could not click Login via Password option: ${e.message}`);
+            logger.info("Login via Password option not visible or click failed. Checking username input visibility.");
         }
 
         const usernameInput = page.locator("input#userName, #signInName, input[name='username']").first();
@@ -76,10 +94,22 @@ module.exports = async function login(plugin, page) {
             return true;
         } else {
             logger.error("Authentication failed. Session health check returned false.");
-            return false;
+            throw new Error("Authentication failed. Session health check returned false.");
         }
     } catch (err) {
         logger.error(`Login process failed: ${err.message}`);
+        try {
+            const fs = require("fs-extra");
+            const path = require("path");
+            const failDir = path.join(process.cwd(), "sessions", "foundit");
+            await fs.ensureDir(failDir);
+            await page.screenshot({ path: path.join(failDir, "login_failure.png") }).catch(() => {});
+            const html = await page.content().catch(() => "");
+            await fs.writeFile(path.join(failDir, "login_failure.html"), html).catch(() => {});
+            logger.info(`Saved diagnostic HTML + screenshot to ${failDir}`);
+        } catch (e) {
+            logger.warn(`Could not save login failure diagnostics: ${e.message}`);
+        }
         throw err;
     }
 };

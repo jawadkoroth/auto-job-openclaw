@@ -8,6 +8,8 @@ const eventBus = require("../../packages/events/EventBus");
 const db = require("../../packages/database");
 
 logger.scheduler.info("Starting central Orchestrator engine...", { action: "orchestrator_init" });
+logger.scheduler.info(`[LIMITS] Max applications per run: ${config.search.maxApplicationsPerRun}`);
+logger.scheduler.info(`[LIMITS] Max applications per portal: ${config.search.maxApplicationsPerPortal}`);
 
 // 1. Subscribe ONLY the required Telegram notifications to the Event Bus
 eventBus.on("WorkerFinished", async (data) => {

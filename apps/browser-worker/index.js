@@ -232,7 +232,9 @@ async function handleTask(task) {
                         const statusReason = job.statusReason || "";
                         
                         if (applyOk) {
-                            if (statusReason === "alreadyApplied") {
+                            if (statusReason === "dry_run_validated") {
+                                logger.worker.info(`[browser-worker] [DRY RUN] Validation pass successful for job id: ${job.id} (Skipping DB write)`);
+                            } else if (statusReason === "alreadyApplied") {
                                 await db.run(
                                     "UPDATE jobs SET applied = 1, status = 'ALREADY_APPLIED', reason = 'Already applied', timestamp = CURRENT_TIMESTAMP WHERE id = ?",
                                     [job.id]

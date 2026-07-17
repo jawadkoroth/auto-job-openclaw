@@ -44,9 +44,18 @@ module.exports = async function search(plugin, page, queryOptions = {}) {
                 if (!linkText) continue;
 
                 const lines = linkText.split("\n").map(l => l.trim()).filter(Boolean);
-                const title = lines[0] || "Unknown Title";
-                const company = lines[2] || "Unknown Company";
-                const jobLocation = lines[3] || "Remote";
+                const cleanParts = lines.filter(p => {
+                    const isDayTag = /^\d+d$/.test(p);
+                    const isNew = p.toLowerCase() === "new";
+                    const isBoosted = p.toLowerCase().includes("boosted");
+                    const isFeatured = p.toLowerCase().includes("featured");
+                    const isTop = p.toLowerCase().includes("top 100");
+                    return !isDayTag && !isNew && !isBoosted && !isFeatured && !isTop;
+                });
+                
+                const title = cleanParts[0] || "Unknown Title";
+                const company = cleanParts[1] || "Unknown Company";
+                const jobLocation = cleanParts[2] || "Remote";
 
                 let jobId = "";
                 const match = url.match(/\/remote-jobs\/(.*?)$/);

@@ -38,6 +38,14 @@ module.exports = async function apply(plugin, page, job) {
     }
 
     if (hasApplyBtn) {
+        const config = require("../../config");
+        const isDryRun = config.search.dryRun || !config.search.allowLiveApplications;
+        if (isDryRun) {
+            logger.info(`[DRY RUN] Would apply to: "${job.title}" at "${job.company}"`);
+            job.statusReason = "dry_run_validated";
+            return true;
+        }
+
         logger.info("Clicking the Instahyre Apply/Interested button...");
         await page.click(applyBtnSelector);
         await page.waitForTimeout(3000);

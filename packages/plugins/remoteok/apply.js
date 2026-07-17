@@ -36,6 +36,15 @@ module.exports = async function apply(plugin, page, job) {
             logger.info("Direct apply form found. Proceeding with details...");
             await page.click(emailInput);
             await page.keyboard.type("test-applicant@example.com");
+
+            const config = require("../../config");
+            const isDryRun = config.search.dryRun || !config.search.allowLiveApplications;
+            if (isDryRun) {
+                logger.info(`[DRY RUN] Would apply to: "${job.title}" at "${job.company}"`);
+                job.statusReason = "dry_run_validated";
+                return true;
+            }
+
             const submitBtn = "button[type='submit'], input[type='submit']";
             if (await page.locator(submitBtn).count() > 0) {
                 await page.click(submitBtn);

@@ -4,6 +4,59 @@ const path = require("path");
 const config = require("../../packages/config");
 const logger = require("../../packages/logger");
 
+function redactSecrets(text) {
+    if (!text) return "";
+    let result = String(text);
+    if (config.telegram.botToken) {
+        // Escape regex special chars in token
+        const tokenPattern = config.telegram.botToken.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+        result = result.replace(new RegExp(tokenPattern, 'g'), "[REDACTED_BOT_TOKEN]");
+    }
+    if (config.telegram.chatId) {
+        result = result.replace(new RegExp(config.telegram.chatId, 'g'), "[REDACTED_CHAT_ID]");
+    }
+    // Match potential raw Telegram bot tokens in URLs (e.g., bot123456:ABC-DEF...)
+    result = result.replace(/bot[0-9a-zA-Z_-]+/g, "bot[REDACTED_BOT_TOKEN]");
+    return result;
+}
+
+const localLogger = {
+    info: (msg, meta) => logger.telegram.info(redactSecrets(msg), meta),
+    warn: (msg, meta) => logger.telegram.warn(redactSecrets(msg), meta),
+    error: (msg, meta) => logger.telegram.error(redactSecrets(msg), meta),
+    debug: (msg, meta) => logger.telegram.debug(redactSecrets(msg), meta)
+};
+
+function markdownToHTML(text) {
+    if (!text) return "";
+    
+    // First, escape HTML special chars
+    let escaped = text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+        
+    // Now convert Markdown tokens to HTML tags
+    // 1. Triple backticks code blocks: ```code``` -> <pre>code</pre>
+    escaped = escaped.replace(/```([\s\S]*?)```/g, (match, p1) => {
+        return `<pre>${p1}</pre>`;
+    });
+    
+    // 2. Single backtick inline code: `code` -> <code>code</code>
+    escaped = escaped.replace(/`([^`]+)`/g, (match, p1) => {
+        return `<code>${p1}</code>`;
+    });
+    
+    // 3. Bold: *text* or **text** -> <b>text</b>
+    escaped = escaped.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+    escaped = escaped.replace(/\*([^*]+)\*/g, '<b>$1</b>');
+    
+    // 4. Italic: _text_ -> <i>text</i>
+    escaped = escaped.replace(/_([^_]+)_/g, '<i>$1</i>');
+    
+    return escaped;
+}
+
 class TelegramService {
     constructor() {
         this.token = config.telegram.botToken;
@@ -14,33 +67,30 @@ class TelegramService {
     }
 
     /**
-     * Send Markdown message to target Telegram Chat
+     * Send HTML message to target Telegram Chat
      * @param {string} text 
      */
     async sendMessage(text) {
         if (!this.token || !this.chatId) {
-            logger.telegram.warn("Telegram credentials not configured. Skipping sendMessage.");
+            localLogger.warn("Telegram credentials not configured. Skipping sendMessage.");
             return;
         }
         const endpoint = `${this.baseUrl}/sendMessage`;
+        const htmlText = markdownToHTML(text);
         const payload = {
             chat_id: this.chatId,
-            text: text,
-            parse_mode: "Markdown"
+            text: htmlText,
+            parse_mode: "HTML"
         };
-        logger.telegram.info(`Telegram send payload: ${JSON.stringify(payload)}`);
+        localLogger.info(`Telegram send payload: ${JSON.stringify(payload)}`);
         try {
             await axios.post(endpoint, payload);
-            logger.telegram.info("Telegram text alert sent.", { action: "telegram_send" });
+            localLogger.info("Telegram text alert sent.", { action: "telegram_send" });
         } catch (error) {
             if (error.response && error.response.status === 400) {
-                logger.telegram.error("Telegram 400 Bad Request:", {
-                    endpoint: endpoint,
-                    payload: payload,
-                    responseBody: error.response.data
-                });
+                localLogger.error(`Telegram 400 Bad Request: Endpoint=${endpoint}, Payload=${JSON.stringify(payload)}, Response=${JSON.stringify(error.response.data)}`);
             } else {
-                logger.telegram.error(`Telegram send message failed: ${error.message}`, { action: "telegram_send", success: false });
+                localLogger.error(`Telegram send message failed: ${error.message}`, { action: "telegram_send", success: false });
             }
         }
     }
@@ -52,20 +102,21 @@ class TelegramService {
      */
     async sendPhoto(photoPath, caption) {
         if (!this.token || !this.chatId) {
-            logger.telegram.warn("Telegram credentials not configured. Skipping sendPhoto.");
+            localLogger.warn("Telegram credentials not configured. Skipping sendPhoto.");
             return;
         }
         if (!fs.existsSync(photoPath)) {
-            logger.telegram.warn(`Photo file not found: ${photoPath}`);
+            localLogger.warn(`Photo file not found: ${photoPath}`);
             return;
         }
         const endpoint = `${this.baseUrl}/sendPhoto`;
+        const htmlCaption = markdownToHTML(caption);
         const payload = {
             chat_id: this.chatId,
-            caption: caption,
+            caption: htmlCaption,
             photoPath: photoPath
         };
-        logger.telegram.info(`Telegram send photo payload: ${JSON.stringify(payload)}`);
+        localLogger.info(`Telegram send photo payload: ${JSON.stringify(payload)}`);
         try {
             const boundary = "----WebKitFormBoundary" + Math.random().toString(36).substring(2);
             const fileBuffer = fs.readFileSync(photoPath);
@@ -73,7 +124,8 @@ class TelegramService {
 
             const parts = [
                 `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${this.chatId}\r\n`,
-                `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption || ""}\r\n`,
+                `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${htmlCaption}\r\n`,
+                `--${boundary}\r\nContent-Disposition: form-data; name="parse_mode"\r\n\r\nHTML\r\n`,
                 `--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="${filename}"\r\nContent-Type: image/png\r\n\r\n`
             ];
 
@@ -88,16 +140,12 @@ class TelegramService {
                     "Content-Type": `multipart/form-data; boundary=${boundary}`
                 }
             });
-            logger.telegram.info(`Telegram photo alert sent: ${filename}`, { action: "telegram_send_photo" });
+            localLogger.info(`Telegram photo alert sent: ${filename}`, { action: "telegram_send_photo" });
         } catch (error) {
             if (error.response && error.response.status === 400) {
-                logger.telegram.error("Telegram 400 Bad Request:", {
-                    endpoint: endpoint,
-                    payload: payload,
-                    responseBody: error.response.data
-                });
+                localLogger.error(`Telegram 400 Bad Request (Photo): Endpoint=${endpoint}, Response=${JSON.stringify(error.response.data)}`);
             } else {
-                logger.telegram.error(`Telegram send photo failed: ${error.message}`, { action: "telegram_send_photo", success: false });
+                localLogger.error(`Telegram send photo failed: ${error.message}`, { action: "telegram_send_photo", success: false });
             }
         }
     }
@@ -117,7 +165,7 @@ class TelegramService {
             });
             return response.data.result || [];
         } catch (error) {
-            logger.telegram.debug(`Telegram poll update failed: ${error.message}`);
+            localLogger.debug(`Telegram poll update failed: ${error.message}`);
             return [];
         }
     }
@@ -128,12 +176,12 @@ class TelegramService {
      */
     startPolling(onMessageCallback) {
         if (!this.token) {
-            logger.telegram.warn("Telegram Bot token missing. Interactive commands listener is disabled.");
+            localLogger.warn("Telegram Bot token missing. Interactive commands listener is disabled.");
             return;
         }
         if (this.isPolling) return;
         this.isPolling = true;
-        logger.telegram.info("Telegram Bot updates listener thread launched.");
+        localLogger.info("Telegram Bot updates listener thread launched.");
         
         const poll = async () => {
             if (!this.isPolling) return;
@@ -145,13 +193,13 @@ class TelegramService {
                     
                     // Strict chat validation for server security
                     if (String(fromId) !== String(this.chatId)) {
-                        logger.telegram.warn(`Refused message from unauthorized Chat ID: ${fromId}`);
+                        localLogger.warn(`Refused message from unauthorized Chat ID: ${fromId}`);
                         continue;
                     }
                     try {
                         await onMessageCallback(update.message);
                     } catch (err) {
-                        logger.telegram.error(`Failed handling telegram command: ${err.stack}`);
+                        localLogger.error(`Failed handling telegram command: ${err.stack}`);
                     }
                 }
             }
@@ -165,7 +213,7 @@ class TelegramService {
      */
     stopPolling() {
         this.isPolling = false;
-        logger.telegram.info("Telegram Bot listener stopped.");
+        localLogger.info("Telegram Bot listener stopped.");
     }
 }
 
