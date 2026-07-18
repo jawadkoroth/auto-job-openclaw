@@ -31,6 +31,24 @@ class BrowserInstance {
         }
 
         const sessionPath = contextManager.getContextPath(this.portalName);
+
+        // Clean up persistent profile directory on HEADFUL_AUTH_SETUP=true to ensure a clean bootstrap (except metadata.json)
+        if (process.env.HEADFUL_AUTH_SETUP === "true") {
+            try {
+                if (fs.existsSync(sessionPath)) {
+                    const files = fs.readdirSync(sessionPath);
+                    for (const file of files) {
+                        if (file !== "metadata.json") {
+                            fs.removeSync(path.join(sessionPath, file));
+                        }
+                    }
+                    logger.browser.info(`[${this.portalName}] Cleaned up stale persistent profile files for fresh headful bootstrap.`);
+                }
+            } catch (e) {
+                logger.browser.warn(`[${this.portalName}] Stale profile cleanup failed: ${e.message}`);
+            }
+        }
+
         logger.browser.info(`Launching isolated BrowserInstance for: ${this.portalName}`);
 
         try {
@@ -56,8 +74,9 @@ class BrowserInstance {
             this.context = await chromium.launchPersistentContext(sessionPath, launchOptions);
 
             // Load portable storageState if it exists (Task 2)
+            // (Skip loading on HEADFUL_AUTH_SETUP=true to allow a clean bootstrap session)
             const storageStatePath = path.join(sessionPath, "storageState.json");
-            if (fs.existsSync(storageStatePath)) {
+            if (fs.existsSync(storageStatePath) && process.env.HEADFUL_AUTH_SETUP !== "true") {
                 try {
                     const state = fs.readJsonSync(storageStatePath);
                     if (state.cookies && state.cookies.length > 0) {
