@@ -55,6 +55,31 @@ class BrowserInstance {
 
             this.context = await chromium.launchPersistentContext(sessionPath, launchOptions);
 
+            // Load portable storageState if it exists (Task 2)
+            const storageStatePath = path.join(sessionPath, "storageState.json");
+            if (fs.existsSync(storageStatePath)) {
+                try {
+                    const state = fs.readJsonSync(storageStatePath);
+                    if (state.cookies && state.cookies.length > 0) {
+                        await this.context.addCookies(state.cookies);
+                    }
+                    if (state.origins && state.origins.length > 0) {
+                        await this.context.addInitScript((origins) => {
+                            for (const originState of origins) {
+                                if (window.location.origin === originState.origin) {
+                                    for (const item of originState.localStorage) {
+                                        window.localStorage.setItem(item.name, item.value);
+                                    }
+                                }
+                            }
+                        }, state.origins);
+                    }
+                    logger.browser.info(`[${this.portalName}] Successfully loaded storageState.json into persistent context.`);
+                } catch (err) {
+                    logger.browser.error(`[${this.portalName}] Failed to load storageState.json: ${err.message}`);
+                }
+            }
+
             // Configure init scripts to ensure standard window/navigator properties
             await this.context.addInitScript(() => {
                 // Ensure window.chrome exists
@@ -96,9 +121,10 @@ class BrowserInstance {
 
             // Log browser details to session metadata
             const browserVersion = this.context.browser() ? this.context.browser().version() : "Chromium";
+            const currentMeta = await contextManager.getMetadata(this.portalName);
             await contextManager.updateMetadata(this.portalName, {
                 browserVersion,
-                sessionHealth: "healthy",
+                sessionHealth: currentMeta.sessionHealth === "healthy" ? "healthy" : "unknown",
                 lastRefresh: new Date().toISOString()
             });
 
@@ -171,6 +197,26 @@ class BrowserInstance {
             logger.browser.info(`Closing BrowserInstance context for: ${this.portalName}`);
             try {
                 this.intentionalClose = true;
+                
+                // Refresh session storage state on close (Task 3)
+                if (this.portalName === "hirist") {
+                    try {
+                        const sessionPath = contextManager.getContextPath(this.portalName);
+                        const storageStatePath = path.join(sessionPath, "storageState.json");
+                        const pages = this.context.pages();
+                        if (pages.length > 0) {
+                            const tempPath = storageStatePath + ".tmp";
+                            await this.context.storageState({ path: tempPath });
+                            if (fs.existsSync(tempPath)) {
+                                fs.moveSync(tempPath, storageStatePath, { overwrite: true });
+                                logger.browser.info(`[${this.portalName}] Auto-exported/refreshed storageState.json upon close.`);
+                            }
+                        }
+                    } catch (err) {
+                        logger.browser.error(`[${this.portalName}] Failed to auto-export storageState.json upon close: ${err.message}`);
+                    }
+                }
+                
                 await this.context.close();
             } catch (err) {
                 logger.browser.error(`Failed closing context for ${this.portalName}: ${err.message}`);

@@ -24,6 +24,21 @@ const config = require("../packages/config");
     const metadataExists = fs.existsSync(metadataPath);
     const metadata = metadataExists ? fs.readJsonSync(metadataPath) : null;
 
+    // Check storageState.json details (Task 5)
+    const storageStatePath = path.join(sessionPath, "storageState.json");
+    const storageStateExists = fs.existsSync(storageStatePath);
+    let storageStateCookies = 0;
+    let storageStateOrigins = 0;
+    if (storageStateExists) {
+        try {
+            const state = fs.readJsonSync(storageStatePath);
+            storageStateCookies = state.cookies ? state.cookies.length : 0;
+            storageStateOrigins = state.origins ? state.origins.length : 0;
+        } catch (e) {
+            console.error(`[Diagnostic] Failed to read storageState.json: ${e.message}`);
+        }
+    }
+
     console.log(`[Diagnostic] Session directory path: ${sessionPath}`);
     console.log(`[Diagnostic] Session directory exists: ${sessionDirExists ? "YES" : "NO"}`);
     console.log(`[Diagnostic] Session directory file count: ${sessionFiles.length}`);
@@ -33,6 +48,9 @@ const config = require("../packages/config");
         console.log(`[Diagnostic] Metadata last login: ${metadata.lastLogin}`);
         console.log(`[Diagnostic] Metadata last refresh: ${metadata.lastRefresh}`);
     }
+    console.log(`[Diagnostic] StorageState file exists: ${storageStateExists ? "YES" : "NO"}`);
+    console.log(`[Diagnostic] StorageState cookie count: ${storageStateCookies}`);
+    console.log(`[Diagnostic] StorageState origin count: ${storageStateOrigins}`);
 
     const browserInstance = new BrowserInstance(portal);
     let context = null;
@@ -48,20 +66,32 @@ const config = require("../packages/config");
     let finalSubmitClicked = "NO";
     let overallResult = "FAIL";
 
+    // Diagnostic variables (Task 5)
+    let loadedCookiesCount = 0;
+    let finalUrl = "N/A";
+    let httpStatus = "N/A";
+    let pageTitle = "N/A";
+    let loggedInCount = 0;
+    let loginCount = 0;
+    let pageContent = "";
+    let userAgent = "N/A";
+    let webdriver = false;
+
     try {
         console.log("[Diagnostic] Launching browser...");
         context = await browserInstance.launch();
         page = await browserInstance.newPage();
 
         // Capture user agent & webdriver status
-        const userAgent = await page.evaluate(() => navigator.userAgent);
-        const webdriver = await page.evaluate(() => navigator.webdriver);
+        userAgent = await page.evaluate(() => navigator.userAgent);
+        webdriver = await page.evaluate(() => navigator.webdriver);
         console.log(`[Diagnostic] navigator.userAgent: ${userAgent}`);
         console.log(`[Diagnostic] navigator.webdriver: ${webdriver}`);
 
         // Capture loaded cookies count
         const cookies = await context.cookies();
-        console.log(`[Diagnostic] Loaded cookies count: ${cookies.length}`);
+        loadedCookiesCount = cookies.length;
+        console.log(`[Diagnostic] Loaded cookies count: ${loadedCookiesCount}`);
 
         // Setup route interception for absolute safety (no real submissions)
         console.log("[Diagnostic] Registering safety network routing rules...");
@@ -79,9 +109,9 @@ const config = require("../packages/config");
         const initialUrl = "https://www.hirist.tech/";
         console.log(`[Diagnostic] Navigating to homepage: ${initialUrl}`);
         const response = await page.goto(initialUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
-        const finalUrl = page.url();
-        const httpStatus = response ? response.status() : "N/A";
-        const pageTitle = await page.title();
+        finalUrl = page.url();
+        httpStatus = response ? response.status() : "N/A";
+        pageTitle = await page.title();
 
         console.log(`[Diagnostic] Final URL: ${finalUrl}`);
         console.log(`[Diagnostic] HTTP Status: ${httpStatus}`);
@@ -107,7 +137,7 @@ const config = require("../packages/config");
             "a:has-text('Register')"
         ];
 
-        let loggedInCount = 0;
+        loggedInCount = 0;
         let matchedLoggedInSelector = "";
         for (const sel of loggedInIndicators) {
             const c = await page.locator(sel).count();
@@ -117,7 +147,7 @@ const config = require("../packages/config");
             }
         }
 
-        let loginCount = 0;
+        loginCount = 0;
         let matchedLoginSelector = "";
         for (const sel of loginIndicators) {
             const c = await page.locator(sel).count();
@@ -131,13 +161,17 @@ const config = require("../packages/config");
         console.log(`[Diagnostic] Login UI indicators count: ${loginCount} (e.g. matched "${matchedLoginSelector}")`);
 
         // Classify authentication state (Task 4)
-        const pageContent = await page.content();
+        pageContent = await page.content();
+        
+        // If final URL includes jobfeed, they are definitely authenticated
+        const isUrlAuthenticated = finalUrl.includes("hirist.tech/jobfeed") || finalUrl.includes("hirist.tech/profile.html");
+        
         if (pageContent.includes("Cloudflare") || pageContent.includes("Verify you are human") || pageTitle.includes("Cloudflare") || httpStatus === 403) {
             authStatus = "BLOCKED";
-        } else if (loggedInCount > 0) {
+        } else if (loggedInCount > 0 || isUrlAuthenticated) {
             authStatus = "AUTHENTICATED";
         } else if (loginCount > 0) {
-            if (sessionExists) {
+            if (storageStateExists) {
                 authStatus = "SESSION_EXPIRED";
             } else {
                 authStatus = "LOGIN_REQUIRED";
@@ -161,7 +195,10 @@ const config = require("../packages/config");
                 httpStatus,
                 pageTitle,
                 sessionExists,
-                cookiesCount: cookies.length,
+                storageStateExists,
+                storageStateCookies,
+                storageStateOrigins,
+                cookiesCount: loadedCookiesCount,
                 loggedInIndicatorsCount: loggedInCount,
                 loginIndicatorsCount: loginCount,
                 userAgent,
@@ -310,8 +347,16 @@ const config = require("../packages/config");
     console.log("HIRIST REMOTE DIAGNOSTIC");
     console.log("==================================================");
     console.log(`Environment: Oracle Cloud Ubuntu VM`);
-    console.log(`Authentication: ${authStatus}`);
-    console.log(`Session loaded: ${sessionExists ? "YES" : "NO"}`);
+    console.log(`StorageState file exists: ${storageStateExists ? "YES" : "NO"}`);
+    console.log(`StorageState cookie count: ${storageStateCookies}`);
+    console.log(`StorageState origin count: ${storageStateOrigins}`);
+    console.log(`Browser context loaded cookies count: ${loadedCookiesCount}`);
+    console.log(`Final URL: ${finalUrl || "N/A"}`);
+    console.log(`HTTP status: ${httpStatus || "N/A"}`);
+    console.log(`Page title: ${pageTitle || "N/A"}`);
+    console.log(`Authenticated UI indicators: ${loggedInCount > 0 ? "YES" : "NO"} (${loggedInCount} matches)`);
+    console.log(`Login UI indicators: ${loginCount > 0 ? "YES" : "NO"} (${loginCount} matches)`);
+    console.log(`Authentication classification: ${authStatus}`);
     console.log(`Search: ${searchStatus}`);
     console.log(`Jobs found: ${jobsFoundCount}`);
     console.log(`Job parsing: ${jobParsingStatus}`);
@@ -331,8 +376,8 @@ const config = require("../packages/config");
         console.log("\n[Resolution Guide] How to safely recreate persistent Hirist session on Oracle VM:");
         console.log("1. Because the Oracle VM is headless and has no display server (X server), running headed Chromium (HEADFUL_AUTH_SETUP=true) directly on the host will fail.");
         console.log("2. Instead, you can bootstrap the session locally on your headful machine by completing the login successfully, which saves cookies/storageState into your local 'sessions/hirist' directory.");
-        console.log("3. Once the local session is established, copy the local 'sessions/hirist' directory to the remote Oracle VM path at '/home/ubuntu/automation/sessions/hirist'.");
-        console.log("4. Alternatively, you can use a tool like scp to transfer the files securely: \\n   scp -r ./sessions/hirist/ ubuntu@140.245.212.88:/home/ubuntu/automation/sessions/");
-        console.log("==================================================\\n");
+        console.log("3. Once the local session is established, copy the local 'sessions/hirist/storageState.json' file to the remote Oracle VM path at '/home/ubuntu/automation/sessions/hirist/storageState.json'.");
+        console.log("4. Alternatively, you can use a tool like scp to transfer the files securely: \n   scp -i \"<SSH_KEY>\" ./sessions/hirist/storageState.json ubuntu@140.245.212.88:/home/ubuntu/automation/sessions/hirist/storageState.json");
+        console.log("==================================================\n");
     }
 })();

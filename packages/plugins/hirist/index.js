@@ -33,18 +33,42 @@ class HiristPlugin extends BasePlugin {
 
     async health(page) {
         try {
-            const currentUrl = page.url();
-            if (!currentUrl.includes("hirist.tech/profile.html")) {
-                await page.goto("https://www.hirist.tech/profile.html", { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
+            let currentUrl = page.url();
+            let isLoggedIn = false;
+            
+            if (currentUrl.includes("hirist.tech/jobfeed")) {
+                isLoggedIn = true;
+            } else {
+                if (!currentUrl.includes("hirist.tech/profile.html")) {
+                    await page.goto("https://www.hirist.tech/profile.html", { waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {});
+                    currentUrl = page.url();
+                }
+                
+                if (currentUrl.includes("hirist.tech/jobfeed")) {
+                    isLoggedIn = true;
+                } else {
+                    const indicator = page.locator("input[type='file'], p.login, p:has-text('Login'), button:has-text('Login'), a:has-text('Login')").first();
+                    await indicator.waitFor({ state: "attached", timeout: 10000 }).catch(() => {});
+                    
+                    const loggedInCount = await page.locator("input[type='file'], a:has-text('Logout'), a[href*='logout']").count();
+                    isLoggedIn = loggedInCount > 0;
+                }
             }
             
-            // Wait up to 10 seconds for either the profile form or the login indicator to render
-            const indicator = page.locator("input[type='file'], p.login, p:has-text('Login'), button:has-text('Login'), a:has-text('Login')").first();
-            await indicator.waitFor({ state: "attached", timeout: 10000 }).catch(() => {});
+            const contextManager = require("../../browser/ContextManager");
+            const currentMeta = await contextManager.getMetadata(this.name);
+            const nextHealth = isLoggedIn ? "healthy" : "auth_required";
             
-            const loggedInCount = await page.locator("input[type='file'], a:has-text('Logout'), a[href*='logout']").count();
-            return loggedInCount > 0;
+            if (currentMeta.sessionHealth !== nextHealth) {
+                await contextManager.updateMetadata(this.name, { sessionHealth: nextHealth }).catch(() => {});
+            }
+            return isLoggedIn;
         } catch (e) {
+            const contextManager = require("../../browser/ContextManager");
+            const currentMeta = await contextManager.getMetadata(this.name).catch(() => ({}));
+            if (currentMeta.sessionHealth !== "auth_required") {
+                await contextManager.updateMetadata(this.name, { sessionHealth: "auth_required" }).catch(() => {});
+            }
             return false;
         }
     }

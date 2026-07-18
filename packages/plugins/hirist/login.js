@@ -7,8 +7,32 @@ module.exports = async function login(plugin, page) {
         await page.goto("https://www.hirist.tech/profile.html", { waitUntil: "domcontentloaded", timeout: 45000 });
         await page.waitForTimeout(5000);
         
+        const exportStorageState = async () => {
+            try {
+                const fs = require("fs-extra");
+                const path = require("path");
+                const sessionDir = path.join(process.cwd(), "sessions", "hirist");
+                await fs.ensureDir(sessionDir);
+                const storageStatePath = path.join(sessionDir, "storageState.json");
+                
+                await page.context().storageState({ path: storageStatePath });
+                
+                const state = fs.readJsonSync(storageStatePath);
+                const cookiesCount = state.cookies ? state.cookies.length : 0;
+                const originsCount = state.origins ? state.origins.length : 0;
+                
+                logger.info(`[hirist] Portable authentication state exported successfully.`);
+                logger.info(`[hirist] Storage state path: sessions/hirist/storageState.json`);
+                logger.info(`[hirist] Cookie count: ${cookiesCount}`);
+                logger.info(`[hirist] Origin count: ${originsCount}`);
+            } catch (err) {
+                logger.warn(`Failed to export storage state: ${err.message}`);
+            }
+        };
+
         if (await plugin.health(page)) {
             logger.info("Existing authenticated session detected.");
+            await exportStorageState();
             return true;
         }
 
@@ -18,6 +42,7 @@ module.exports = async function login(plugin, page) {
                 await page.waitForTimeout(2000);
                 if (await plugin.health(page)) {
                     logger.info("Manual Hirist login detected successfully!");
+                    await exportStorageState();
                     return true;
                 }
             }
@@ -104,6 +129,7 @@ module.exports = async function login(plugin, page) {
         const isLoggedIn = await plugin.health(page);
         if (isLoggedIn) {
             logger.info("Authentication verification successful.");
+            await exportStorageState();
             return true;
         } else {
             logger.error("Authentication failed. Session health check returned false.");
