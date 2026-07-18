@@ -138,8 +138,66 @@ const path = require("path");
 
         pluginManager.loadPlugins();
         const plugin = pluginManager.getPlugin(portal);
-        const success = await plugin.login(page);
-        
+        let success = false;
+
+        if (process.env.HEADFUL_AUTH_SETUP === "true") {
+            console.log("HEADFUL_AUTH_SETUP is true. Performing clean homepage setup to prevent React-crash/CORS block on profile.html...");
+            console.log("Navigating to homepage: https://www.hirist.tech/");
+            await page.goto("https://www.hirist.tech/", { waitUntil: "domcontentloaded", timeout: 45000 });
+            await page.waitForTimeout(5000);
+
+            // Accept cookie consent if visible
+            try {
+                const gotItCookieBtn = page.locator("button:has-text('Got it')").first();
+                if (await gotItCookieBtn.count() > 0 && await gotItCookieBtn.isVisible()) {
+                    await gotItCookieBtn.click();
+                    await page.waitForTimeout(1000);
+                }
+            } catch (e) {
+                console.log(`Could not click cookie consent: ${e.message}`);
+            }
+
+            console.log("Opening login dropdown on homepage...");
+            const loginTrigger = page.locator("div.login-btn, p.login").filter({ visible: true }).first();
+            try {
+                await loginTrigger.waitFor({ state: "visible", timeout: 25000 });
+            } catch (e) {
+                console.log("Login trigger not visible. Checking if login form is already present.");
+            }
+
+            let isEmailVisible = await page.locator("input[name='email'], #email").first().isVisible().catch(() => false);
+            if (!isEmailVisible) {
+                console.log("Login form not visible. Clicking login trigger dropdown...");
+                if (await loginTrigger.count() > 0) {
+                    await loginTrigger.click({ force: true }).catch(() => {});
+                    await page.waitForTimeout(2000);
+                    
+                    // Now click 'Jobseekers' submenu item to open candidate login form
+                    console.log("Selecting Jobseekers option from dropdown...");
+                    const jobseekersOption = page.locator("a:has-text('Jobseekers'), p:has-text('Jobseekers'), span:has-text('Jobseekers'), div:has-text('Jobseekers')").filter({ visible: true }).last();
+                    await jobseekersOption.waitFor({ state: "visible", timeout: 8000 });
+                    await jobseekersOption.click({ force: true });
+                    await page.waitForTimeout(3000);
+                }
+            }
+
+            console.log("Login form setup completed. Please enter your credentials and click Login in the headed browser window.");
+            console.log("Waiting for manual login success (up to 10 minutes)...");
+            for (let i = 0; i < 300; i++) {
+                await page.waitForTimeout(2000);
+                if (await plugin.health(page)) {
+                    console.log("Manual Hirist login detected successfully!");
+                    success = true;
+                    break;
+                }
+            }
+            if (!success) {
+                throw new Error("LOGIN_TIMEOUT");
+            }
+        } else {
+            success = await plugin.login(page);
+        }
+
         if (success) {
             isAuthed = true;
             
