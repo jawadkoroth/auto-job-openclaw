@@ -18,63 +18,120 @@ const path = require("path");
         const page = await browserInstance.newPage();
 
         if (process.env.HEADFUL_AUTH_SETUP === "true") {
-            // Install network debug listeners (Requirement 1)
-            page.on("requestfailed", (request) => {
+            const isRelevantUrl = (url) => {
+                try {
+                    const host = new URL(url).hostname;
+                    return host.includes("hirist.com") || host.includes("hirist.tech");
+                } catch (e) {
+                    return false;
+                }
+            };
+
+            const sanitizeHeaders = (headers) => {
+                const sanitized = {};
+                for (const [key, value] of Object.entries(headers)) {
+                    if (/auth|cookie|token|password|credential|secret|key/i.test(key)) {
+                        sanitized[key] = "[REDACTED]";
+                    } else {
+                        sanitized[key] = value;
+                    }
+                }
+                return sanitized;
+            };
+
+            const redactBody = (bodyText) => {
+                if (!bodyText) return "";
+                let result = bodyText.replace(/"(password|token|email|auth|key|secret)":\s*"[^"]+"/gi, '"$1": "[REDACTED]"');
+                result = result.replace(/(password|token|email|auth|key|secret)=[^&]+/gi, "$1=[REDACTED]");
+                return result;
+            };
+
+            // Track whether the login request has been sent and responded
+            let loginRequestSent = false;
+            let loginResponseReceived = false;
+
+            page.on("request", (request) => {
                 const url = request.url();
-                let safeUrl = url.replace(/(password|token|email|auth|key|secret)=[^&]+/gi, "$1=[REDACTED]");
-                
-                console.log("\n[HIRIST AUTH DEBUG - REQUEST FAILED]");
-                console.log(`Request URL: ${safeUrl}`);
-                console.log(`Method: ${request.method()}`);
-                console.log(`Resource Type: ${request.resourceType()}`);
-                console.log(`Failure Reason: ${request.failure() ? request.failure().errorText : "Unknown"}`);
-                console.log("=====================================\n");
+                if (!isRelevantUrl(url)) return;
+
+                const isLogin = url.includes("user-api.hirist.com/v2/auth/login") && request.method() === "POST";
+                if (isLogin) {
+                    loginRequestSent = true;
+                    console.log("\n==================================================");
+                    console.log("[HIRIST LOGIN REQUEST DETECTED]");
+                    console.log(`1. Request Sent: YES`);
+                    console.log(`2. Method: ${request.method()}`);
+                    console.log(`3. Sanitized Request Headers:`, JSON.stringify(sanitizeHeaders(request.headers()), null, 2));
+                    console.log("==================================================\n");
+                } else {
+                    console.log(`[HIRIST REQUEST] ${request.method()} -> ${url}`);
+                }
             });
 
             page.on("response", async (response) => {
-                const status = response.status();
-                if (status >= 400) {
-                    const url = response.url();
-                    let safeUrl = url.replace(/(password|token|email|auth|key|secret)=[^&]+/gi, "$1=[REDACTED]");
-                    const request = response.request();
-                    
-                    console.log("\n[HIRIST AUTH DEBUG - RESPONSE ERROR]");
-                    console.log(`Request URL: ${safeUrl}`);
-                    console.log(`Method: ${request.method()}`);
-                    console.log(`Resource Type: ${request.resourceType()}`);
-                    console.log(`HTTP Status: ${status}`);
+                const url = response.url();
+                if (!isRelevantUrl(url)) return;
+
+                const request = response.request();
+                const isLogin = url.includes("user-api.hirist.com/v2/auth/login") && request.method() === "POST";
+
+                if (isLogin) {
+                    loginResponseReceived = true;
+                    const status = response.status();
+                    console.log("\n==================================================");
+                    console.log("[HIRIST LOGIN RESPONSE RECEIVED]");
+                    console.log(`4. Response Received: YES`);
+                    console.log(`5. HTTP Status: ${status}`);
+                    console.log(`6. Sanitized Response Headers:`, JSON.stringify(sanitizeHeaders(response.headers()), null, 2));
                     
                     try {
-                        const text = await response.text();
-                        let safeBody = text;
-                        // Redact any possible passwords or tokens in response
-                        safeBody = safeBody.replace(/"(password|token|email|auth|key|secret)":\s*"[^"]+"/gi, '"$1": "[REDACTED]"');
-                        console.log(`Response Body: ${safeBody.substring(0, 1000)}`);
+                        const body = await response.text();
+                        console.log(`7. Sanitized Response Body: ${redactBody(body)}`);
                     } catch (e) {
-                        console.log(`Response Body: (Not readable: ${e.message})`);
+                        console.log(`7. Sanitized Response Body: (Could not read: ${e.message})`);
                     }
-                    console.log("=====================================\n");
+                    console.log("==================================================\n");
+                } else {
+                    const status = response.status();
+                    if (status >= 400) {
+                        console.log(`[HIRIST RESPONSE ERROR] ${status} -> ${url}`);
+                        try {
+                            const body = await response.text();
+                            console.log(`   Response Body: ${redactBody(body).substring(0, 500)}`);
+                        } catch (e) {}
+                    } else {
+                        console.log(`[HIRIST RESPONSE] ${status} -> ${url}`);
+                    }
                 }
             });
 
-            // Log XHR/Fetch requests to identify login endpoint (Requirement 2)
-            page.on("request", (request) => {
+            page.on("requestfailed", (request) => {
                 const url = request.url();
-                const type = request.resourceType();
-                if (type === "fetch" || type === "xhr") {
-                    let safeUrl = url.replace(/(password|token|email|auth|key|secret)=[^&]+/gi, "$1=[REDACTED]");
-                    console.log(`[HIRIST API REQUEST] ${request.method()} -> ${safeUrl} (${type})`);
+                if (!isRelevantUrl(url)) return;
+
+                const isLogin = url.includes("user-api.hirist.com/v2/auth/login") && request.method() === "POST";
+                const failureReason = request.failure() ? request.failure().errorText : "Unknown";
+
+                if (isLogin) {
+                    console.log("\n==================================================");
+                    console.log("[HIRIST LOGIN REQUEST FAILED]");
+                    console.log(`8. Playwright Failure Reason: ${failureReason}`);
+                    console.log("==================================================\n");
+                } else {
+                    console.log(`[HIRIST REQUEST FAILED] ${request.method()} -> ${url} | Reason: ${failureReason}`);
                 }
             });
 
-            page.on("response", (response) => {
-                const request = response.request();
-                const type = request.resourceType();
-                if (type === "fetch" || type === "xhr") {
-                    const url = response.url();
-                    let safeUrl = url.replace(/(password|token|email|auth|key|secret)=[^&]+/gi, "$1=[REDACTED]");
-                    console.log(`[HIRIST API RESPONSE] ${response.status()} -> ${safeUrl}`);
+            page.on("console", (msg) => {
+                const text = msg.text();
+                // Check if message is an error or contains relevant terms
+                if (msg.type() === "error" || /CORS|CSP|SSL|TLS|DNS|blocked|failed/i.test(text)) {
+                    console.log(`[BROWSER CONSOLE ${msg.type().toUpperCase()}] ${text}`);
                 }
+            });
+
+            page.on("pageerror", (err) => {
+                console.log(`[PAGE UNCAUGHT ERROR] ${err.stack || err.message}`);
             });
         }
 
@@ -102,6 +159,37 @@ const path = require("path");
             isAuthed = "LOGIN_TIMEOUT";
         }
     } finally {
+        if (process.env.HEADFUL_AUTH_SETUP === "true") {
+            try {
+                console.log("\n==================================================");
+                console.log("FINAL DIAGNOSTICS:");
+                console.log(`11. Final Page URL: ${page.url()}`);
+                
+                // Attempt to extract any visible error message on the page
+                const visibleErrors = await page.evaluate(() => {
+                    const elements = Array.from(document.querySelectorAll("div, p, span, h1, h2, h3, h4, h5, h6, label"));
+                    const errMsgs = [];
+                    for (const el of elements) {
+                        const text = el.innerText ? el.innerText.trim() : "";
+                        if (text.length > 0 && text.length < 200) {
+                            const lower = text.toLowerCase();
+                            if (lower.includes("error") || lower.includes("invalid") || lower.includes("failed") || lower.includes("incorrect") || lower.includes("wrong")) {
+                                const style = window.getComputedStyle(el);
+                                if (style && style.display !== "none" && style.visibility !== "hidden" && style.opacity !== "0") {
+                                    errMsgs.push(text);
+                                }
+                            }
+                        }
+                    }
+                    return Array.from(new Set(errMsgs));
+                }).catch(() => []);
+                
+                console.log("Visible Error Messages on Page:", visibleErrors.length > 0 ? visibleErrors : "None detected");
+                console.log("==================================================\n");
+            } catch (diagErr) {
+                console.error("Failed to extract final page diagnostics:", diagErr.message);
+            }
+        }
         await browserInstance.close();
     }
 
