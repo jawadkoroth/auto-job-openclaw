@@ -204,13 +204,16 @@ class BrowserInstance {
                         const sessionPath = contextManager.getContextPath(this.portalName);
                         const storageStatePath = path.join(sessionPath, "storageState.json");
                         const pages = this.context.pages();
-                        if (pages.length > 0) {
+                        const metadata = await contextManager.getMetadata(this.portalName).catch(() => ({}));
+                        if (pages.length > 0 && metadata.sessionHealth === "healthy") {
                             const tempPath = storageStatePath + ".tmp";
                             await this.context.storageState({ path: tempPath });
                             if (fs.existsSync(tempPath)) {
                                 fs.moveSync(tempPath, storageStatePath, { overwrite: true });
                                 logger.browser.info(`[${this.portalName}] Auto-exported/refreshed storageState.json upon close.`);
                             }
+                        } else {
+                            logger.browser.info(`[${this.portalName}] Skipping storageState auto-export on close (session health is not healthy).`);
                         }
                     } catch (err) {
                         logger.browser.error(`[${this.portalName}] Failed to auto-export storageState.json upon close: ${err.message}`);

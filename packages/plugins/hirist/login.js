@@ -42,12 +42,21 @@ module.exports = async function login(plugin, page) {
                 await page.waitForTimeout(2000);
                 if (await plugin.health(page)) {
                     logger.info("Manual Hirist login detected successfully!");
-                    await exportStorageState();
-                    return true;
+                    logger.info("Navigating to jobfeed page to re-verify authentication...");
+                    await page.goto("https://www.hirist.tech/jobfeed", { waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {});
+                    await page.waitForTimeout(3000);
+                    
+                    if (await plugin.health(page)) {
+                        logger.info("Re-verification on jobfeed page successful.");
+                        await exportStorageState();
+                        return true;
+                    } else {
+                        logger.warn("Re-verification after navigation to jobfeed failed. Continuing authentication poll.");
+                    }
                 }
             }
             logger.error("Timed out waiting for manual Hirist login.");
-            return false;
+            throw new Error("LOGIN_TIMEOUT");
         }
 
         logger.info("No active session. Preparing to trigger login dropdown...");

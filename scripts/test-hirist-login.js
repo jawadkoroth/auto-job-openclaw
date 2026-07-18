@@ -36,6 +36,9 @@ const path = require("path");
         }
     } catch (e) {
         console.error("FAILED:", e.message);
+        if (e.message === "LOGIN_TIMEOUT") {
+            isAuthed = "LOGIN_TIMEOUT";
+        }
     } finally {
         await browserInstance.close();
     }
@@ -43,7 +46,7 @@ const path = require("path");
     console.log("\n==================================================");
     console.log("HIRIST LOCAL AUTH BOOTSTRAP");
     console.log("==================================================");
-    console.log(`Authentication: ${isAuthed ? "AUTHENTICATED" : "FAILED"}`);
+    console.log(`Authentication: ${isAuthed === true ? "AUTHENTICATED" : (isAuthed === "LOGIN_TIMEOUT" ? "LOGIN_TIMEOUT" : "FAILED")}`);
     console.log(`StorageState Exported: ${isExported}`);
     console.log(`Cookies Exported: ${cookiesCount}`);
     console.log(`Origins Exported: ${originsCount}`);
