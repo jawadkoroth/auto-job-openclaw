@@ -12,10 +12,11 @@ const path = require("path");
     let isExported = "NO";
     let cookiesCount = 0;
     let originsCount = 0;
+    let page;
 
     try {
         await browserInstance.launch();
-        const page = await browserInstance.newPage();
+        page = await browserInstance.newPage();
 
         if (process.env.HEADFUL_AUTH_SETUP === "true") {
             const isRelevantUrl = (url) => {
