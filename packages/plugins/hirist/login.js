@@ -3,8 +3,8 @@ module.exports = async function login(plugin, page) {
     logger.info("Hirist login routine started.");
 
     try {
-        logger.info("Navigating to Hirist profile page...");
-        await page.goto("https://www.hirist.tech/profile.html", { waitUntil: "domcontentloaded", timeout: 45000 });
+        logger.info("Navigating to Hirist homepage...");
+        await page.goto("https://www.hirist.tech/", { waitUntil: "domcontentloaded", timeout: 45000 });
         await page.waitForTimeout(5000);
         
         const exportStorageState = async () => {
@@ -38,8 +38,12 @@ module.exports = async function login(plugin, page) {
 
         if (process.env.HEADFUL_AUTH_SETUP === "true") {
             logger.info("HEADFUL_AUTH_SETUP is true. Please perform Hirist login manually in the open browser window...");
-            for (let i = 0; i < 150; i++) {
-                await page.waitForTimeout(2000);
+            for (let i = 0; i < 1200; i++) {
+                await page.waitForTimeout(500);
+                if (await page.isClosed()) {
+                    logger.info("Browser window closed by user.");
+                    break;
+                }
                 if (await plugin.health(page)) {
                     logger.info("Manual Hirist login detected successfully!");
                     logger.info("Navigating to jobfeed page to re-verify authentication...");
@@ -72,15 +76,15 @@ module.exports = async function login(plugin, page) {
             logger.debug(`Could not click cookie consent on Hirist: ${e.message}`);
         }
 
-        logger.info("Opening login dropdown on profile page...");
-        const loginTrigger = page.locator("div.login-btn, p.login").filter({ visible: true }).first();
+        logger.info("Opening login dropdown on homepage...");
+        const loginTrigger = page.locator("button:has-text('Login'), div.login-btn, p.login, a:has-text('Login')").filter({ visible: true }).first();
         try {
             await loginTrigger.waitFor({ state: "visible", timeout: 25000 });
         } catch (e) {
             logger.info("Login trigger not visible. Checking if login form is already present.");
         }
 
-        let isEmailVisible = await page.locator("input[name='email'], #email").first().isVisible().catch(() => false);
+        let isEmailVisible = await page.locator("input#login-email-input, input[name='email'], #email, input[placeholder='Enter your registered email id']").first().isVisible().catch(() => false);
         if (!isEmailVisible) {
             logger.info("Login form not visible. Clicking login trigger dropdown...");
             if (await loginTrigger.count() > 0) {
@@ -103,7 +107,7 @@ module.exports = async function login(plugin, page) {
         }
 
         // Detect and switch to Sign In state if needed
-        const isSignInVisible = await page.locator("button#loginSubmit, input#login-email-input").first().isVisible().catch(() => false);
+        const isSignInVisible = await page.locator("button#loginSubmit, input#login-email-input, input[placeholder='Enter your registered email id']").first().isVisible().catch(() => false);
         if (!isSignInVisible) {
             logger.info("Sign In form not visible. Checking for Sign In switcher...");
             const signInSwitch = page.locator("div.switch-container, span:has-text('Sign In'), a:has-text('Sign In')").filter({ visible: true }).last();
@@ -115,21 +119,21 @@ module.exports = async function login(plugin, page) {
         }
 
         logger.info("Entering Hirist credentials...");
-        const emailInput = page.locator("input#login-email-input, input[name='email'], #email").first();
+        const emailInput = page.locator("input#login-email-input, input[name='email'], #email, input[placeholder='Enter your registered email id']").first();
         await emailInput.waitFor({ state: "visible", timeout: 20000 });
         await emailInput.click();
         await page.keyboard.press("Control+A");
         await page.keyboard.press("Backspace");
         await emailInput.fill(email);
 
-        const passwordInput = page.locator("input#loginPassword, input[name='password'], #password").first();
+        const passwordInput = page.locator("input#loginPassword, input[name='password'], #password, input[placeholder='Enter your password']").first();
         await passwordInput.click();
         await page.keyboard.press("Control+A");
         await page.keyboard.press("Backspace");
         await passwordInput.fill(password);
 
         logger.info("Submitting login form...");
-        const submitBtn = page.locator("button#loginSubmit, button:has-text('Login')").filter({ visible: true }).first();
+        const submitBtn = page.locator("button#loginSubmit, button:has-text('Login'), button[type='submit']").filter({ visible: true }).first();
         await submitBtn.click();
 
         logger.info("Waiting for dashboard redirect...");
