@@ -158,30 +158,29 @@ const path = require("path");
             }
 
             console.log("Opening login dropdown on homepage...");
-            const loginTrigger = page.locator("div.login-btn, p.login").filter({ visible: true }).first();
+            const loginBtn = page.locator('button:has-text("Login")').first();
             try {
-                await loginTrigger.waitFor({ state: "visible", timeout: 25000 });
+                await loginBtn.waitFor({ state: "visible", timeout: 25000 });
+                await loginBtn.click({ force: true });
+                await page.waitForTimeout(2000);
             } catch (e) {
-                console.log("Login trigger not visible. Checking if login form is already present.");
+                console.log("Could not find or click Login button:", e.message);
             }
 
-            let isEmailVisible = await page.locator("input[name='email'], #email").first().isVisible().catch(() => false);
-            if (!isEmailVisible) {
-                console.log("Login form not visible. Clicking login trigger dropdown...");
-                if (await loginTrigger.count() > 0) {
-                    await loginTrigger.click({ force: true }).catch(() => {});
-                    await page.waitForTimeout(2000);
-                    
-                    // Now click 'Jobseekers' submenu item to open candidate login form
-                    console.log("Selecting Jobseekers option from dropdown...");
-                    const jobseekersOption = page.locator("a:has-text('Jobseekers'), p:has-text('Jobseekers'), span:has-text('Jobseekers'), div:has-text('Jobseekers')").filter({ visible: true }).last();
-                    await jobseekersOption.waitFor({ state: "visible", timeout: 8000 });
-                    await jobseekersOption.click({ force: true });
-                    await page.waitForTimeout(3000);
-                }
+            console.log("Entering credentials into the login dialog...");
+            try {
+                const emailInput = page.locator('input[placeholder="Enter your registered email id"]').first();
+                await emailInput.waitFor({ state: "visible", timeout: 15000 });
+                await emailInput.fill(config.portals.hirist.email);
+
+                const passwordInput = page.locator('input[placeholder="Enter your password"]').first();
+                await passwordInput.fill(config.portals.hirist.password);
+                console.log("Credentials prefilled successfully!");
+            } catch (e) {
+                console.log("Failed to locate or fill email/password inputs:", e.message);
             }
 
-            console.log("Login form setup completed. Please enter your credentials and click Login in the headed browser window.");
+            console.log("Login form setup completed. Please click the 'Login' button manually in the open headed browser window.");
             console.log("Waiting for manual login success (up to 10 minutes)...");
             for (let i = 0; i < 300; i++) {
                 await page.waitForTimeout(2000);
