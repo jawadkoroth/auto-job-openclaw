@@ -146,48 +146,53 @@ const path = require("path");
             await page.goto("https://www.hirist.tech/", { waitUntil: "domcontentloaded", timeout: 45000 });
             await page.waitForTimeout(5000);
 
-            // Accept cookie consent if visible
-            try {
-                const gotItCookieBtn = page.locator("button:has-text('Got it')").first();
-                if (await gotItCookieBtn.count() > 0 && await gotItCookieBtn.isVisible()) {
-                    await gotItCookieBtn.click();
-                    await page.waitForTimeout(1000);
+            if (await plugin.health(page)) {
+                console.log("Existing authenticated session detected successfully!");
+                success = true;
+            } else {
+                // Accept cookie consent if visible
+                try {
+                    const gotItCookieBtn = page.locator("button:has-text('Got it')").first();
+                    if (await gotItCookieBtn.count() > 0 && await gotItCookieBtn.isVisible()) {
+                        await gotItCookieBtn.click();
+                        await page.waitForTimeout(1000);
+                    }
+                } catch (e) {
+                    console.log(`Could not click cookie consent: ${e.message}`);
                 }
-            } catch (e) {
-                console.log(`Could not click cookie consent: ${e.message}`);
-            }
 
-            console.log("Opening login dropdown on homepage...");
-            const loginBtn = page.locator('button:has-text("Login")').filter({ visible: true }).first();
-            try {
-                await loginBtn.waitFor({ state: "visible", timeout: 25000 });
-                await loginBtn.click({ force: true });
-                await page.waitForTimeout(2000);
-            } catch (e) {
-                console.log("Could not find or click Login button:", e.message);
-            }
+                console.log("Opening login dropdown on homepage...");
+                const loginBtn = page.locator('button:has-text("Login")').filter({ visible: true }).first();
+                try {
+                    await loginBtn.waitFor({ state: "visible", timeout: 25000 });
+                    await loginBtn.click({ force: true });
+                    await page.waitForTimeout(2000);
+                } catch (e) {
+                    console.log("Could not find or click Login button:", e.message);
+                }
 
-            console.log("Entering credentials into the login dialog...");
-            try {
-                const emailInput = page.locator('input[placeholder="Enter your registered email id"]').first();
-                await emailInput.waitFor({ state: "visible", timeout: 15000 });
-                await emailInput.fill(plugin.config.portals.hirist.email);
+                console.log("Entering credentials into the login dialog...");
+                try {
+                    const emailInput = page.locator('input[placeholder="Enter your registered email id"]').first();
+                    await emailInput.waitFor({ state: "visible", timeout: 15000 });
+                    await emailInput.fill(plugin.config.portals.hirist.email);
 
-                const passwordInput = page.locator('input[placeholder="Enter your password"]').first();
-                await passwordInput.fill(plugin.config.portals.hirist.password);
-                console.log("Credentials prefilled successfully!");
-            } catch (e) {
-                console.log("Failed to locate or fill email/password inputs:", e.message);
-            }
+                    const passwordInput = page.locator('input[placeholder="Enter your password"]').first();
+                    await passwordInput.fill(plugin.config.portals.hirist.password);
+                    console.log("Credentials prefilled successfully!");
+                } catch (e) {
+                    console.log("Failed to locate or fill email/password inputs:", e.message);
+                }
 
-            console.log("Login form setup completed. Please click the 'Login' button manually in the open headed browser window.");
-            console.log("Waiting for manual login success (up to 10 minutes)...");
-            for (let i = 0; i < 300; i++) {
-                await page.waitForTimeout(2000);
-                if (await plugin.health(page)) {
-                    console.log("Manual Hirist login detected successfully!");
-                    success = true;
-                    break;
+                console.log("Login form setup completed. Please click the 'Login' button manually in the open headed browser window.");
+                console.log("Waiting for manual login success (up to 10 minutes)...");
+                for (let i = 0; i < 300; i++) {
+                    await page.waitForTimeout(2000);
+                    if (await plugin.health(page)) {
+                        console.log("Manual Hirist login detected successfully!");
+                        success = true;
+                        break;
+                    }
                 }
             }
             if (!success) {
