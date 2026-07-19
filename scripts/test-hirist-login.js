@@ -184,10 +184,20 @@ const path = require("path");
                     console.log("Failed to locate or fill email/password inputs:", e.message);
                 }
 
-                console.log("Login form setup completed. Please click the 'Login' button manually in the open headed browser window.");
-                console.log("Waiting for manual login success (up to 10 minutes)...");
-                for (let i = 0; i < 300; i++) {
-                    await page.waitForTimeout(2000);
+                console.log("\n======================================================================");
+                console.log("IMPORTANT: Please click 'Login' manually inside the browser.");
+                console.log("Do NOT close the browser window yourself!");
+                console.log("The script will automatically detect the login, save the cookies/origins,");
+                console.log("and close the browser for you.");
+                console.log("======================================================================\n");
+
+                console.log("Waiting for manual login success...");
+                for (let i = 0; i < 1200; i++) {
+                    await page.waitForTimeout(500);
+                    if (await page.isClosed()) {
+                        console.log("Browser window closed by user.");
+                        break;
+                    }
                     if (await plugin.health(page)) {
                         console.log("Manual Hirist login detected successfully!");
                         success = true;
