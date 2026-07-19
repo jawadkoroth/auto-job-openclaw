@@ -222,7 +222,7 @@ const path = require("path");
             isAuthed = "LOGIN_TIMEOUT";
         }
     } finally {
-        if (process.env.HEADFUL_AUTH_SETUP === "true") {
+        if (process.env.HEADFUL_AUTH_SETUP === "true" && page) {
             try {
                 console.log("\n==================================================");
                 console.log("FINAL DIAGNOSTICS:");

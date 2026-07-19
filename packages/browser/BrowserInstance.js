@@ -16,6 +16,7 @@ class BrowserInstance {
         this.intentionalClose = false;
         this.screenshotDir = path.join(process.cwd(), "screenshots");
         fs.ensureDirSync(this.screenshotDir);
+        this.tempProfilePath = null;
     }
 
     /**
@@ -31,22 +32,14 @@ class BrowserInstance {
         }
 
         const sessionPath = contextManager.getContextPath(this.portalName);
+        let launchPath = sessionPath;
 
-        // Clean up persistent profile directory on HEADFUL_AUTH_SETUP=true to ensure a clean bootstrap (except metadata.json)
         if (process.env.HEADFUL_AUTH_SETUP === "true") {
-            try {
-                if (fs.existsSync(sessionPath)) {
-                    const files = fs.readdirSync(sessionPath);
-                    for (const file of files) {
-                        if (file !== "metadata.json") {
-                            fs.removeSync(path.join(sessionPath, file));
-                        }
-                    }
-                    logger.browser.info(`[${this.portalName}] Cleaned up stale persistent profile files for fresh headful bootstrap.`);
-                }
-            } catch (e) {
-                logger.browser.warn(`[${this.portalName}] Stale profile cleanup failed: ${e.message}`);
-            }
+            const tempDir = path.join(os.tmpdir(), `auto-job-bootstrap-${this.portalName}-${Date.now()}`);
+            fs.ensureDirSync(tempDir);
+            this.tempProfilePath = tempDir;
+            launchPath = tempDir;
+            logger.browser.info(`[${this.portalName}] HEADFUL_AUTH_SETUP is true. Using temporary user data directory: ${tempDir}`);
         }
 
         logger.browser.info(`Launching isolated BrowserInstance for: ${this.portalName}`);
@@ -76,7 +69,18 @@ class BrowserInstance {
 
             logger.browser.info(`Complete browser launch options: ${JSON.stringify(launchOptions, null, 2)}`);
 
-            this.context = await chromium.launchPersistentContext(sessionPath, launchOptions);
+            try {
+                this.context = await chromium.launchPersistentContext(launchPath, launchOptions);
+            } catch (launchErr) {
+                if (launchErr.message.includes("ProcessSingleton") || launchErr.message.includes("EBUSY") || launchErr.message.includes("lock")) {
+                    logger.browser.error("\n================================================================================\n" +
+                        `[BROWSER LOCK ERROR] The browser profile at ${launchPath} is currently locked by another process.\n` +
+                        "This usually means Chromium is still running. Please close any open browsers or terminate them.\n" +
+                        "================================================================================\n"
+                    );
+                }
+                throw launchErr;
+            }
 
             // Load portable storageState if it exists (Task 2)
             // (Skip loading on HEADFUL_AUTH_SETUP=true to allow a clean bootstrap session)
@@ -252,6 +256,18 @@ class BrowserInstance {
             } finally {
                 this.context = null;
                 this.intentionalClose = false;
+
+                if (this.tempProfilePath) {
+                    try {
+                        if (fs.existsSync(this.tempProfilePath)) {
+                            fs.removeSync(this.tempProfilePath);
+                            logger.browser.info(`[${this.portalName}] Successfully cleaned up temporary profile directory: ${this.tempProfilePath}`);
+                        }
+                    } catch (cleanupErr) {
+                        logger.browser.warn(`[${this.portalName}] Failed to clean up temporary profile directory ${this.tempProfilePath}: ${cleanupErr.message}`);
+                    }
+                    this.tempProfilePath = null;
+                }
             }
         }
     }
