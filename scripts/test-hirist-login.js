@@ -158,7 +158,7 @@ const path = require("path");
             }
 
             console.log("Opening login dropdown on homepage...");
-            const loginBtn = page.locator('button:has-text("Login")').first();
+            const loginBtn = page.locator('button:has-text("Login")').filter({ visible: true }).first();
             try {
                 await loginBtn.waitFor({ state: "visible", timeout: 25000 });
                 await loginBtn.click({ force: true });
@@ -171,10 +171,10 @@ const path = require("path");
             try {
                 const emailInput = page.locator('input[placeholder="Enter your registered email id"]').first();
                 await emailInput.waitFor({ state: "visible", timeout: 15000 });
-                await emailInput.fill(config.portals.hirist.email);
+                await emailInput.fill(plugin.config.portals.hirist.email);
 
                 const passwordInput = page.locator('input[placeholder="Enter your password"]').first();
-                await passwordInput.fill(config.portals.hirist.password);
+                await passwordInput.fill(plugin.config.portals.hirist.password);
                 console.log("Credentials prefilled successfully!");
             } catch (e) {
                 console.log("Failed to locate or fill email/password inputs:", e.message);
