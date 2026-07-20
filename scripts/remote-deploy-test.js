@@ -56,10 +56,34 @@ if (isPushRequested) {
     }
 }
 
-// 3. Build commands to run on the Oracle VM
+// Sync portable storageState.json files if present locally
+const founditStatePath = path.join(__dirname, "../sessions/foundit/storageState.json");
+let founditSyncCmd = "";
+if (fs.existsSync(founditStatePath)) {
+    const stateContent = fs.readFileSync(founditStatePath, "utf8");
+    const base64State = Buffer.from(stateContent).toString("base64");
+    founditSyncCmd = `
+mkdir -p ${remoteProjectPath}/sessions/foundit
+echo "${base64State}" | base64 -d > ${remoteProjectPath}/sessions/foundit/storageState.json
+echo "=== Synced local storageState.json for Foundit to VM ==="
+`;
+}
+
+const hiristStatePath = path.join(__dirname, "../sessions/hirist/storageState.json");
+let hiristSyncCmd = "";
+if (fs.existsSync(hiristStatePath)) {
+    const stateContent = fs.readFileSync(hiristStatePath, "utf8");
+    const base64State = Buffer.from(stateContent).toString("base64");
+    hiristSyncCmd = `
+mkdir -p ${remoteProjectPath}/sessions/hirist
+echo "${base64State}" | base64 -d > ${remoteProjectPath}/sessions/hirist/storageState.json
+echo "=== Synced local storageState.json for Hirist to VM ==="
+`;
+}
+
+// Build commands to run on the Oracle VM
 console.log(`🔌 Preparing to connect to remote VM: ${remoteUser}@${remoteHost}...`);
 
-// Check package.json diff to determine if dependencies changed
 const remoteCommand = `
 cd ${remoteProjectPath}
 echo "=== Running Git Pull on VM ==="
@@ -81,6 +105,9 @@ if echo "$LOCAL_DIFF" | grep -qE "package.json|package-lock.json"; then
     echo "=== Dependencies changed. Running npm install on VM ==="
     npm install
 fi
+
+${founditSyncCmd}
+${hiristSyncCmd}
 
 echo "=== Running Target Task on VM ==="
 ${
