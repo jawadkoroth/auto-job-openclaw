@@ -77,6 +77,23 @@ const config = require("../packages/config");
     let userAgent = "N/A";
     let webdriver = false;
 
+    // Application flow diagnostic variables
+    let interceptedSubmitUrl = null;
+    let interceptedSubmitMethod = null;
+    let dryRunPreventedFinalSubmit = "PASS";
+    let applicationPageReached = "FAIL";
+    let applicationFormDetected = "FAIL";
+    let coverLetterStatus = "NOT_AVAILABLE";
+    let textInputsCount = 0;
+    let textareasCount = 0;
+    let radioButtonsCount = 0;
+    let checkboxesCount = 0;
+    let dropdownsCount = 0;
+    let resumeControlsCount = 0;
+    let nextBtnCount = 0;
+    let submitBtnCount = 0;
+    let uniqueQuestions = [];
+
     try {
         console.log("[Diagnostic] Launching browser...");
         context = await browserInstance.launch();
@@ -247,20 +264,6 @@ const config = require("../packages/config");
             };
             await fs.writeJson(path.join(diagnosticsDir, "diagnostics.json"), diagInfo, { spaces: 2 });
         }
-
-        // Application flow diagnostic variables
-        let applicationPageReached = "FAIL";
-        let applicationFormDetected = "FAIL";
-        let coverLetterStatus = "NOT_AVAILABLE";
-        let textInputsCount = 0;
-        let textareasCount = 0;
-        let radioButtonsCount = 0;
-        let checkboxesCount = 0;
-        let dropdownsCount = 0;
-        let resumeControlsCount = 0;
-        let nextBtnCount = 0;
-        let submitBtnCount = 0;
-        let uniqueQuestions = [];
 
         // Run authenticated test flow
         if (authStatus === "AUTHENTICATED") {
