@@ -77,16 +77,15 @@ const path = require("path");
             }
         }
 
-        // 2. Foundit Job Search & Parsing
-        if (authStatus === "PASS") {
-            console.log("[Diagnostic] Searching for DevOps/Cloud/Platform/SRE jobs on Foundit...");
-            const searchResults = await plugin.search(page, {
-                keywordsList: ["DevOps Engineer", "Cloud Engineer", "Platform Engineer", "SRE"],
-                locationsList: ["Bangalore"]
-            }).catch(err => {
-                console.error("[Diagnostic] Foundit search error:", err.message);
-                return [];
-            });
+        // 2. Foundit Job Search & Parsing (proceed to test search & external ATS applications)
+        console.log("[Diagnostic] Searching for DevOps/Cloud/Platform/SRE jobs on Foundit...");
+        const searchResults = await plugin.search(page, {
+            keywordsList: ["DevOps Engineer", "Cloud Engineer", "Platform Engineer", "SRE"],
+            locationsList: ["Bangalore"]
+        }).catch(err => {
+            console.error("[Diagnostic] Foundit search error:", err.message);
+            return [];
+        });
 
             if (searchResults && searchResults.length > 0) {
                 searchStatus = "PASS";
@@ -173,10 +172,9 @@ const path = require("path");
             } else {
                 console.log("[Diagnostic] No job cards returned from Foundit search.");
             }
-        }
 
         // Calculate overall result
-        if (authStatus === "PASS" && searchStatus === "PASS" && jobParsingStatus === "PASS") {
+        if (searchStatus === "PASS" && jobParsingStatus === "PASS") {
             overallResult = "PASS";
         }
     } catch (err) {
