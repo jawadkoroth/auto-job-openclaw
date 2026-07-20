@@ -56,29 +56,31 @@ if (isPushRequested) {
     }
 }
 
-// Sync portable storageState.json files if present locally
+// Sync portable storageState.json files if present locally using SCP
+const sshKeyPath = path.resolve(remoteSshKey);
+
 const founditStatePath = path.join(__dirname, "../sessions/foundit/storageState.json");
-let founditSyncCmd = "";
 if (fs.existsSync(founditStatePath)) {
-    const stateContent = fs.readFileSync(founditStatePath, "utf8");
-    const base64State = Buffer.from(stateContent).toString("base64");
-    founditSyncCmd = `
-mkdir -p ${remoteProjectPath}/sessions/foundit
-echo "${base64State}" | base64 -d > ${remoteProjectPath}/sessions/foundit/storageState.json
-echo "=== Synced local storageState.json for Foundit to VM ==="
-`;
+    console.log("📤 Syncing local storageState.json for Foundit to remote VM via SCP...");
+    try {
+        execSync(`ssh -i "${sshKeyPath}" -o StrictHostKeyChecking=no ${remoteUser}@${remoteHost} "mkdir -p ${remoteProjectPath}/sessions/foundit"`);
+        execSync(`scp -i "${sshKeyPath}" -o StrictHostKeyChecking=no "${founditStatePath}" ${remoteUser}@${remoteHost}:${remoteProjectPath}/sessions/foundit/storageState.json`, { stdio: "inherit" });
+        console.log("✅ Successfully transferred Foundit storageState.json to VM.");
+    } catch (e) {
+        console.warn(`⚠️ Warning: Failed transferring Foundit storageState.json: ${e.message}`);
+    }
 }
 
 const hiristStatePath = path.join(__dirname, "../sessions/hirist/storageState.json");
-let hiristSyncCmd = "";
 if (fs.existsSync(hiristStatePath)) {
-    const stateContent = fs.readFileSync(hiristStatePath, "utf8");
-    const base64State = Buffer.from(stateContent).toString("base64");
-    hiristSyncCmd = `
-mkdir -p ${remoteProjectPath}/sessions/hirist
-echo "${base64State}" | base64 -d > ${remoteProjectPath}/sessions/hirist/storageState.json
-echo "=== Synced local storageState.json for Hirist to VM ==="
-`;
+    console.log("📤 Syncing local storageState.json for Hirist to remote VM via SCP...");
+    try {
+        execSync(`ssh -i "${sshKeyPath}" -o StrictHostKeyChecking=no ${remoteUser}@${remoteHost} "mkdir -p ${remoteProjectPath}/sessions/hirist"`);
+        execSync(`scp -i "${sshKeyPath}" -o StrictHostKeyChecking=no "${hiristStatePath}" ${remoteUser}@${remoteHost}:${remoteProjectPath}/sessions/hirist/storageState.json`, { stdio: "inherit" });
+        console.log("✅ Successfully transferred Hirist storageState.json to VM.");
+    } catch (e) {
+        console.warn(`⚠️ Warning: Failed transferring Hirist storageState.json: ${e.message}`);
+    }
 }
 
 // Build commands to run on the Oracle VM
@@ -105,9 +107,6 @@ if echo "$LOCAL_DIFF" | grep -qE "package.json|package-lock.json"; then
     echo "=== Dependencies changed. Running npm install on VM ==="
     npm install
 fi
-
-${founditSyncCmd}
-${hiristSyncCmd}
 
 echo "=== Running Target Task on VM ==="
 ${
