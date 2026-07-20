@@ -5,37 +5,49 @@ class ExternalApplicationRouter {
     /**
      * Classify the external URL into known ATS categories
      * @param {string} url 
-     * @returns {string} One of: Greenhouse, Lever, Workday, Ashby, SmartRecruiters, Generic ATS, Unknown
+     * @returns {string} One of: Greenhouse, Lever, Workday, Ashby, SmartRecruiters, SuccessFactors, Oracle Recruiting / Oracle HCM, Taleo, Generic Company Career Page, Unknown
      */
     classifyATS(url) {
         if (!url) return "Unknown";
         const lowercaseUrl = url.toLowerCase();
         
-        if (lowercaseUrl.includes("greenhouse.io") || lowercaseUrl.includes("boards.greenhouse.io")) {
+        if (lowercaseUrl.includes("greenhouse.io") || lowercaseUrl.includes("boards.greenhouse.io") || lowercaseUrl.includes("greenhouse")) {
             return "Greenhouse";
         }
-        if (lowercaseUrl.includes("lever.co")) {
+        if (lowercaseUrl.includes("lever.co") || lowercaseUrl.includes("jobs.lever.co")) {
             return "Lever";
         }
         if (lowercaseUrl.includes("myworkdayjobs.com") || lowercaseUrl.includes("workday")) {
             return "Workday";
         }
-        if (lowercaseUrl.includes("ashbyhq.com")) {
+        if (lowercaseUrl.includes("ashbyhq.com") || lowercaseUrl.includes("ashby")) {
             return "Ashby";
         }
-        if (lowercaseUrl.includes("smartrecruiters.com")) {
+        if (lowercaseUrl.includes("smartrecruiters.com") || lowercaseUrl.includes("smartrecruiters")) {
             return "SmartRecruiters";
+        }
+        if (lowercaseUrl.includes("successfactors.com") || lowercaseUrl.includes("successfactors") || lowercaseUrl.includes("careers.sf.com")) {
+            return "SuccessFactors";
+        }
+        if (lowercaseUrl.includes("oraclecloud.com") || lowercaseUrl.includes("hcm.oracle.com") || lowercaseUrl.includes("oraclerecruiting") || lowercaseUrl.includes("oracle.com/careers")) {
+            return "Oracle Recruiting / Oracle HCM";
+        }
+        if (lowercaseUrl.includes("taleo.net") || lowercaseUrl.includes("taleo.com") || lowercaseUrl.includes("taleo")) {
+            return "Taleo";
         }
         
         // Other common ATS platforms
         if (
             lowercaseUrl.includes("recruitee.com") || 
             lowercaseUrl.includes("bamboohr.com") || 
-            lowercaseUrl.includes("breezy.hr") || 
-            lowercaseUrl.includes("lever") || 
-            lowercaseUrl.includes("greenhouse")
+            lowercaseUrl.includes("breezy.hr") ||
+            lowercaseUrl.includes("jobvite.com") ||
+            lowercaseUrl.includes("icims.com") ||
+            lowercaseUrl.includes("careers.") ||
+            lowercaseUrl.includes("/careers/") ||
+            lowercaseUrl.includes("/jobs/")
         ) {
-            return "Generic ATS";
+            return "Generic Company Career Page";
         }
         
         return "Unknown";

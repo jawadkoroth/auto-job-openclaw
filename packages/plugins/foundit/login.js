@@ -91,9 +91,26 @@ module.exports = async function login(plugin, page) {
         const isLoggedIn = await plugin.health(page);
         if (isLoggedIn) {
             logger.info("Authentication verification successful.");
+            const contextManager = require("../../browser/ContextManager");
+            await contextManager.updateMetadata("foundit", { sessionHealth: "healthy" }).catch(() => {});
+            
+            // Export storageState.json
+            try {
+                const fs = require("fs-extra");
+                const path = require("path");
+                const sessionPath = contextManager.getContextPath("foundit");
+                await fs.ensureDir(sessionPath);
+                const storageStatePath = path.join(sessionPath, "storageState.json");
+                await page.context().storageState({ path: storageStatePath });
+                logger.info(`Saved storageState.json for foundit at ${storageStatePath}`);
+            } catch (err) {
+                logger.warn(`Failed saving storageState.json for foundit: ${err.message}`);
+            }
             return true;
         } else {
             logger.error("Authentication failed. Session health check returned false.");
+            const contextManager = require("../../browser/ContextManager");
+            await contextManager.updateMetadata("foundit", { sessionHealth: "failed" }).catch(() => {});
             throw new Error("Authentication failed. Session health check returned false.");
         }
     } catch (err) {

@@ -9,6 +9,7 @@ const isPushRequested = args.includes("--push");
 const isLiveRun = args.includes("--live");
 const isHealthCheck = args.includes("--health");
 const isHiristOnly = args.includes("--hirist");
+const isFounditOnly = args.includes("--foundit");
 
 // Load remote configs from .env
 const remoteHost = process.env.REMOTE_HOST;
@@ -83,7 +84,9 @@ fi
 
 echo "=== Running Target Task on VM ==="
 ${
-    isHiristOnly
+    isFounditOnly
+        ? "DRY_RUN=true ALLOW_LIVE_APPLICATIONS=false node scripts/test-foundit-remote.js"
+        : isHiristOnly
         ? "DRY_RUN=true ALLOW_LIVE_APPLICATIONS=false node scripts/test-hirist-remote.js"
         : isHealthCheck
         ? "node scripts/production-health.js"

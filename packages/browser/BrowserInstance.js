@@ -229,7 +229,7 @@ class BrowserInstance {
                 this.intentionalClose = true;
                 
                 // Refresh session storage state on close (Task 3)
-                if (this.portalName === "hirist") {
+                if (this.portalName === "hirist" || this.portalName === "foundit") {
                     try {
                         const sessionPath = contextManager.getContextPath(this.portalName);
                         const storageStatePath = path.join(sessionPath, "storageState.json");
