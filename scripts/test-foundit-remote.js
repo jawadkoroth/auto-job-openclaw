@@ -3,7 +3,7 @@ const pluginManager = require("../packages/plugins/PluginManager");
 const contextManager = require("../packages/browser/ContextManager");
 const externalApplicationRouter = require("../packages/router/ExternalApplicationRouter");
 const externalAtsAutomation = require("../packages/automation/ExternalAtsAutomation");
-const resumeSelector = require("../resume/ResumeSelector");
+const resumeSelector = require("../packages/resume/ResumeSelector");
 const fs = require("fs-extra");
 const path = require("path");
 
