@@ -89,7 +89,13 @@ class BrowserInstance {
                 try {
                     const state = fs.readJsonSync(storageStatePath);
                     if (state.cookies && state.cookies.length > 0) {
-                        await this.context.addCookies(state.cookies);
+                        const validCookies = state.cookies.map(c => {
+                            const cookie = { ...c };
+                            if (cookie.expires === -1) delete cookie.expires;
+                            if (cookie.sameSite && !["Strict", "Lax", "None"].includes(cookie.sameSite)) delete cookie.sameSite;
+                            return cookie;
+                        });
+                        await this.context.addCookies(validCookies);
                     }
                     if (state.origins && state.origins.length > 0) {
                         await this.context.addInitScript((origins) => {
