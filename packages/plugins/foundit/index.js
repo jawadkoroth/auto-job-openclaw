@@ -33,13 +33,21 @@ class FounditPlugin extends BasePlugin {
 
     async health(page) {
         try {
-            const currentUrl = page.url();
-            if (!currentUrl.includes("foundit.in/seeker/dashboard") && !currentUrl.includes("foundit.in/seeker/profile")) {
-                await page.goto("https://www.foundit.in/seeker/dashboard", { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
+            // Read-only indicator check
+            const count = await page.locator("a[href*='/seeker/profile'], a[href*='logout'], a:has-text('Logout'), a:has-text('Sign Out'), .profile-name, .userName, #userNameProfile, div.user-profile-info").count().catch(() => 0);
+            if (count > 0) return true;
+
+            // Only navigate to dashboard if NOT in HEADFUL_AUTH_SETUP mode
+            if (process.env.HEADFUL_AUTH_SETUP !== "true") {
+                const currentUrl = page.url();
+                if (!currentUrl.includes("foundit.in/seeker/dashboard") && !currentUrl.includes("foundit.in/seeker/profile")) {
+                    await page.goto("https://www.foundit.in/seeker/dashboard", { waitUntil: "domcontentloaded", timeout: 20000 }).catch(() => {});
+                }
+                await page.waitForTimeout(2000);
+                const finalCount = await page.locator("a[href*='/seeker/profile'], a[href*='logout'], a:has-text('Logout'), a:has-text('Sign Out'), .profile-name, .userName, #userNameProfile").count().catch(() => 0);
+                return finalCount > 0;
             }
-            await page.waitForTimeout(2000);
-            const count = await page.locator("a[href*='/seeker/profile'], a:has-text('Profile'), a:has-text('Logout'), .profile-name, .userName").count();
-            return count > 0;
+            return false;
         } catch (e) {
             return false;
         }

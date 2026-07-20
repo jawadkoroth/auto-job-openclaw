@@ -1,3 +1,5 @@
+process.env.HEADFUL_AUTH_SETUP = "true";
+
 const BrowserInstance = require("../packages/browser/BrowserInstance");
 const pluginManager = require("../packages/plugins/PluginManager");
 const fs = require("fs-extra");
@@ -21,36 +23,35 @@ const path = require("path");
         pluginManager.loadPlugins();
         const plugin = pluginManager.getPlugin(portal);
 
-        // Check if existing session is active
-        console.log("[Diagnostic] Checking existing session health...");
-        const initialHealth = await plugin.health(page);
-
-        if (initialHealth) {
-            console.log("[Diagnostic] Already authenticated via persistent context or storageState!");
-            isAuthed = true;
-        } else {
-            console.log("[Diagnostic] Active session not detected. Initiating plugin login routine...");
+        if (process.env.HEADFUL_AUTH_SETUP === "true") {
+            // Directly invoke manual login setup
             isAuthed = await plugin.login(page);
+        } else {
+            // Check if existing session is active
+            console.log("[Diagnostic] Checking existing session health...");
+            const initialHealth = await plugin.health(page);
+
+            if (initialHealth) {
+                console.log("[Diagnostic] Already authenticated via persistent context or storageState!");
+                isAuthed = true;
+            } else {
+                console.log("[Diagnostic] Active session not detected. Initiating plugin login routine...");
+                isAuthed = await plugin.login(page);
+            }
         }
 
         if (isAuthed) {
-            console.log("[Diagnostic] Exporting portable storageState.json for Foundit...");
             const sessionDir = path.join(process.cwd(), "sessions", portal);
-            await fs.ensureDir(sessionDir);
             const storageStatePath = path.join(sessionDir, "storageState.json");
-            
-            const state = await page.context().storageState();
-            await fs.writeJson(storageStatePath, state, { spaces: 2 });
-
             if (await fs.pathExists(storageStatePath)) {
                 isExported = "YES";
+                const state = await fs.readJson(storageStatePath).catch(() => ({}));
                 cookiesCount = state.cookies ? state.cookies.length : 0;
                 originsCount = state.origins ? state.origins.length : 0;
-                console.log(`[Diagnostic] Successfully saved storageState.json: ${cookiesCount} cookies, ${originsCount} origins.`);
             }
         }
     } catch (err) {
-        console.error(`[Diagnostic Error] ${portal} login failed: ${err.message}`, err.stack);
+        console.error(`[Diagnostic Error] ${portal} login failed: ${err.message}`);
     } finally {
         await browserInstance.close();
         console.log("[Diagnostic] Browser closed.");
