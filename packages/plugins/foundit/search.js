@@ -16,6 +16,7 @@ module.exports = async function search(plugin, page, queryOptions = {}) {
             try {
                 await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 35000 });
                 await page.waitForTimeout(4000);
+                logger.info(`Search page landed URL: "${page.url()}", Page Title: "${await page.title().catch(() => 'N/A')}"`);
             } catch (e) {
                 logger.error(`Navigation failed for: ${searchUrl}. Error: ${e.message}`);
                 continue;
