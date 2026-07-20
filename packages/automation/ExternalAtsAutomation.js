@@ -170,58 +170,66 @@ class ExternalAtsAutomation {
             logger.worker.warn(`Resume upload attempt warning: ${e.message}`);
         }
 
-        // Extract and inspect all visible form inputs (Simplify-like DOM analysis)
-        const formFields = await page.evaluate(() => {
-            const fields = [];
-            const elements = Array.from(document.querySelectorAll("input:not([type='hidden']):not([type='file']):not([type='submit']), textarea, select, [role='combobox']"));
+        // Extract and inspect all visible form inputs across top page and embedded frames (Simplify-like DOM analysis)
+        let formFields = [];
+        for (const frame of page.frames()) {
+            try {
+                const fieldsInFrame = await frame.evaluate(() => {
+                    const fields = [];
+                    const elements = Array.from(document.querySelectorAll("input:not([type='hidden']):not([type='file']):not([type='submit']), textarea, select, [role='combobox']"));
 
-            for (const el of elements) {
-                const rect = el.getBoundingClientRect();
-                const style = window.getComputedStyle(el);
-                if (rect.width === 0 || rect.height === 0 || style.display === "none" || style.visibility === "hidden") {
-                    continue;
-                }
+                    for (const el of elements) {
+                        const rect = el.getBoundingClientRect();
+                        const style = window.getComputedStyle(el);
+                        if (rect.width === 0 || rect.height === 0 || style.display === "none" || style.visibility === "hidden") {
+                            continue;
+                        }
 
-                let labelText = "";
+                        let labelText = "";
 
-                // 1. Associated <label for="...">
-                if (el.id) {
-                    const labelEl = document.querySelector(`label[for="${el.id}"]`);
-                    if (labelEl) labelText = labelEl.innerText;
-                }
+                        // 1. Associated <label for="...">
+                        if (el.id) {
+                            const labelEl = document.querySelector(`label[for="${el.id}"]`);
+                            if (labelEl) labelText = labelEl.innerText;
+                        }
 
-                // 2. Parent/closest label container
-                if (!labelText) {
-                    const closestLabel = el.closest("label");
-                    if (closestLabel) labelText = closestLabel.innerText;
-                }
+                        // 2. Parent/closest label container
+                        if (!labelText) {
+                            const closestLabel = el.closest("label");
+                            if (closestLabel) labelText = closestLabel.innerText;
+                        }
 
-                // 3. Preceding text or wrapper text
-                if (!labelText) {
-                    const parent = el.parentElement;
-                    if (parent && parent.innerText) {
-                        const lines = parent.innerText.split("\n").map(l => l.trim()).filter(l => l.length > 0);
-                        if (lines.length > 0) labelText = lines[0];
+                        // 3. Preceding text or wrapper text
+                        if (!labelText) {
+                            const parent = el.parentElement;
+                            if (parent && parent.innerText) {
+                                const lines = parent.innerText.split("\n").map(l => l.trim()).filter(l => l.length > 0);
+                                if (lines.length > 0) labelText = lines[0];
+                            }
+                        }
+
+                        // 4. Fallbacks (aria-label, placeholder, name, id)
+                        if (!labelText) {
+                            labelText = el.getAttribute("aria-label") || el.placeholder || el.name || el.id || "";
+                        }
+
+                        fields.push({
+                            id: el.id || "",
+                            name: el.name || "",
+                            type: el.type || el.tagName.toLowerCase(),
+                            placeholder: el.placeholder || "",
+                            autocomplete: el.getAttribute("autocomplete") || "",
+                            ariaLabel: el.getAttribute("aria-label") || "",
+                            labelText: labelText.replace(/[\*\:]/g, "").trim()
+                        });
                     }
-                }
-
-                // 4. Fallbacks (aria-label, placeholder, name, id)
-                if (!labelText) {
-                    labelText = el.getAttribute("aria-label") || el.placeholder || el.name || el.id || "";
-                }
-
-                fields.push({
-                    id: el.id || "",
-                    name: el.name || "",
-                    type: el.type || el.tagName.toLowerCase(),
-                    placeholder: el.placeholder || "",
-                    autocomplete: el.getAttribute("autocomplete") || "",
-                    ariaLabel: el.getAttribute("aria-label") || "",
-                    labelText: labelText.replace(/[\*\:]/g, "").trim()
+                    return fields;
                 });
-            }
-            return fields;
-        });
+                if (fieldsInFrame && fieldsInFrame.length > 0) {
+                    formFields = formFields.concat(fieldsInFrame);
+                }
+            } catch (frameErr) {}
+        }
 
         logger.worker.info(`[Simplify Engine] Identified ${formFields.length} visible form elements to inspect/fill.`);
 
