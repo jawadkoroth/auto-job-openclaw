@@ -123,7 +123,6 @@ ${
 `;
 
 // Run the ssh command locally using child_process.spawn to stream results in real time
-const sshKeyPath = path.resolve(remoteSshKey);
 const sshArgs = [
     "-i", sshKeyPath,
     "-o", "StrictHostKeyChecking=no",
