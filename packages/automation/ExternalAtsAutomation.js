@@ -234,17 +234,19 @@ class ExternalAtsAutomation {
     async detectCaptcha(page) {
         try {
             const captchaLocators = [
-                "iframe[src*='captcha' i]",
-                "iframe[src*='recaptcha' i]",
+                "iframe[src*='recaptcha' i]:not([style*='display: none'])",
                 "iframe[src*='hcaptcha' i]",
-                "div.g-recaptcha",
+                "div.g-recaptcha:not([style*='display: none'])",
                 "div.h-captcha",
                 "#cf-turnstile"
             ];
             for (const sel of captchaLocators) {
-                const count = await page.locator(sel).count();
-                if (count > 0 && await page.locator(sel).first().isVisible().catch(() => false)) {
-                    return true;
+                const loc = page.locator(sel).first();
+                if (await loc.count() > 0 && await loc.isVisible().catch(() => false)) {
+                    const box = await loc.boundingBox().catch(() => null);
+                    if (box && box.width > 20 && box.height > 20) {
+                        return true;
+                    }
                 }
             }
             return false;
