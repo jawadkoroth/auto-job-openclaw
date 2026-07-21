@@ -1,32 +1,37 @@
-const db = require("../database");
 const logger = require("../logger");
 const config = require("../config");
+const profileManager = require("../profile");
 const resumeSelector = require("../resume/ResumeSelector");
 const resumeManager = require("../resume/ResumeManager");
-const profileManager = require("../profile/ProfileManager");
-const ApplicationQuestionEngine = require("../ai/ApplicationQuestionEngine");
-const telegramService = require("../../apps/telegram");
 const externalApplicationRouter = require("../router/ExternalApplicationRouter");
+const ApplicationQuestionEngine = require("../ai/ApplicationQuestionEngine");
+const Telegram = require("../../../apps/telegram");
 
 class ExternalAtsAutomation {
     /**
-     * Automate external ATS form application flow
+     * Main entry point to process an external job application page
      * @param {import("playwright").Page} page 
      * @param {Object} job 
-     * @returns {Promise<boolean>}
      */
     async apply(page, job) {
-        const { company, title, url } = job;
-        const externalUrl = job.external_url || url;
-        
-        logger.worker.info(`Opening external application URL for: "${title}" at "${company}" (${externalUrl})`);
-        
+        const title = job.title || "Software Engineer";
+        const url = job.external_url || job.url;
+        logger.worker.info(`Opening external application URL for: "${title}" at "${job.company || 'Unknown'}" (${url})`);
+
+        let formFieldsCount = 0;
+        let fieldsFilledCount = 0;
+        let resumeUploaded = false;
+        let questionnaireInspected = false;
+        let dryRunPrevented = false;
+
         try {
-            await page.goto(externalUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
-            await page.waitForTimeout(3000);
-            
-            // 1. Detect ATS type
-            const ats = externalApplicationRouter.classifyATS(page.url() || externalUrl);
+            if (page.url() !== url && !page.url().includes(new URL(url).hostname)) {
+                await page.goto(url, { waitUntil: "domcontentloaded", timeout: 35000 });
+                await page.waitForTimeout(2000);
+            }
+
+            // 1. Detect ATS type using router
+            const ats = externalApplicationRouter.classifyATS(page.url());
             logger.worker.info(`ATS Detected: ${ats}`);
             job.ats = ats;
             
@@ -50,14 +55,41 @@ class ExternalAtsAutomation {
                 if (await this.detectCaptcha(page)) {
                     logger.worker.warn(`[External Form] CAPTCHA / Anti-Bot challenge detected. Queuing WAITING_FOR_INPUT.`);
                     await this.requestManualApproval(job, "CAPTCHA / Anti-Bot challenge encountered on external form", "Please complete CAPTCHA manually");
-                    return false;
+                    return {
+                        success: false,
+                        ats,
+                        externalFormReached: formFieldsCount > 0,
+                        formFieldsCount,
+                        fieldsFilledCount,
+                        candidateAutofill: fieldsFilledCount > 0,
+                        resumeUploaded,
+                        questionnaireInspected,
+                        dryRunPrevented: false,
+                        reason: "captcha_detected"
+                    };
                 }
 
                 // Fill current page form fields & resume
                 const stepResult = await this.fillForm(page, job, profile, resumePath);
+                formFieldsCount += stepResult.formFieldsCount || 0;
+                fieldsFilledCount += stepResult.filledCount || 0;
+                if (stepResult.resumeUploaded) resumeUploaded = true;
+                if (stepResult.questionnaireInspected) questionnaireInspected = true;
+
                 if (!stepResult.success) {
                     logger.worker.warn(`[External Form] Step ${currentStep} form fill returned false: ${stepResult.reason}`);
-                    return false;
+                    return {
+                        success: false,
+                        ats,
+                        externalFormReached: formFieldsCount > 0,
+                        formFieldsCount,
+                        fieldsFilledCount,
+                        candidateAutofill: fieldsFilledCount > 0,
+                        resumeUploaded,
+                        questionnaireInspected,
+                        dryRunPrevented: false,
+                        reason: stepResult.reason
+                    };
                 }
 
                 // Look for Next / Continue vs Final Submit button
@@ -77,7 +109,19 @@ class ExternalAtsAutomation {
                     if (isDryRun) {
                         logger.worker.info(`[DRY RUN] Stopping before final submit on external form: "${page.url()}"`);
                         job.statusReason = "dry_run_validated";
-                        return true;
+                        dryRunPrevented = true;
+                        return {
+                            success: true,
+                            ats,
+                            externalFormReached: formFieldsCount > 0,
+                            formFieldsCount,
+                            fieldsFilledCount,
+                            candidateAutofill: fieldsFilledCount > 0,
+                            resumeUploaded,
+                            questionnaireInspected,
+                            dryRunPrevented: true,
+                            reason: "dry_run_validated"
+                        };
                     }
 
                     logger.worker.info("[LIVE] Attempting final submission on external form...");
@@ -89,7 +133,19 @@ class ExternalAtsAutomation {
                     logger.worker.info(`[External Form] Neither Next nor Submit button found on step ${currentStep}. Completing inspection.`);
                     if (isDryRun) {
                         job.statusReason = "dry_run_validated";
-                        return true;
+                        dryRunPrevented = formFieldsCount > 0;
+                        return {
+                            success: formFieldsCount > 0,
+                            ats,
+                            externalFormReached: formFieldsCount > 0,
+                            formFieldsCount,
+                            fieldsFilledCount,
+                            candidateAutofill: fieldsFilledCount > 0,
+                            resumeUploaded,
+                            questionnaireInspected,
+                            dryRunPrevented,
+                            reason: formFieldsCount > 0 ? "dry_run_validated" : "no_fields_detected"
+                        };
                     }
                     break;
                 }
@@ -98,25 +154,68 @@ class ExternalAtsAutomation {
             if (!formSubmitted && !config.search.dryRun) {
                 logger.worker.warn("Max steps reached without explicit submission.");
                 job.statusReason = "clicked_unverified";
-                return true;
+                return {
+                    success: true,
+                    ats,
+                    externalFormReached: formFieldsCount > 0,
+                    formFieldsCount,
+                    fieldsFilledCount,
+                    candidateAutofill: fieldsFilledCount > 0,
+                    resumeUploaded,
+                    questionnaireInspected,
+                    dryRunPrevented: false,
+                    reason: "clicked_unverified"
+                };
             }
 
-            // 4. Positive Confirmation Verification (for live mode)
             const submissionConfirmed = await this.verifyConfirmation(page);
             if (submissionConfirmed) {
                 logger.worker.info("External application submission positively confirmed!");
                 job.statusReason = "applied";
-                return true;
+                return {
+                    success: true,
+                    ats,
+                    externalFormReached: formFieldsCount > 0,
+                    formFieldsCount,
+                    fieldsFilledCount,
+                    candidateAutofill: fieldsFilledCount > 0,
+                    resumeUploaded,
+                    questionnaireInspected,
+                    dryRunPrevented: false,
+                    reason: "applied"
+                };
             } else {
                 logger.worker.warn("Final submission clicked but positive confirmation message not detected. Marking CLICKED_UNVERIFIED.");
                 job.statusReason = "clicked_unverified";
-                return true;
+                return {
+                    success: true,
+                    ats,
+                    externalFormReached: formFieldsCount > 0,
+                    formFieldsCount,
+                    fieldsFilledCount,
+                    candidateAutofill: fieldsFilledCount > 0,
+                    resumeUploaded,
+                    questionnaireInspected,
+                    dryRunPrevented: false,
+                    reason: "clicked_unverified"
+                };
             }
 
         } catch (error) {
             logger.worker.error(`External application automation error: ${error.message}`, error.stack);
             job.statusReason = "failed";
-            return false;
+            return {
+                success: false,
+                ats: job.ats || "Unknown",
+                externalFormReached: formFieldsCount > 0,
+                formFieldsCount,
+                fieldsFilledCount,
+                candidateAutofill: fieldsFilledCount > 0,
+                resumeUploaded,
+                questionnaireInspected,
+                dryRunPrevented: false,
+                reason: error.message
+            };
         }
     }
 
@@ -128,12 +227,10 @@ class ExternalAtsAutomation {
             const captchaLocators = [
                 "iframe[src*='captcha' i]",
                 "iframe[src*='recaptcha' i]",
-                "iframe[src*='turnstile' i]",
-                ".g-recaptcha",
-                ".h-captcha",
-                "#cf-turnstile",
-                "div:has-text('Verify you are human')",
-                "div:has-text('Security Check')"
+                "iframe[src*='hcaptcha' i]",
+                "div.g-recaptcha",
+                "div.h-captcha",
+                "#cf-turnstile"
             ];
             for (const sel of captchaLocators) {
                 const count = await page.locator(sel).count();
@@ -151,6 +248,10 @@ class ExternalAtsAutomation {
      * Simplify-Like Dynamic Form Autofill Engine
      */
     async fillForm(page, job, profile, resumePath) {
+        let resumeUploaded = false;
+        let filledCount = 0;
+        let questionnaireInspected = false;
+
         // Upload Resume if file input present
         try {
             const fileInputs = page.locator("input[type='file']");
@@ -162,6 +263,7 @@ class ExternalAtsAutomation {
                         logger.worker.info(`[Simplify Engine] Uploading resume (${resumePath}) to file input ${i + 1}...`);
                         await input.setInputFiles(resumePath).catch(err => logger.worker.warn(`Resume upload error: ${err.message}`));
                         await page.waitForTimeout(1500);
+                        resumeUploaded = true;
                         break;
                     }
                 }
@@ -299,12 +401,14 @@ class ExternalAtsAutomation {
                 } else {
                     await locator.fill(fillValue).catch(() => {});
                 }
+                filledCount++;
             } else if (field.labelText && field.labelText.length > 3) {
+                questionnaireInspected = true;
                 // Questionnaire / Custom Question Handling
                 if (this.isSensitiveQuestion(field.labelText)) {
                     logger.worker.warn(`[Simplify Engine] Sensitive question detected: "${field.labelText}". Queuing WAITING_FOR_INPUT.`);
                     await this.requestManualApproval(job, field.labelText, "Yes");
-                    return { success: false, reason: "sensitive_question" };
+                    return { success: false, reason: "sensitive_question", formFieldsCount: formFields.length, filledCount, resumeUploaded, questionnaireInspected };
                 }
 
                 // AI Question Engine Priority Strategy
@@ -330,15 +434,16 @@ class ExternalAtsAutomation {
                     } else {
                         await locator.fill(ansResult.answer).catch(() => {});
                     }
+                    filledCount++;
                 } else {
                     logger.worker.warn(`[Simplify Engine] Question requires manual input: "${field.labelText}".`);
                     await this.requestManualApproval(job, field.labelText, ansResult.answer || "Yes");
-                    return { success: false, reason: "unanswered_question" };
+                    return { success: false, reason: "unanswered_question", formFieldsCount: formFields.length, filledCount, resumeUploaded, questionnaireInspected };
                 }
             }
         }
 
-        return { success: true };
+        return { success: true, formFieldsCount: formFields.length, filledCount, resumeUploaded, questionnaireInspected };
     }
 
     /**
@@ -348,107 +453,88 @@ class ExternalAtsAutomation {
         const lowercase = text.toLowerCase();
         const sensitiveKeywords = [
             "sponsorship", "visa", "citizen", "authorized to work", "work authorization", "security clearance",
-            "expected salary", "current salary", "compensation", "pay expectation",
-            "relocate", "relocation",
-            "gender", "race", "ethnicity", "disability", "veteran", "sexual orientation", "demographic",
-            "criminal history", "convicted", "background check consent", "legal declaration"
+            "expected salary", "current salary", "compensation", "remuneration",
+            "willing to relocate", "relocation",
+            "criminal history", "convicted", "background check",
+            "gender", "race", "ethnicity", "veteran", "disability", "sexual orientation"
         ];
-        return sensitiveKeywords.some(kw => lowercase.includes(kw));
+        return sensitiveKeywords.some(keyword => lowercase.includes(keyword));
     }
 
-    /**
-     * Locate Next/Continue button
-     */
+    async findSubmitButton(page) {
+        const submitLocators = [
+            "button[type='submit']",
+            "input[type='submit']",
+            "button:has-text('Submit Application')",
+            "button:has-text('Submit')",
+            "button:has-text('Apply Now')"
+        ];
+        for (const sel of submitLocators) {
+            const btn = page.locator(sel).first();
+            if (await btn.count() > 0 && await btn.isVisible().catch(() => false)) {
+                return btn;
+            }
+        }
+        return null;
+    }
+
     async findNextButton(page) {
-        const nextSelectors = [
+        const nextLocators = [
             "button:has-text('Next')",
             "button:has-text('Continue')",
             "button:has-text('Proceed')",
-            "input[value*='Next' i]",
-            "input[value*='Continue' i]"
+            "button.next-btn"
         ];
-        for (const sel of nextSelectors) {
-            const loc = page.locator(sel).filter({ visible: true });
-            if (await loc.count() > 0) {
-                return loc.first();
+        for (const sel of nextLocators) {
+            const btn = page.locator(sel).first();
+            if (await btn.count() > 0 && await btn.isVisible().catch(() => false)) {
+                return btn;
             }
         }
         return null;
     }
 
-    /**
-     * Locate Final Submit button
-     */
-    async findSubmitButton(page) {
-        const submitSelectors = [
-            "button:has-text('Submit Application')",
-            "button:has-text('Submit')",
-            "button:has-text('Confirm & Apply')",
-            "button:has-text('Apply Now')",
-            "button[type='submit']",
-            "input[type='submit']"
-        ];
-        for (const sel of submitSelectors) {
-            const loc = page.locator(sel).filter({ visible: true });
-            if (await loc.count() > 0) {
-                return loc.first();
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Positive Confirmation Message Verification
-     */
     async verifyConfirmation(page) {
         try {
-            const currentUrl = page.url().toLowerCase();
-            const pageText = (await page.innerText("body").catch(() => "")).toLowerCase();
-            
-            if (currentUrl.includes("confirm") || currentUrl.includes("thank") || currentUrl.includes("success") || currentUrl.includes("applied")) {
-                return true;
-            }
+            await page.waitForTimeout(3000);
+            const content = await page.content();
+            const lowerContent = content.toLowerCase();
 
-            const successKeywords = [
+            const successIndicators = [
                 "thank you for applying",
                 "application submitted",
                 "application received",
+                "your application has been submitted",
                 "successfully applied",
-                "congratulations",
-                "your application has been sent"
+                "thanks for applying"
             ];
 
-            return successKeywords.some(kw => pageText.includes(kw));
+            return successIndicators.some(indicator => lowerContent.includes(indicator));
         } catch (e) {
             return false;
         }
     }
 
-    /**
-     * Request manual approval via Telegram & set WAITING_FOR_INPUT state
-     */
     async requestManualApproval(job, question, suggestedAnswer) {
+        job.statusReason = "waiting_for_input";
+        job.pendingQuestion = question;
+        job.pendingSuggestedAnswer = suggestedAnswer;
+
         try {
             await db.run(
-                "UPDATE jobs SET status = 'WAITING_FOR_INPUT', pending_question = ?, pending_suggested_answer = ? WHERE id = ?",
-                [question, suggestedAnswer, job.id]
+                "UPDATE jobs SET status = 'WAITING_FOR_INPUT', pending_question = ?, pending_suggested_answer = ? WHERE portal = ? AND job_id = ?",
+                [question, suggestedAnswer, job.portal || "foundit", job.job_id]
             ).catch(() => {});
-            
-            await telegramService.sendMessage(
-                `⚠️ *External Application Needs Input*\n\n` +
-                `• *Portal*: \`External ATS\`\n` +
-                `• *Company*: *${job.company}*\n` +
-                `• *Role*: *${job.title}*\n\n` +
-                `❓ *Question*:\n_${question}_\n\n` +
-                `💡 *Suggested Answer*:\n_${suggestedAnswer}_\n\n` +
-                `🔗 *Job URL*: ${job.external_url || job.url}\n\n` +
-                `To approve: \`/approve ${job.id}\`\n` +
-                `To custom approve: \`/approve ${job.id} <your answer>\``
-            ).catch(() => {});
-            
-            job.statusReason = "questionnaire";
+
+            const telegramMsg = `⚠️ <b>Application Action Required</b>\n\n` +
+                `<b>Job:</b> ${job.title} at ${job.company}\n` +
+                `<b>Question:</b> ${question}\n` +
+                `<b>Suggested Answer:</b> ${suggestedAnswer}\n\n` +
+                `Reply with <code>/approve ${job.job_id}</code> or <code>/answer ${job.job_id} [Your Answer]</code>`;
+
+            await Telegram.sendMessage(telegramMsg).catch(err => logger.worker.warn(`Telegram message failed: ${err.message}`));
         } catch (e) {
-            logger.worker.error(`Failed to request manual approval: ${e.message}`);
+            logger.worker.error(`Failed requesting manual approval: ${e.message}`);
         }
     }
 }

@@ -83,6 +83,18 @@ if (fs.existsSync(hiristStatePath)) {
     }
 }
 
+const queuedJobsPath = path.join(__dirname, "../sessions/queued_external_jobs.json");
+if (fs.existsSync(queuedJobsPath)) {
+    console.log("📤 Syncing queued_external_jobs.json to remote VM via SCP...");
+    try {
+        execSync(`ssh -i "${sshKeyPath}" -o StrictHostKeyChecking=no ${remoteUser}@${remoteHost} "mkdir -p ${remoteProjectPath}/sessions"`);
+        execSync(`scp -i "${sshKeyPath}" -o StrictHostKeyChecking=no "${queuedJobsPath}" ${remoteUser}@${remoteHost}:${remoteProjectPath}/sessions/queued_external_jobs.json`, { stdio: "inherit" });
+        console.log("✅ Successfully transferred queued_external_jobs.json to VM.");
+    } catch (e) {
+        console.warn(`⚠️ Warning: Failed transferring queued_external_jobs.json: ${e.message}`);
+    }
+}
+
 // Build commands to run on the Oracle VM
 console.log(`🔌 Preparing to connect to remote VM: ${remoteUser}@${remoteHost}...`);
 
