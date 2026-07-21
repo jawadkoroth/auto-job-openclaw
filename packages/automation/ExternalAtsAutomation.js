@@ -28,7 +28,7 @@ class ExternalAtsAutomation {
         try {
             if (page.url() !== url && !page.url().includes(new URL(url).hostname)) {
                 await page.goto(url, { waitUntil: "domcontentloaded", timeout: 35000 });
-                await page.waitForTimeout(2000);
+                await page.waitForTimeout(5000);
             }
 
             // 1. Detect ATS type using router
@@ -56,7 +56,7 @@ class ExternalAtsAutomation {
             ];
             for (const sel of applyLocators) {
                 const btn = page.locator(sel).first();
-                if (await btn.count() > 0 && await btn.isVisible().catch(() => false)) {
+                if (await btn.count() > 0) {
                     logger.worker.info(`[External Form] Found initial Apply button ("${sel}"). Clicking...`);
                     await btn.click({ force: true }).catch(() => {});
                     await page.waitForTimeout(4000);
