@@ -244,7 +244,7 @@ class ExternalAtsAutomation {
                 const loc = page.locator(sel).first();
                 if (await loc.count() > 0 && await loc.isVisible().catch(() => false)) {
                     const box = await loc.boundingBox().catch(() => null);
-                    if (box && box.width > 20 && box.height > 20) {
+                    if (box && box.width > 50 && box.height > 50 && box.y >= 0 && box.x >= 0) {
                         return true;
                     }
                 }
