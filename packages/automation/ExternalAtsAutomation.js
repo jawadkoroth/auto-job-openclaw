@@ -1,6 +1,6 @@
 const logger = require("../logger");
 const config = require("../config");
-const profileManager = require("../profile");
+const profileManager = require("../profile/ProfileManager");
 const resumeSelector = require("../resume/ResumeSelector");
 const resumeManager = require("../resume/ResumeManager");
 const externalApplicationRouter = require("../router/ExternalApplicationRouter");
