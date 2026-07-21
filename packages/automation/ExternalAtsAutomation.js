@@ -28,8 +28,8 @@ class ExternalAtsAutomation {
         try {
             if (page.url() !== url && !page.url().includes(new URL(url).hostname)) {
                 await page.goto(url, { waitUntil: "domcontentloaded", timeout: 35000 });
-                await page.waitForTimeout(5000);
             }
+            await page.waitForTimeout(5000);
 
             // 1. Detect ATS type using router
             const ats = externalApplicationRouter.classifyATS(page.url());
