@@ -401,6 +401,15 @@ class ExternalAtsAutomation {
             } else if (labelLower.includes("country")) {
                 fillValue = profile.country || "India";
                 isDeterministic = true;
+            } else if (labelLower.includes("school") || labelLower.includes("university") || labelLower.includes("college") || labelLower.includes("education")) {
+                fillValue = profile.education ? (profile.education.school || profile.education.degree || "University") : "University";
+                isDeterministic = true;
+            } else if (labelLower.includes("degree")) {
+                fillValue = profile.education ? (profile.education.degree || "Bachelor's") : "Bachelor's";
+                isDeterministic = true;
+            } else if (labelLower.includes("discipline") || labelLower.includes("major")) {
+                fillValue = profile.education ? (profile.education.fieldOfStudy || "Computer Science") : "Computer Science";
+                isDeterministic = true;
             }
 
             // Locate element in Playwright
@@ -465,7 +474,12 @@ class ExternalAtsAutomation {
                 } else {
                     logger.worker.warn(`[Simplify Engine] Question requires manual input: "${field.labelText}".`);
                     await this.requestManualApproval(job, field.labelText, ansResult.answer || "Yes");
-                    return { success: false, reason: "unanswered_question", formFieldsCount: formFields.length, filledCount, resumeUploaded, questionnaireInspected };
+                    const isDryRun = config.search.dryRun || !config.search.allowLiveApplications;
+                    if (isDryRun && filledCount > 0 && resumeUploaded) {
+                        logger.worker.info("[Simplify Engine] Dry-run mode active with successful candidate autofill & resume upload. Continuing dry-run validation.");
+                    } else {
+                        return { success: false, reason: "unanswered_question", formFieldsCount: formFields.length, filledCount, resumeUploaded, questionnaireInspected };
+                    }
                 }
             }
         }
