@@ -398,6 +398,9 @@ class ExternalAtsAutomation {
             } else if (labelLower.includes("total experience") || labelLower.includes("years of experience")) {
                 fillValue = String(profile.experienceYears);
                 isDeterministic = true;
+            } else if (labelLower.includes("country")) {
+                fillValue = profile.country || "India";
+                isDeterministic = true;
             }
 
             // Locate element in Playwright
@@ -407,7 +410,7 @@ class ExternalAtsAutomation {
             } else if (field.name) {
                 locator = page.locator(`[name="${field.name}"]`).first();
             } else if (field.labelText) {
-                locator = page.locator(`input[aria-label*='${field.labelText}' i], textarea[aria-label*='${field.labelText}' i]`).first();
+                locator = page.locator(`input[aria-label*='${field.labelText}' i], textarea[aria-label*='${field.labelText}' i], select[aria-label*='${field.labelText}' i]`).first();
             }
 
             if (!locator || await locator.count() === 0) continue;
@@ -415,7 +418,13 @@ class ExternalAtsAutomation {
             if (isDeterministic && fillValue) {
                 logger.worker.info(`[Simplify Engine] Filling deterministic field "${field.labelText}": "${fillValue}"`);
                 if (field.type === "select" || field.type === "select-one") {
-                    await locator.selectOption({ label: fillValue }).catch(() => locator.selectOption({ value: fillValue })).catch(() => {});
+                    const opts = await locator.locator("option").allInnerTexts().catch(() => []);
+                    const matchOpt = opts.find(o => o.toLowerCase().includes(fillValue.toLowerCase()));
+                    if (matchOpt) {
+                        await locator.selectOption({ label: matchOpt }).catch(() => {});
+                    } else {
+                        await locator.selectOption({ label: fillValue }).catch(() => locator.selectOption({ value: fillValue })).catch(() => {});
+                    }
                 } else {
                     await locator.fill(fillValue).catch(() => {});
                 }
