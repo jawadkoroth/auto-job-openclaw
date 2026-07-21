@@ -44,7 +44,17 @@ class ExternalAtsAutomation {
             const profile = await profileManager.getProfile();
 
             // Click initial Apply button for Workday, Greenhouse, Lever, Ashby, etc.
+            const applyCandidates = await page.locator("a, button, [data-automation-id]").evaluateAll(els => els.map(e => ({
+                tag: e.tagName,
+                text: e.textContent.trim().slice(0, 30),
+                autoId: e.getAttribute('data-automation-id'),
+                href: e.getAttribute('href')
+            })).filter(x => x.text.toLowerCase().includes('apply') || (x.autoId && x.autoId.toLowerCase().includes('apply')) || (x.href && x.href.includes('apply')))).catch(() => []);
+            logger.worker.info(`[External Form] Found ${applyCandidates.length} apply element candidates: ` + JSON.stringify(applyCandidates));
+
             const applyLocators = [
+                "[data-automation-id*='apply']",
+                "[data-automation-id*='adventure']",
                 "a[data-automation-id='adventureButton']",
                 "button[data-automation-id='adventureButton']",
                 "[data-automation-id='applyButton']",
