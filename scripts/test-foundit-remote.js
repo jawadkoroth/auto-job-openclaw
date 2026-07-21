@@ -113,14 +113,14 @@ const path = require("path");
             atsSource = "SYNTHETIC_TEST_FIXTURE";
             testJob = {
                 portal: "foundit",
-                job_id: "ext-gh-canonical",
+                job_id: "ext-gh-gitlab",
                 title: "DevOps Engineer (Cloud Infrastructure)",
-                company: "Canonical / Ubuntu",
-                location: "Remote / Bangalore",
+                company: "GitLab",
+                location: "Remote",
                 experience: "3-6 Yrs",
-                job_description: "We are seeking a DevOps Engineer with AWS, Kubernetes, Terraform, Docker, and CI/CD pipelines.",
-                url: "https://job-boards.greenhouse.io/canonical/jobs/4255146004",
-                external_url: "https://job-boards.greenhouse.io/canonical/jobs/4255146004"
+                job_description: "We are seeking a DevOps Engineer with experience in AWS, Kubernetes, Terraform, Docker, and CI/CD pipelines.",
+                url: "https://boards.greenhouse.io/embed/job_app?for=gitlab&token=6071477",
+                external_url: "https://boards.greenhouse.io/embed/job_app?for=gitlab&token=6071477"
             };
             console.log(`[Diagnostic] No local queued jobs found. Using synthetic fixture URL: ${testJob.external_url}`);
         }
