@@ -236,9 +236,9 @@ class ExternalAtsAutomation {
             const captchaLocators = [
                 "iframe[src*='recaptcha' i]:not([style*='display: none'])",
                 "iframe[src*='hcaptcha' i]",
-                "div.g-recaptcha:not([style*='display: none'])",
-                "div.h-captcha",
-                "#cf-turnstile"
+                "div.g-recaptcha:not([data-size='invisible']):not([style*='display: none'])",
+                "div.h-captcha:not([data-size='invisible'])",
+                "#cf-turnstile:not([style*='display: none'])"
             ];
             for (const sel of captchaLocators) {
                 const loc = page.locator(sel).first();
