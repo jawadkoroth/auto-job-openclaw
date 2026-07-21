@@ -82,7 +82,16 @@ const path = require("path");
                         await page.goto(job.url, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
                         await page.waitForTimeout(1500);
 
-                        const externalApplyBtn = page.locator("a:has-text('Apply on company website'), button:has-text('Apply on company website'), a:has-text('Apply on Company Site'), a.btn-apply-external").first();
+                        const externalApplyBtn = page.locator(`
+                            a:has-text('Apply on company website'), 
+                            button:has-text('Apply on company website'), 
+                            a:has-text('Apply on Company Site'), 
+                            button:has-text('Apply on Company Site'),
+                            a:has-text('Company Website'),
+                            a[data-apply-type='external'],
+                            a.btn-apply-external,
+                            a[href*='redirect']
+                        `).first();
 
                         if (await externalApplyBtn.count() > 0 && await externalApplyBtn.isVisible().catch(() => false)) {
                             console.log("[foundit:discover] External apply button detected. Capturing redirect URL...");
