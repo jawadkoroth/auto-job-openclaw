@@ -119,8 +119,8 @@ const path = require("path");
                 location: "Remote",
                 experience: "3-6 Yrs",
                 job_description: "We are seeking a DevOps Engineer with AWS, Kubernetes, Terraform, Docker, and CI/CD pipelines.",
-                url: "https://job-boards.greenhouse.io/canonical/jobs/4255146004",
-                external_url: "https://job-boards.greenhouse.io/canonical/jobs/4255146004"
+                url: "https://boards.greenhouse.io/embed/job_app?for=canonical&token=4027733",
+                external_url: "https://boards.greenhouse.io/embed/job_app?for=canonical&token=4027733"
             };
             console.log(`[Diagnostic] No local queued jobs found. Using synthetic fixture URL: ${testJob.external_url}`);
         }
@@ -129,7 +129,8 @@ const path = require("path");
         detectedAts = externalApplicationRouter.classifyATS(targetAtsUrl);
 
         console.log(`[Diagnostic] Navigating to external application page: ${targetAtsUrl}`);
-        const navResp = await page.goto(targetAtsUrl, { waitUntil: "domcontentloaded", timeout: 35000 }).catch(() => null);
+        const navResp = await page.goto(targetAtsUrl, { waitUntil: "networkidle", timeout: 35000 }).catch(() => null);
+        await page.waitForSelector("input#first_name, input[name='first_name'], #first_name, form#application_form, form", { timeout: 10000 }).catch(() => {});
         await page.waitForTimeout(3000);
 
         if (navResp && navResp.status() < 400) {
