@@ -44,7 +44,7 @@ class ExternalAtsAutomation {
             const profile = await profileManager.getProfile();
 
             // Click initial "Apply for this job" anchor/button if present to scroll/reveal application form
-            const initialApplyBtn = page.locator("a:has-text('Apply for this job'), button:has-text('Apply for this job'), a[href*='#app'], #apply_button, a:has-text('Apply Now')").first();
+            const initialApplyBtn = page.locator("a#apply_button, #apply_button, a[href='#app'], a[href*='apply'], a:has-text('Apply for this job'), button:has-text('Apply for this job'), a:has-text('Apply Now'), a:has-text('Apply')").first();
             if (await initialApplyBtn.count() > 0 && await initialApplyBtn.isVisible().catch(() => false)) {
                 logger.worker.info("[External Form] Clicking initial Apply button to expose form inputs...");
                 await initialApplyBtn.click({ force: true }).catch(() => {});
