@@ -5,7 +5,7 @@ const resumeSelector = require("../resume/ResumeSelector");
 const resumeManager = require("../resume/ResumeManager");
 const externalApplicationRouter = require("../router/ExternalApplicationRouter");
 const ApplicationQuestionEngine = require("../ai/ApplicationQuestionEngine");
-const Telegram = require("../../../apps/telegram");
+const Telegram = require("../../apps/telegram");
 
 class ExternalAtsAutomation {
     /**
