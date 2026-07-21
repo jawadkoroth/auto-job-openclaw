@@ -129,7 +129,7 @@ const path = require("path");
         detectedAts = externalApplicationRouter.classifyATS(targetAtsUrl);
 
         console.log(`[Diagnostic] Navigating to external application page: ${targetAtsUrl}`);
-        const navResp = await page.goto(targetAtsUrl, { waitUntil: "networkidle", timeout: 35000 }).catch(() => null);
+        const navResp = await page.goto(targetAtsUrl, { waitUntil: "domcontentloaded", timeout: 35000 }).catch(() => null);
         await page.waitForSelector("input#first_name, input[name='first_name'], #first_name, form#application_form, form", { timeout: 10000 }).catch(() => {});
         await page.waitForTimeout(3000);
 
