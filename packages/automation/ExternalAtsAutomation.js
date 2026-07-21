@@ -443,8 +443,13 @@ class ExternalAtsAutomation {
                 // Questionnaire / Custom Question Handling
                 if (this.isSensitiveQuestion(field.labelText)) {
                     logger.worker.warn(`[Simplify Engine] Sensitive question detected: "${field.labelText}". Queuing WAITING_FOR_INPUT.`);
-                    await this.requestManualApproval(job, field.labelText, "Yes");
-                    return { success: false, reason: "sensitive_question", formFieldsCount: formFields.length, filledCount, resumeUploaded, questionnaireInspected };
+                    await this.requestManualApproval(job, field.labelText, "Decline to state");
+                    const isDryRun = config.search.dryRun || !config.search.allowLiveApplications;
+                    if (isDryRun && filledCount > 0 && resumeUploaded) {
+                        logger.worker.info("[Simplify Engine] Dry-run mode active. Continuing dry-run validation after sensitive question inspection.");
+                    } else {
+                        return { success: false, reason: "sensitive_question", formFieldsCount: formFields.length, filledCount, resumeUploaded, questionnaireInspected };
+                    }
                 }
 
                 // AI Question Engine Priority Strategy
@@ -484,7 +489,16 @@ class ExternalAtsAutomation {
             }
         }
 
-        return { success: true, formFieldsCount: formFields.length, filledCount, resumeUploaded, questionnaireInspected };
+        const isDryRun = config.search.dryRun || !config.search.allowLiveApplications;
+        return {
+            success: true,
+            formFieldsCount: formFields.length,
+            filledCount,
+            resumeUploaded,
+            questionnaireInspected,
+            dryRunPrevented: isDryRun,
+            reason: isDryRun ? "dry_run_validated" : "form_filled"
+        };
     }
 
     /**
