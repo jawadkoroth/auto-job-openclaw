@@ -6,6 +6,7 @@ const resumeManager = require("../resume/ResumeManager");
 const externalApplicationRouter = require("../router/ExternalApplicationRouter");
 const ApplicationQuestionEngine = require("../ai/ApplicationQuestionEngine");
 const Telegram = require("../../apps/telegram");
+const db = require("../database");
 
 class ExternalAtsAutomation {
     /**
@@ -284,6 +285,14 @@ class ExternalAtsAutomation {
                         const rect = el.getBoundingClientRect();
                         const style = window.getComputedStyle(el);
                         if (rect.width === 0 || rect.height === 0 || style.display === "none" || style.visibility === "hidden") {
+                            continue;
+                        }
+
+                        // Ignore header/nav/search bar inputs
+                        if (el.closest("header, nav, .header, .search-bar, [role='search']")) {
+                            continue;
+                        }
+                        if (el.type === "search" || (el.placeholder && el.placeholder.toLowerCase().includes("search")) || el.name === "q") {
                             continue;
                         }
 
