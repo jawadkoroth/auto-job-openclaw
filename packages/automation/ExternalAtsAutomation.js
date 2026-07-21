@@ -45,17 +45,23 @@ class ExternalAtsAutomation {
 
             // Click initial "Apply for this job" anchor/button if present to scroll/reveal application form
             const initialApplyBtn = page.locator("a#apply_button, #apply_button, a[href='#app'], a[href*='apply'], [data-automation-id='adventureButton'], [data-automation-id='applyButton'], button:has-text('Apply'), a:has-text('Apply for this job'), button:has-text('Apply for this job'), a:has-text('Apply Now'), a:has-text('Apply')").first();
+            if (await initialApplyBtn.count() === 0) {
+                await page.waitForSelector("a:has-text('Apply'), button:has-text('Apply'), [data-automation-id='adventureButton'], [data-automation-id='applyButton'], #apply_button", { timeout: 8000 }).catch(() => {});
+            }
             if (await initialApplyBtn.count() > 0 && await initialApplyBtn.isVisible().catch(() => false)) {
                 logger.worker.info("[External Form] Clicking initial Apply button to expose form inputs...");
                 await initialApplyBtn.click({ force: true }).catch(() => {});
-                await page.waitForTimeout(3500);
+                await page.waitForTimeout(4000);
             }
 
             const applyManuallyBtn = page.locator("[data-automation-id='applyManually'], a:has-text('Apply Manually'), button:has-text('Apply Manually')").first();
+            if (await applyManuallyBtn.count() === 0) {
+                await page.waitForSelector("[data-automation-id='applyManually'], a:has-text('Apply Manually'), button:has-text('Apply Manually')", { timeout: 6000 }).catch(() => {});
+            }
             if (await applyManuallyBtn.count() > 0 && await applyManuallyBtn.isVisible().catch(() => false)) {
                 logger.worker.info("[External Form] Clicking Apply Manually option...");
                 await applyManuallyBtn.click({ force: true }).catch(() => {});
-                await page.waitForTimeout(3500);
+                await page.waitForTimeout(4000);
             }
 
             // 3. Multi-Step Form Loop
