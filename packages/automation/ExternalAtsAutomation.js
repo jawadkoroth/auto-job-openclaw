@@ -385,9 +385,9 @@ class ExternalAtsAutomation {
             // Locate element in Playwright
             let locator = null;
             if (field.id) {
-                locator = page.locator(`#${CSS.escape(field.id)}`).first();
+                locator = page.locator(`[id="${field.id}"]`).first();
             } else if (field.name) {
-                locator = page.locator(`[name="${CSS.escape(field.name)}"]`).first();
+                locator = page.locator(`[name="${field.name}"]`).first();
             } else if (field.labelText) {
                 locator = page.locator(`input[aria-label*='${field.labelText}' i], textarea[aria-label*='${field.labelText}' i]`).first();
             }
