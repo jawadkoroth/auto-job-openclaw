@@ -1,0 +1,16 @@
+[Unit]
+Description=We Work Remotely (WWR) Daily Job Automation Service
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ubuntu/automation
+User=ubuntu
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="DATABASE_PATH=/home/ubuntu/automation/database.sqlite"
+Environment="DRY_RUN=true"
+Environment="ALLOW_LIVE_APPLICATIONS=false"
+ExecStart=/usr/bin/node scripts/run-weworkremotely-runner.js
+
+[Install]
+WantedBy=multi-user.target

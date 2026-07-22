@@ -1,93 +1,92 @@
+const { checkLocationEligibility } = require("../../router/LocationEligibilityFilter");
+const ExternalApplicationRouter = require("../../router/ExternalApplicationRouter");
+
 module.exports = async function search(plugin, page, queryOptions = {}) {
-    const { logger, config } = plugin;
-    
-    const keywordsList = queryOptions.keywordsList || config.search.keywords || ["DevOps"];
+    const { logger } = plugin;
     const allDiscoveredJobs = [];
     const seenJobIds = new Set();
 
-    for (const keywords of keywordsList) {
-        logger.info(`Searching WeWorkRemotely for keywords: "${keywords}"`);
-        
-        const searchUrl = `https://weworkremotely.com/remote-jobs/search?term=${encodeURIComponent(keywords)}`;
-        logger.info(`Navigating directly to WeWorkRemotely search URL: ${searchUrl}`);
-        try {
-            await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 35000 });
-            await page.waitForTimeout(3000);
-        } catch (e) {
-            logger.error(`Navigation failed for: ${searchUrl}. Error: ${e.message}`);
-            continue;
-        }
+    logger.info("Starting WeWorkRemotely RSS job discovery...");
 
-        const cardSelector = "li.new-listing-container";
-        await page.waitForSelector(cardSelector, { timeout: 15000 }).catch(() => {
-            logger.warn("No job listings found matching card selector on WeWorkRemotely.");
-        });
+    const rssUrl = "https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss";
 
-        const jobListings = page.locator(cardSelector);
-        const count = await jobListings.count();
-        logger.info(`Found ${count} job cards on WeWorkRemotely.`);
+    try {
+        const response = await page.request.get(rssUrl, { timeout: 20000 });
+        const xmlText = await response.text();
+        const itemMatches = xmlText.match(/<item>[\s\S]*?<\/item>/gi) || [];
+        logger.info(`Found ${itemMatches.length} items in WWR DevOps RSS feed.`);
 
-        for (let i = 0; i < count; i++) {
-            try {
-                const item = jobListings.nth(i);
-                
-                const linkLoc = item.locator("a[href*='/remote-jobs/']").first();
-                if (await linkLoc.count() === 0) continue;
-                let url = await linkLoc.getAttribute("href");
-                if (!url) continue;
+        for (const itemXml of itemMatches) {
+            const titleMatch = itemXml.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/i) || itemXml.match(/<title>(.*?)<\/title>/i);
+            const linkMatch = itemXml.match(/<link>(.*?)<\/link>/i);
+            const descMatch = itemXml.match(/<description><!\[CDATA\[([\s\S]*?)\]\]><\/description>/i) || itemXml.match(/<description>([\s\S]*?)<\/description>/i);
+            const regionMatch = itemXml.match(/<region>(.*?)<\/region>/i) || itemXml.match(/<location>(.*?)<\/location>/i);
 
-                if (!url.startsWith("http")) {
-                    url = "https://weworkremotely.com" + url;
-                }
+            if (!titleMatch || !linkMatch) continue;
 
-                const linkText = await linkLoc.innerText();
-                if (!linkText) continue;
+            const rawTitle = titleMatch[1];
+            const url = linkMatch[1];
+            let company = "Unknown Company";
+            let title = rawTitle;
 
-                const lines = linkText.split("\n").map(l => l.trim()).filter(Boolean);
-                const cleanParts = lines.filter(p => {
-                    const isDayTag = /^\d+d$/.test(p);
-                    const isNew = p.toLowerCase() === "new";
-                    const isBoosted = p.toLowerCase().includes("boosted");
-                    const isFeatured = p.toLowerCase().includes("featured");
-                    const isTop = p.toLowerCase().includes("top 100");
-                    return !isDayTag && !isNew && !isBoosted && !isFeatured && !isTop;
-                });
-                
-                const title = cleanParts[0] || "Unknown Title";
-                const company = cleanParts[1] || "Unknown Company";
-                const jobLocation = cleanParts[2] || "Remote";
-
-                let jobId = "";
-                const match = url.match(/\/remote-jobs\/(.*?)$/);
-                if (match) jobId = match[1].split("-")[0];
-
-                if (!jobId) {
-                    jobId = url.split("/").pop();
-                }
-
-                if (!jobId) {
-                    jobId = `weworkremotely-${i}-${Buffer.from(title + company).toString("base64").substring(0, 8)}`;
-                }
-
-                if (seenJobIds.has(jobId)) continue;
-                seenJobIds.add(jobId);
-
-                allDiscoveredJobs.push({
-                    portal: "weworkremotely",
-                    job_id: jobId,
-                    title: title.trim(),
-                    company: company.trim(),
-                    location: jobLocation.trim(),
-                    experience: "2-5 Yrs",
-                    salary: "Not Disclosed",
-                    url: url
-                });
-            } catch (err) {
-                logger.debug(`Failed reading WeWorkRemotely job card index #${i}: ${err.message}`);
+            if (rawTitle.includes(" is hiring a ")) {
+                const parts = rawTitle.split(" is hiring a ");
+                company = parts[0].trim();
+                title = parts[1].trim();
+            } else if (rawTitle.includes(": ")) {
+                const parts = rawTitle.split(": ");
+                company = parts[0].trim();
+                title = parts[1].trim();
             }
+
+            const location = regionMatch ? regionMatch[1].trim() : "Worldwide / Remote";
+
+            let jobId = "";
+            const m = url.match(/\/remote-jobs\/(.*?)$/);
+            if (m) jobId = m[1].split("-")[0];
+            if (!jobId) jobId = url.split("/").pop();
+
+            if (!jobId || seenJobIds.has(jobId)) continue;
+            seenJobIds.add(jobId);
+
+            const locationCheck = checkLocationEligibility(location, title);
+
+            // Extract external application links from CDATA description HTML
+            const descHtml = descMatch ? descMatch[1] : "";
+            const hrefMatches = descHtml.match(/href=["'](https?:\/\/.*?)["']/gi) || [];
+            const externalLinks = hrefMatches
+                .map(h => h.replace(/href=["']/i, "").replace(/["']$/, ""))
+                .filter(l => !l.includes("weworkremotely.com"));
+
+            let detectedAts = "Generic Company Career Page";
+            let finalUrl = url;
+
+            for (const extUrl of externalLinks) {
+                const classified = ExternalApplicationRouter.classifyATS(extUrl);
+                if (classified !== "Unknown") {
+                    detectedAts = classified;
+                    finalUrl = extUrl;
+                    break;
+                }
+            }
+
+            allDiscoveredJobs.push({
+                portal: "weworkremotely",
+                job_id: jobId,
+                title,
+                company,
+                location,
+                url,
+                final_application_url: finalUrl,
+                ats: detectedAts,
+                is_india_eligible: locationCheck.eligible ? 1 : 0,
+                location_reason: locationCheck.reason
+            });
         }
-        await page.waitForTimeout(2000);
+    } catch (err) {
+        logger.error(`RSS feed fetch failed: ${err.message}`);
     }
 
+    logger.info(`Total unique WeWorkRemotely RSS jobs discovered: ${allDiscoveredJobs.length}`);
     return allDiscoveredJobs;
 };
