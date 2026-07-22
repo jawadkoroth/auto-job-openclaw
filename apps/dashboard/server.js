@@ -50,15 +50,6 @@ function parseJsonBody(req) {
     });
 }
 
-function parseRawBuffer(req) {
-    return new Promise((resolve, reject) => {
-        const chunks = [];
-        req.on("data", chunk => chunks.push(chunk));
-        req.on("end", () => resolve(Buffer.concat(chunks)));
-        req.on("error", err => reject(err));
-    });
-}
-
 function sendJson(res, statusCode, data) {
     res.writeHead(statusCode, { "Content-Type": "application/json" });
     res.end(JSON.stringify(data));
@@ -99,7 +90,50 @@ const server = http.createServer(async (req, res) => {
     try {
         await db.init();
 
-        // --- API Stats Route ---
+        // --- 1. Inline PDF Streaming Route ---
+        if (pathname.startsWith("/api/documents/view/") && method === "GET") {
+            const docId = pathname.replace("/api/documents/view/", "");
+            const doc = await db.get("SELECT * FROM documents WHERE document_id = ? OR id = ?", [docId, docId]);
+            if (!doc || !fs.existsSync(doc.filepath)) {
+                return sendJson(res, 404, { success: false, error: "CV document file not found." });
+            }
+
+            const stat = fs.statSync(doc.filepath);
+            res.writeHead(200, {
+                "Content-Type": "application/pdf",
+                "Content-Disposition": `inline; filename="${doc.filename}"`,
+                "Content-Length": stat.size
+            });
+
+            const stream = fs.createReadStream(doc.filepath);
+            return stream.pipe(res);
+        }
+
+        // --- 2. Document Details Route ---
+        if (pathname.startsWith("/api/documents/") && pathname.endsWith("/details") && method === "GET") {
+            const docId = pathname.replace("/api/documents/", "").replace("/details", "");
+            const doc = await db.get("SELECT * FROM documents WHERE document_id = ? OR id = ?", [docId, docId]);
+            if (!doc) return sendJson(res, 404, { success: false, error: "Document not found." });
+
+            const fileExists = fs.existsSync(doc.filepath);
+            const fileSize = fileExists ? fs.statSync(doc.filepath).size : 0;
+            const snapshotCount = await db.get(
+                "SELECT COUNT(*) as count FROM application_snapshots WHERE resume_document_id = ? OR resume_document_id = ?",
+                [doc.document_id, doc.filename]
+            ).catch(() => ({ count: 0 }));
+
+            return sendJson(res, 200, {
+                success: true,
+                document: {
+                    ...doc,
+                    fileExists,
+                    fileSize,
+                    snapshotUsageCount: snapshotCount.count || 0
+                }
+            });
+        }
+
+        // --- 3. Overview & Stats Route ---
         if (pathname === "/api/stats" && method === "GET") {
             const totalApps = await db.get("SELECT COUNT(*) as count FROM jobs WHERE status = 'APPLIED'").catch(() => ({ count: 0 }));
             const pendingQuestions = await db.all("SELECT * FROM jobs WHERE status = 'WAITING_FOR_INPUT' ORDER BY id DESC").catch(() => []);
@@ -121,7 +155,7 @@ const server = http.createServer(async (req, res) => {
             });
         }
 
-        // --- Candidate Profile CRUD ---
+        // --- 4. Candidate Profile Routes ---
         if (pathname === "/api/profile" && method === "GET") {
             const profile = await candidateKnowledgeService.getProfile();
             const rawFields = await candidateKnowledgeService.profile.getAllRawFields();
@@ -140,10 +174,17 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, { success: true, message: `Field "${key}" deleted.` });
         }
 
-        // --- Answer Bank CRUD ---
+        // --- 5. Answer Bank Routes ---
         if (pathname === "/api/answers" && method === "GET") {
             const answers = await candidateKnowledgeService.answerBank.getAllAnswers();
             return sendJson(res, 200, { success: true, answers });
+        }
+
+        if (pathname.startsWith("/api/answers/") && pathname.endsWith("/details") && method === "GET") {
+            const id = pathname.replace("/api/answers/", "").replace("/details", "");
+            const entry = await db.get("SELECT * FROM answer_bank WHERE id = ?", [id]);
+            if (!entry) return sendJson(res, 404, { success: false, error: "Answer entry not found." });
+            return sendJson(res, 200, { success: true, answer: entry });
         }
 
         if (pathname === "/api/answers" && method === "POST") {
@@ -165,7 +206,7 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, { success: true, message: "Answer Bank entry deleted." });
         }
 
-        // --- Single Default CV / Document Manager ---
+        // --- 6. CV Document Routes ---
         if (pathname === "/api/documents" && method === "GET") {
             const docs = await candidateKnowledgeService.documentManager.getAllDocuments();
             const defaultCv = await candidateKnowledgeService.documentManager.getDefaultResume();
@@ -194,10 +235,17 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, { success: true, message: "CV document deleted/archived." });
         }
 
-        // --- Cover Letter CRUD ---
+        // --- 7. Cover Letter Routes ---
         if (pathname === "/api/cover-letters" && method === "GET") {
             const letters = await candidateKnowledgeService.coverLetterManager.getAllCoverLetters();
             return sendJson(res, 200, { success: true, coverLetters: letters });
+        }
+
+        if (pathname.startsWith("/api/cover-letters/") && pathname.endsWith("/details") && method === "GET") {
+            const id = pathname.replace("/api/cover-letters/", "").replace("/details", "");
+            const letter = await db.get("SELECT * FROM cover_letters WHERE id = ? OR cover_letter_id = ?", [id, id]);
+            if (!letter) return sendJson(res, 404, { success: false, error: "Cover letter not found." });
+            return sendJson(res, 200, { success: true, coverLetter: letter });
         }
 
         if (pathname === "/api/cover-letters" && method === "POST") {
@@ -219,7 +267,14 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, { success: true, message: "Cover letter deleted." });
         }
 
-        // --- Pending Questions Management ---
+        // --- 8. Pending Questions Routes ---
+        if (pathname.startsWith("/api/pending/") && pathname.endsWith("/details") && method === "GET") {
+            const jobId = pathname.replace("/api/pending/", "").replace("/details", "");
+            const job = await db.get("SELECT * FROM jobs WHERE id = ? OR job_id = ?", [jobId, jobId]);
+            if (!job) return sendJson(res, 404, { success: false, error: "Pending question record not found." });
+            return sendJson(res, 200, { success: true, pendingQuestion: job });
+        }
+
         if (pathname === "/api/pending/resolve" && method === "POST") {
             const body = await parseJsonBody(req);
             const job = await db.get("SELECT * FROM jobs WHERE id = ? OR job_id = ?", [body.jobId, body.jobId]);
@@ -250,7 +305,7 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, { success: true, message: "Pending question request cancelled." });
         }
 
-        // --- Application History & Filtering ---
+        // --- 9. Application Inspection & History Routes ---
         if (pathname === "/api/applications" && method === "GET") {
             const statusFilter = parsedUrl.query.status;
             let sql = "SELECT * FROM jobs";
@@ -266,10 +321,104 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, { success: true, applications: jobs });
         }
 
+        if (pathname.startsWith("/api/applications/") && pathname.endsWith("/details") && method === "GET") {
+            const id = pathname.replace("/api/applications/", "").replace("/details", "");
+            const job = await db.get("SELECT * FROM jobs WHERE id = ? OR job_id = ?", [id, id]);
+            if (!job) return sendJson(res, 404, { success: false, error: "Application record not found." });
+
+            const snapshot = await db.get("SELECT * FROM application_snapshots WHERE job_id = ? ORDER BY id DESC LIMIT 1", [job.job_id || job.id]).catch(() => null);
+
+            let parsedSnapshot = null;
+            if (snapshot) {
+                try {
+                    parsedSnapshot = {
+                        ...snapshot,
+                        candidate_profile_snapshot: snapshot.candidate_profile_snapshot ? JSON.parse(snapshot.candidate_profile_snapshot) : null,
+                        answer_bank_ids_used: snapshot.answer_bank_ids_used ? JSON.parse(snapshot.answer_bank_ids_used) : [],
+                        one_time_answers_used: snapshot.one_time_answers_used ? JSON.parse(snapshot.one_time_answers_used) : []
+                    };
+                } catch (e) {
+                    parsedSnapshot = snapshot;
+                }
+            }
+
+            return sendJson(res, 200, { success: true, application: job, snapshot: parsedSnapshot });
+        }
+
         if (pathname.startsWith("/api/applications/") && method === "DELETE") {
             const id = pathname.replace("/api/applications/", "");
             await db.run("DELETE FROM jobs WHERE id = ? OR job_id = ?", [id, id]);
             return sendJson(res, 200, { success: true, message: "Application record deleted." });
+        }
+
+        // --- 10. Data Explorer Routes (Read-Only & Secret Masked) ---
+        if (pathname === "/api/explorer/tables" && method === "GET") {
+            const rawTables = await db.all(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ).catch(() => []);
+
+            const allowedTables = [];
+            for (const t of rawTables) {
+                const name = t.name;
+                // Exclude system/session/token tables if present
+                if (name.toLowerCase().includes("session") || name.toLowerCase().includes("token")) continue;
+                const countRow = await db.get(`SELECT COUNT(*) as count FROM "${name}"`).catch(() => ({ count: 0 }));
+                allowedTables.push({ name, rowCount: countRow.count || 0 });
+            }
+
+            return sendJson(res, 200, { success: true, tables: allowedTables });
+        }
+
+        if (pathname.startsWith("/api/explorer/table/") && method === "GET") {
+            const tableName = pathname.replace("/api/explorer/table/", "");
+            
+            // Validate table name against sqlite_master (prevents SQL injection)
+            const validTable = await db.get(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
+                [tableName]
+            );
+            if (!validTable) {
+                return sendJson(res, 404, { success: false, error: "Table not found." });
+            }
+
+            // Get columns info
+            const tableInfo = await db.all(`PRAGMA table_info("${tableName}")`).catch(() => []);
+            const columns = tableInfo.map(c => c.name);
+
+            // Pagination parameters
+            const page = parseInt(parsedUrl.query.page || "1", 10);
+            const limit = parseInt(parsedUrl.query.limit || "25", 10);
+            const offset = (page - 1) * limit;
+
+            const totalRow = await db.get(`SELECT COUNT(*) as count FROM "${tableName}"`).catch(() => ({ count: 0 }));
+            const rows = await db.all(`SELECT * FROM "${tableName}" LIMIT ? OFFSET ?`, [limit, offset]).catch(() => []);
+
+            // Backend Security Data Masking
+            const sensitiveKeywords = [
+                "password", "pass", "token", "secret", "cookie", "session", "auth",
+                "otp", "storagestate", "bot_token", "access_token", "refresh_token", "openrouter"
+            ];
+
+            const maskedRows = rows.map(row => {
+                const cleanRow = { ...row };
+                for (const col of Object.keys(cleanRow)) {
+                    const colLower = col.toLowerCase();
+                    if (sensitiveKeywords.some(kw => colLower.includes(kw))) {
+                        cleanRow[col] = "***MASKED***";
+                    }
+                }
+                return cleanRow;
+            });
+
+            return sendJson(res, 200, {
+                success: true,
+                tableName,
+                columns,
+                totalRows: totalRow.count || 0,
+                page,
+                limit,
+                rows: maskedRows
+            });
         }
 
         // --- Serve Static Dashboard Files ---

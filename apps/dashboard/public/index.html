@@ -26,8 +26,8 @@
         header { background: rgba(30, 41, 59, 0.85); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; }
         header h1 { font-size: 1.25rem; font-weight: 700; color: var(--accent); display: flex; align-items: center; gap: 0.5rem; }
 
-        nav { display: flex; gap: 0.5rem; }
-        .tab-btn { background: transparent; border: none; color: var(--muted); padding: 0.5rem 1rem; border-radius: 0.375rem; cursor: pointer; font-weight: 500; transition: all 0.2s; }
+        nav { display: flex; gap: 0.375rem; overflow-x: auto; }
+        .tab-btn { background: transparent; border: none; color: var(--muted); padding: 0.5rem 0.875rem; border-radius: 0.375rem; cursor: pointer; font-weight: 500; font-size: 0.875rem; white-space: nowrap; transition: all 0.2s; }
         .tab-btn:hover { color: var(--text); background: rgba(255,255,255,0.05); }
         .tab-btn.active { color: #fff; background: var(--accent); }
 
@@ -64,7 +64,7 @@
         .form-group input, .form-group textarea, .form-group select { background: var(--bg); border: 1px solid var(--border); border-radius: 0.375rem; padding: 0.625rem; color: var(--text); font-size: 0.9rem; }
         .form-group input:focus, .form-group textarea:focus { border-color: var(--accent); outline: none; }
 
-        .btn { background: var(--accent); color: #fff; border: none; padding: 0.625rem 1.25rem; border-radius: 0.375rem; font-weight: 600; cursor: pointer; transition: background 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; }
+        .btn { background: var(--accent); color: #fff; border: none; padding: 0.5rem 1rem; border-radius: 0.375rem; font-weight: 600; cursor: pointer; transition: background 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem; font-size: 0.85rem; }
         .btn:hover { background: var(--accent-hover); }
         .btn-sm { padding: 0.375rem 0.75rem; font-size: 0.8rem; }
         .btn-danger { background: var(--danger); }
@@ -75,6 +75,27 @@
         .pending-card { background: var(--card); border-radius: 0.5rem; padding: 1.25rem; margin-bottom: 1rem; border-left: 4px solid var(--warning); }
         .pending-card h3 { font-size: 1rem; margin-bottom: 0.5rem; color: #fff; }
         .pending-card p { font-size: 0.9rem; color: var(--muted); margin-bottom: 0.5rem; }
+
+        /* --- Inspection Modal --- */
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.8); backdrop-filter: blur(5px); display: none; justify-content: center; align-items: center; z-index: 1000; }
+        .modal-overlay.active { display: flex; }
+        .modal-container { background: var(--panel); border: 1px solid var(--border); border-radius: 0.75rem; width: 90%; max-width: 900px; max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
+        .modal-header { padding: 1rem 1.5rem; background: rgba(0,0,0,0.3); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+        .modal-header h3 { color: var(--accent); font-size: 1.1rem; }
+        .modal-close { background: transparent; border: none; color: var(--muted); font-size: 1.5rem; cursor: pointer; }
+        .modal-body { padding: 1.5rem; overflow-y: auto; flex: 1; font-size: 0.9rem; }
+        .modal-pdf-iframe { width: 100%; height: 600px; border: none; border-radius: 0.375rem; background: #fff; }
+
+        .metadata-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem; background: rgba(0,0,0,0.2); padding: 1rem; border-radius: 0.375rem; margin-bottom: 1rem; }
+        .metadata-item { display: flex; flex-direction: column; font-size: 0.85rem; }
+        .metadata-item .lbl { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; font-weight: 600; }
+        .metadata-item .val { color: var(--text); word-break: break-all; }
+
+        /* Data Explorer Grid */
+        .explorer-layout { display: grid; grid-template-columns: 240px 1fr; gap: 1.5rem; }
+        .explorer-sidebar { background: var(--panel); border: 1px solid var(--border); border-radius: 0.5rem; padding: 1rem; }
+        .explorer-table-link { display: flex; justify-content: space-between; padding: 0.5rem 0.75rem; border-radius: 0.375rem; cursor: pointer; color: var(--muted); font-size: 0.875rem; font-weight: 500; }
+        .explorer-table-link:hover, .explorer-table-link.active { background: var(--accent); color: #fff; }
     </style>
 </head>
 <body>
@@ -88,6 +109,7 @@
             <button class="tab-btn" onclick="switchTab('documents')">CV / Resume</button>
             <button class="tab-btn" onclick="switchTab('cover')">Cover Letters</button>
             <button class="tab-btn" onclick="switchTab('applications')">Applications</button>
+            <button class="tab-btn" onclick="switchTab('explorer')">Data Explorer</button>
         </nav>
     </header>
 
@@ -138,32 +160,53 @@
         <!-- 2. CANDIDATE PROFILE TAB -->
         <div id="profile" class="tab-content">
             <div class="card">
-                <h2>Candidate Profile Facts (Oracle Single Source of Truth)</h2>
-                <form id="form-profile" onsubmit="saveProfile(event)">
-                    <div class="form-grid">
-                        <div class="form-group"><label>First Name*</label><input type="text" name="firstName" id="prof-firstName"></div>
-                        <div class="form-group"><label>Last Name*</label><input type="text" name="lastName" id="prof-lastName"></div>
-                        <div class="form-group"><label>Full Name*</label><input type="text" name="fullName" id="prof-fullName"></div>
-                        <div class="form-group"><label>Email Address*</label><input type="email" name="email" id="prof-email"></div>
-                        <div class="form-group"><label>Phone Number*</label><input type="text" name="phone" id="prof-phone"></div>
-                        <div class="form-group"><label>Current Location / City*</label><input type="text" name="currentLocation" id="prof-currentLocation"></div>
-                        <div class="form-group"><label>Country*</label><input type="text" name="country" id="prof-country"></div>
-                        <div class="form-group"><label>Current Company</label><input type="text" name="currentCompany" id="prof-currentCompany"></div>
-                        <div class="form-group"><label>Current Job Title</label><input type="text" name="currentJobTitle" id="prof-currentJobTitle"></div>
-                        <div class="form-group"><label>Total Experience (Yrs)</label><input type="text" name="totalExperience" id="prof-totalExperience"></div>
-                        <div class="form-group"><label>Notice Period</label><input type="text" name="noticePeriod" id="prof-noticePeriod"></div>
-                        <div class="form-group"><label>LinkedIn URL*</label><input type="text" name="linkedinUrl" id="prof-linkedinUrl"></div>
-                        <div class="form-group"><label>GitHub URL</label><input type="text" name="githubUrl" id="prof-githubUrl"></div>
-                        <div class="form-group"><label>Portfolio URL</label><input type="text" name="portfolioUrl" id="prof-portfolioUrl"></div>
-                        <div class="form-group"><label>Education Institution*</label><input type="text" name="educationSchool" id="prof-educationSchool"></div>
-                        <div class="form-group"><label>Degree*</label><input type="text" name="educationDegree" id="prof-educationDegree"></div>
-                        <div class="form-group"><label>Discipline / Field of Study*</label><input type="text" name="educationDiscipline" id="prof-educationDiscipline"></div>
-                        <div class="form-group"><label>Education Start Year*</label><input type="text" name="educationStartYear" id="prof-educationStartYear"></div>
-                        <div class="form-group"><label>Education End/Grad Year*</label><input type="text" name="educationEndYear" id="prof-educationEndYear"></div>
-                    </div>
-                    <br>
-                    <button type="submit" class="btn">Save Profile Changes</button>
-                </form>
+                <h2>
+                    Candidate Profile (Oracle Single Source of Truth)
+                    <button class="btn btn-sm btn-outline" onclick="toggleProfileViewMode()">Toggle Dynamic Full Profile View</button>
+                </h2>
+                
+                <div id="profile-edit-mode">
+                    <form id="form-profile" onsubmit="saveProfile(event)">
+                        <div class="form-grid">
+                            <div class="form-group"><label>First Name*</label><input type="text" name="firstName" id="prof-firstName"></div>
+                            <div class="form-group"><label>Last Name*</label><input type="text" name="lastName" id="prof-lastName"></div>
+                            <div class="form-group"><label>Full Name*</label><input type="text" name="fullName" id="prof-fullName"></div>
+                            <div class="form-group"><label>Email Address*</label><input type="email" name="email" id="prof-email"></div>
+                            <div class="form-group"><label>Phone Number*</label><input type="text" name="phone" id="prof-phone"></div>
+                            <div class="form-group"><label>Current Location / City*</label><input type="text" name="currentLocation" id="prof-currentLocation"></div>
+                            <div class="form-group"><label>Country*</label><input type="text" name="country" id="prof-country"></div>
+                            <div class="form-group"><label>Current Company</label><input type="text" name="currentCompany" id="prof-currentCompany"></div>
+                            <div class="form-group"><label>Current Job Title</label><input type="text" name="currentJobTitle" id="prof-currentJobTitle"></div>
+                            <div class="form-group"><label>Total Experience (Yrs)</label><input type="text" name="totalExperience" id="prof-totalExperience"></div>
+                            <div class="form-group"><label>Notice Period</label><input type="text" name="noticePeriod" id="prof-noticePeriod"></div>
+                            <div class="form-group"><label>LinkedIn URL*</label><input type="text" name="linkedinUrl" id="prof-linkedinUrl"></div>
+                            <div class="form-group"><label>GitHub URL</label><input type="text" name="githubUrl" id="prof-githubUrl"></div>
+                            <div class="form-group"><label>Portfolio URL</label><input type="text" name="portfolioUrl" id="prof-portfolioUrl"></div>
+                            <div class="form-group"><label>Education Institution*</label><input type="text" name="educationSchool" id="prof-educationSchool"></div>
+                            <div class="form-group"><label>Degree*</label><input type="text" name="educationDegree" id="prof-educationDegree"></div>
+                            <div class="form-group"><label>Discipline / Field of Study*</label><input type="text" name="educationDiscipline" id="prof-educationDiscipline"></div>
+                            <div class="form-group"><label>Education Start Year*</label><input type="text" name="educationStartYear" id="prof-educationStartYear"></div>
+                            <div class="form-group"><label>Education End/Grad Year*</label><input type="text" name="educationEndYear" id="prof-educationEndYear"></div>
+                        </div>
+                        <br>
+                        <button type="submit" class="btn">Save Profile Changes</button>
+                    </form>
+                </div>
+
+                <div id="profile-dynamic-view" style="display: none;">
+                    <table id="table-raw-profile">
+                        <thead>
+                            <tr>
+                                <th>Key Name</th>
+                                <th>Current Stored Value</th>
+                                <th>Category</th>
+                                <th>Last Updated</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
             </div>
         </div>
 
@@ -310,14 +353,54 @@
                 </table>
             </div>
         </div>
+
+        <!-- 8. DATA EXPLORER TAB -->
+        <div id="explorer" class="tab-content">
+            <div class="card">
+                <h2>Oracle SQLite Database Explorer (Read-Only)</h2>
+                <div class="explorer-layout">
+                    <div class="explorer-sidebar">
+                        <h4 style="font-size: 0.85rem; color: var(--muted); margin-bottom: 0.75rem;">DATABASE TABLES</h4>
+                        <div id="explorer-tables-list">Loading tables...</div>
+                    </div>
+                    <div class="explorer-main">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 1rem;">
+                            <h3 id="explorer-active-table" style="color: var(--accent);">Select a table</h3>
+                            <div style="color: var(--muted); font-size: 0.85rem;" id="explorer-rows-info"></div>
+                        </div>
+                        <div style="overflow-x: auto;">
+                            <table id="table-explorer-data">
+                                <thead><tr id="explorer-headers"></tr></thead>
+                                <tbody id="explorer-rows"><tr><td style="color: var(--muted);">Click a table on the left to inspect rows.</td></tr></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </main>
+
+    <!-- Inspection Modal Overlay -->
+    <div id="modal-inspection" class="modal-overlay">
+        <div class="modal-container">
+            <div class="modal-header">
+                <h3 id="modal-title">Inspection View</h3>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-body">
+                <!-- Dynamic inspection content inserted here -->
+            </div>
+        </div>
+    </div>
 
     <script>
         function switchTab(tabId) {
             document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
             
-            event.target.classList.add('active');
+            if (event && event.target && event.target.classList) {
+                event.target.classList.add('active');
+            }
             document.getElementById(tabId).classList.add('active');
 
             if (tabId === 'overview') loadOverview();
@@ -327,6 +410,17 @@
             if (tabId === 'documents') loadCvs();
             if (tabId === 'cover') loadCoverLetters();
             if (tabId === 'applications') loadApplications();
+            if (tabId === 'explorer') loadDataExplorer();
+        }
+
+        function openModal(title, contentHtml) {
+            document.getElementById('modal-title').innerText = title;
+            document.getElementById('modal-body').innerHTML = contentHtml;
+            document.getElementById('modal-inspection').classList.add('active');
+        }
+
+        function closeModal() {
+            document.getElementById('modal-inspection').classList.remove('active');
         }
 
         async function apiGet(endpoint) {
@@ -373,7 +467,10 @@
                             <td>${q.job_id || q.id}</td>
                             <td>${q.company || 'Company'} - ${q.title || 'Role'}</td>
                             <td>${q.pending_question || 'Input Needed'}</td>
-                            <td><button class="btn btn-sm" onclick="switchTab('pending')">Resolve</button></td>
+                            <td>
+                                <button class="btn btn-sm" onclick="viewPendingDetails('${q.id}')">View</button>
+                                <button class="btn btn-sm btn-outline" onclick="switchTab('pending')">Resolve</button>
+                            </td>
                         </tr>
                     `).join('');
                 }
@@ -382,12 +479,38 @@
 
         async function loadProfile() {
             const data = await apiGet('/api/profile');
-            if (data.success && data.profile) {
-                const prof = data.profile;
-                for (const key of Object.keys(prof)) {
-                    const el = document.getElementById(`prof-${key}`);
-                    if (el) el.value = prof[key] || '';
+            if (data.success) {
+                if (data.profile) {
+                    for (const key of Object.keys(data.profile)) {
+                        const el = document.getElementById(`prof-${key}`);
+                        if (el) el.value = data.profile[key] || '';
+                    }
                 }
+                if (data.rawFields) {
+                    const tbody = document.querySelector('#table-raw-profile tbody');
+                    tbody.innerHTML = data.rawFields.map(f => `
+                        <tr>
+                            <td><code>${f.key}</code></td>
+                            <td><strong>${f.value}</strong></td>
+                            <td>${f.category || 'general'}</td>
+                            <td>${new Date(f.updated_at).toLocaleString()}</td>
+                            <td><button class="btn btn-sm btn-danger" onclick="deleteProfileField('${f.key}')">Delete</button></td>
+                        </tr>
+                    `).join('');
+                }
+            }
+        }
+
+        function toggleProfileViewMode() {
+            const edit = document.getElementById('profile-edit-mode');
+            const dynamic = document.getElementById('profile-dynamic-view');
+            if (edit.style.display === 'none') {
+                edit.style.display = 'block';
+                dynamic.style.display = 'none';
+            } else {
+                edit.style.display = 'none';
+                dynamic.style.display = 'block';
+                loadProfile();
             }
         }
 
@@ -403,6 +526,17 @@
             loadOverview();
         }
 
+        async function deleteProfileField(key) {
+            if (key === 'email' || key === 'phone' || key === 'firstName' || key === 'lastName') {
+                if (!confirm(`WARNING: "${key}" is a required production field. Deleting it will halt automated job applications until restored. Proceed?`)) return;
+            } else {
+                if (!confirm(`Delete profile field "${key}"?`)) return;
+            }
+            await apiDelete(`/api/profile/${encodeURIComponent(key)}`);
+            loadProfile();
+            loadOverview();
+        }
+
         async function loadAnswers() {
             const data = await apiGet('/api/answers');
             const tbody = document.querySelector('#table-answers tbody');
@@ -414,9 +548,40 @@
                         <td><strong>${a.approved_answer}</strong></td>
                         <td>${a.usage_count || 0}</td>
                         <td>${a.auto_use_enabled ? 'YES' : 'NO'}</td>
-                        <td><button class="btn btn-sm btn-danger" onclick="deleteAnswer('${a.id}')">Delete</button></td>
+                        <td>
+                            <button class="btn btn-sm btn-outline" onclick="viewAnswerDetails('${a.id}')">View</button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteAnswer('${a.id}')">Delete</button>
+                        </td>
                     </tr>
                 `).join('');
+            }
+        }
+
+        async function viewAnswerDetails(id) {
+            const data = await apiGet(`/api/answers/${id}/details`);
+            if (data.success && data.answer) {
+                const a = data.answer;
+                const html = `
+                    <div class="metadata-grid">
+                        <div class="metadata-item"><span class="lbl">Database ID</span><span class="val">${a.id}</span></div>
+                        <div class="metadata-item"><span class="lbl">Canonical Topic</span><span class="val">${a.canonical_key || 'N/A'}</span></div>
+                        <div class="metadata-item"><span class="lbl">Answer Type</span><span class="val">${a.answer_type || 'FACTUAL'}</span></div>
+                        <div class="metadata-item"><span class="lbl">Sensitive Question Flag</span><span class="val">${a.is_sensitive ? 'YES' : 'NO'}</span></div>
+                        <div class="metadata-item"><span class="lbl">Auto-Use Enabled</span><span class="val">${a.auto_use_enabled ? 'YES' : 'NO'}</span></div>
+                        <div class="metadata-item"><span class="lbl">Usage Count</span><span class="val">${a.usage_count || 0}</span></div>
+                        <div class="metadata-item"><span class="lbl">Created Timestamp</span><span class="val">${new Date(a.created_at).toLocaleString()}</span></div>
+                        <div class="metadata-item"><span class="lbl">Last Used Timestamp</span><span class="val">${a.last_used_at ? new Date(a.last_used_at).toLocaleString() : 'Never'}</span></div>
+                    </div>
+                    <div style="margin-bottom: 1rem;">
+                        <p style="color: var(--muted); font-size: 0.8rem; font-weight: 600;">ORIGINAL QUESTION</p>
+                        <p style="font-size: 1rem; color: #fff; font-weight: 500;">${a.original_question}</p>
+                    </div>
+                    <div>
+                        <p style="color: var(--muted); font-size: 0.8rem; font-weight: 600;">APPROVED ANSWER</p>
+                        <p style="font-size: 1.05rem; color: var(--accent); font-weight: 600; background: rgba(0,0,0,0.2); padding: 0.75rem; border-radius: 0.375rem;">${a.approved_answer}</p>
+                    </div>
+                `;
+                openModal('Answer Bank Detail Inspection', html);
             }
         }
 
@@ -457,11 +622,38 @@
                         <div style="display: flex; gap: 0.5rem;">
                             <button class="btn btn-sm" onclick="resolveQuestion('${q.id}', true)">Save for Future & Resolve</button>
                             <button class="btn btn-sm btn-outline" onclick="resolveQuestion('${q.id}', false)">Use Once Only</button>
+                            <button class="btn btn-sm btn-outline" onclick="viewPendingDetails('${q.id}')">Inspect Details</button>
                         </div>
                     </div>
                 `).join('');
             } else {
                 container.innerHTML = '<p style="color: var(--muted);">No pending questions at this time.</p>';
+            }
+        }
+
+        async function viewPendingDetails(id) {
+            const data = await apiGet(`/api/pending/${id}/details`);
+            if (data.success && data.pendingQuestion) {
+                const q = data.pendingQuestion;
+                const html = `
+                    <div class="metadata-grid">
+                        <div class="metadata-item"><span class="lbl">Job ID</span><span class="val">${q.job_id || q.id}</span></div>
+                        <div class="metadata-item"><span class="lbl">Portal</span><span class="val">${q.portal}</span></div>
+                        <div class="metadata-item"><span class="lbl">Approval ID</span><span class="val">${q.approval_id || 'N/A'}</span></div>
+                        <div class="metadata-item"><span class="lbl">Pending Question ID</span><span class="val">${q.pending_question_id || 'N/A'}</span></div>
+                        <div class="metadata-item"><span class="lbl">Created Timestamp</span><span class="val">${new Date(q.timestamp).toLocaleString()}</span></div>
+                        <div class="metadata-item"><span class="lbl">Status</span><span class="val">${q.status}</span></div>
+                    </div>
+                    <div style="margin-bottom: 1rem;">
+                        <p style="color: var(--muted); font-size: 0.8rem; font-weight: 600;">EXACT QUESTION</p>
+                        <p style="font-size: 1rem; color: #fff;">${q.pending_question || 'Input needed'}</p>
+                    </div>
+                    <div>
+                        <p style="color: var(--muted); font-size: 0.8rem; font-weight: 600;">SUGGESTED ANSWER</p>
+                        <p style="font-size: 1rem; color: var(--accent);">${q.pending_suggested_answer || 'None'}</p>
+                    </div>
+                `;
+                openModal('Pending Question Inspection', html);
             }
         }
 
@@ -486,11 +678,33 @@
                         <td>${d.is_active ? 'ACTIVE' : 'INACTIVE'}</td>
                         <td>${new Date(d.uploaded_at).toLocaleDateString()}</td>
                         <td>
+                            <button class="btn btn-sm btn-outline" onclick="viewCvInline('${d.document_id}')">View</button>
                             ${!d.is_default ? `<button class="btn btn-sm btn-outline" onclick="setDefaultCv('${d.document_id}')">Set Default</button>` : ''}
                             <button class="btn btn-sm btn-danger" onclick="deleteCv('${d.document_id}')">Delete</button>
                         </td>
                     </tr>
                 `).join('');
+            }
+        }
+
+        async function viewCvInline(docId) {
+            const data = await apiGet(`/api/documents/${docId}/details`);
+            if (data.success && data.document) {
+                const d = data.document;
+                const sizeKb = (d.fileSize / 1024).toFixed(1);
+                const html = `
+                    <div class="metadata-grid">
+                        <div class="metadata-item"><span class="lbl">Filename</span><span class="val">${d.filename}</span></div>
+                        <div class="metadata-item"><span class="lbl">Document ID</span><span class="val">${d.document_id}</span></div>
+                        <div class="metadata-item"><span class="lbl">Active Default Status</span><span class="val">${d.is_default ? 'YES (ACTIVE PRODUCTION DEFAULT)' : 'Archived'}</span></div>
+                        <div class="metadata-item"><span class="lbl">File Size</span><span class="val">${sizeKb} KB</span></div>
+                        <div class="metadata-item"><span class="lbl">Uploaded At</span><span class="val">${new Date(d.uploaded_at).toLocaleString()}</span></div>
+                        <div class="metadata-item"><span class="lbl">Snapshot Usage Count</span><span class="val">${d.snapshotUsageCount}</span></div>
+                    </div>
+                    <br>
+                    <iframe class="modal-pdf-iframe" src="/api/documents/view/${d.document_id}"></iframe>
+                `;
+                openModal(`PDF CV Viewer — ${d.filename}`, html);
             }
         }
 
@@ -535,9 +749,34 @@
                         <td>${cl.target_role || 'All'}</td>
                         <td>${cl.target_company || 'All'}</td>
                         <td>${cl.is_default ? '<span class="badge default">DEFAULT</span>' : 'NO'}</td>
-                        <td><button class="btn btn-sm btn-danger" onclick="deleteCoverLetter('${cl.id}')">Delete</button></td>
+                        <td>
+                            <button class="btn btn-sm btn-outline" onclick="viewCoverLetter('${cl.id}')">View</button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteCoverLetter('${cl.id}')">Delete</button>
+                        </td>
                     </tr>
                 `).join('');
+            }
+        }
+
+        async function viewCoverLetter(id) {
+            const data = await apiGet(`/api/cover-letters/${id}/details`);
+            if (data.success && data.coverLetter) {
+                const cl = data.coverLetter;
+                const html = `
+                    <div class="metadata-grid">
+                        <div class="metadata-item"><span class="lbl">Title</span><span class="val">${cl.title}</span></div>
+                        <div class="metadata-item"><span class="lbl">Cover Letter ID</span><span class="val">${cl.cover_letter_id}</span></div>
+                        <div class="metadata-item"><span class="lbl">Target Company</span><span class="val">${cl.target_company || 'All'}</span></div>
+                        <div class="metadata-item"><span class="lbl">Target Role</span><span class="val">${cl.target_role || 'All'}</span></div>
+                        <div class="metadata-item"><span class="lbl">Is Default</span><span class="val">${cl.is_default ? 'YES' : 'NO'}</span></div>
+                        <div class="metadata-item"><span class="lbl">Created At</span><span class="val">${new Date(cl.created_at).toLocaleString()}</span></div>
+                    </div>
+                    <div>
+                        <p style="color: var(--muted); font-size: 0.8rem; font-weight: 600;">COVER LETTER CONTENT</p>
+                        <div style="background: rgba(0,0,0,0.2); padding: 1rem; border-radius: 0.375rem; white-space: pre-wrap; font-family: monospace; font-size: 0.9rem;">${cl.content}</div>
+                    </div>
+                `;
+                openModal('Cover Letter Inspection', html);
             }
         }
 
@@ -573,9 +812,50 @@
                         <td>${app.company}</td>
                         <td>${app.portal}</td>
                         <td><span class="badge ${app.status.toLowerCase()}">${app.status}</span></td>
-                        <td><button class="btn btn-sm btn-danger" onclick="deleteApp('${app.id}', '${app.status}')">Delete</button></td>
+                        <td>
+                            <button class="btn btn-sm btn-outline" onclick="viewApplicationDetails('${app.id}')">View</button>
+                            <button class="btn btn-sm btn-danger" onclick="deleteApp('${app.id}', '${app.status}')">Delete</button>
+                        </td>
                     </tr>
                 `).join('');
+            }
+        }
+
+        async function viewApplicationDetails(id) {
+            const data = await apiGet(`/api/applications/${id}/details`);
+            if (data.success && data.application) {
+                const app = data.application;
+                const snap = data.snapshot;
+
+                const profileSnapHtml = snap && snap.candidate_profile_snapshot ? `
+                    <div style="margin-top: 1rem;">
+                        <p style="color: var(--muted); font-size: 0.8rem; font-weight: 600;">IMMUTABLE PROFILE SNAPSHOT</p>
+                        <pre style="background: rgba(0,0,0,0.3); padding: 0.75rem; border-radius: 0.375rem; font-size: 0.8rem;">${JSON.stringify(snap.candidate_profile_snapshot, null, 2)}</pre>
+                    </div>
+                ` : '<p style="color: var(--muted); margin-top: 0.5rem;">No historical profile snapshot stored.</p>';
+
+                const answersUsedHtml = snap && snap.answer_bank_ids_used ? `
+                    <div style="margin-top: 0.5rem;">
+                        <p style="color: var(--muted); font-size: 0.8rem; font-weight: 600;">ANSWERS USED SNAPSHOT</p>
+                        <pre style="background: rgba(0,0,0,0.3); padding: 0.75rem; border-radius: 0.375rem; font-size: 0.8rem;">${JSON.stringify(snap.answer_bank_ids_used, null, 2)}</pre>
+                    </div>
+                ` : '';
+
+                const html = `
+                    <div class="metadata-grid">
+                        <div class="metadata-item"><span class="lbl">Job ID</span><span class="val">${app.job_id || app.id}</span></div>
+                        <div class="metadata-item"><span class="lbl">Company</span><span class="val">${app.company}</span></div>
+                        <div class="metadata-item"><span class="lbl">Title</span><span class="val">${app.title}</span></div>
+                        <div class="metadata-item"><span class="lbl">Portal</span><span class="val">${app.portal}</span></div>
+                        <div class="metadata-item"><span class="lbl">Status</span><span class="val">${app.status}</span></div>
+                        <div class="metadata-item"><span class="lbl">ATS</span><span class="val">${app.ats || 'N/A'}</span></div>
+                        <div class="metadata-item"><span class="lbl">Source URL</span><span class="val">${app.url ? `<a href="${app.url}" target="_blank" style="color: var(--accent);">Link</a>` : 'N/A'}</span></div>
+                        <div class="metadata-item"><span class="lbl">Final ATS URL</span><span class="val">${app.final_application_url ? `<a href="${app.final_application_url}" target="_blank" style="color: var(--accent);">Link</a>` : 'N/A'}</span></div>
+                    </div>
+                    ${profileSnapHtml}
+                    ${answersUsedHtml}
+                `;
+                openModal(`Application Inspection — ${app.company} (${app.title})`, html);
             }
         }
 
@@ -587,6 +867,53 @@
             }
             await apiDelete(`/api/applications/${id}`);
             loadApplications();
+        }
+
+        // --- Data Explorer ---
+        let currentExplorerTable = '';
+
+        async function loadDataExplorer() {
+            const data = await apiGet('/api/explorer/tables');
+            const sidebar = document.getElementById('explorer-tables-list');
+            if (data.success && data.tables) {
+                sidebar.innerHTML = data.tables.map(t => `
+                    <div class="explorer-table-link ${t.name === currentExplorerTable ? 'active' : ''}" onclick="inspectTable('${t.name}')">
+                        <span>${t.name}</span>
+                        <span>(${t.rowCount})</span>
+                    </div>
+                `).join('');
+
+                if (!currentExplorerTable && data.tables.length > 0) {
+                    inspectTable(data.tables[0].name);
+                }
+            }
+        }
+
+        async function inspectTable(tableName, page = 1) {
+            currentExplorerTable = tableName;
+            loadDataExplorer(); // update sidebar selection
+            document.getElementById('explorer-active-table').innerText = `Table: ${tableName}`;
+
+            const data = await apiGet(`/api/explorer/table/${tableName}?page=${page}&limit=25`);
+            const headersRow = document.getElementById('explorer-headers');
+            const rowsTbody = document.getElementById('explorer-rows');
+            const info = document.getElementById('explorer-rows-info');
+
+            if (data.success) {
+                info.innerText = `Total Rows: ${data.totalRows} (Page ${data.page} of ${Math.ceil(data.totalRows / 25) || 1})`;
+
+                headersRow.innerHTML = data.columns.map(c => `<th>${c}</th>`).join('');
+
+                if (data.rows.length === 0) {
+                    rowsTbody.innerHTML = `<tr><td colspan="${data.columns.length}" style="text-align: center; color: var(--muted);">Table is empty.</td></tr>`;
+                } else {
+                    rowsTbody.innerHTML = data.rows.map(r => `
+                        <tr>
+                            ${data.columns.map(c => `<td>${r[c] !== null && r[c] !== undefined ? String(r[c]) : '<span style="color: var(--muted);">NULL</span>'}</td>`).join('')}
+                        </tr>
+                    `).join('');
+                }
+            }
         }
 
         // Initialize Overview on load
