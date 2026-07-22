@@ -109,6 +109,7 @@
             <button class="tab-btn" onclick="switchTab('documents')">CV / Resume</button>
             <button class="tab-btn" onclick="switchTab('cover')">Cover Letters</button>
             <button class="tab-btn" onclick="switchTab('applications')">Applications</button>
+            <button class="tab-btn" onclick="switchTab('portals')">Portals Matrix</button>
             <button class="tab-btn" onclick="switchTab('explorer')">Data Explorer</button>
         </nav>
     </header>
@@ -354,7 +355,28 @@
             </div>
         </div>
 
-        <!-- 8. DATA EXPLORER TAB -->
+        <!-- 8. PORTALS MATRIX TAB -->
+        <div id="portals" class="tab-content">
+            <div class="card">
+                <h2>Multi-Portal Automation & Oracle VM Compatibility Matrix</h2>
+                <table id="table-portals-matrix">
+                    <thead>
+                        <tr>
+                            <th>Portal</th>
+                            <th>Category</th>
+                            <th>Trust</th>
+                            <th>Oracle Access</th>
+                            <th>Execution Mode</th>
+                            <th>Status</th>
+                            <th>Discovered / Applied</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 9. DATA EXPLORER TAB -->
         <div id="explorer" class="tab-content">
             <div class="card">
                 <h2>Oracle SQLite Database Explorer (Read-Only)</h2>
@@ -410,6 +432,7 @@
             if (tabId === 'documents') loadCvs();
             if (tabId === 'cover') loadCoverLetters();
             if (tabId === 'applications') loadApplications();
+            if (tabId === 'portals') loadPortalsMatrix();
             if (tabId === 'explorer') loadDataExplorer();
         }
 
@@ -913,6 +936,24 @@
                         </tr>
                     `).join('');
                 }
+            }
+        }
+
+        async function loadPortalsMatrix() {
+            const data = await apiGet('/api/portals/matrix');
+            const tbody = document.querySelector('#table-portals-matrix tbody');
+            if (data.success && data.portals) {
+                tbody.innerHTML = data.portals.map(p => `
+                    <tr>
+                        <td><strong>${p.name}</strong></td>
+                        <td>${p.category}</td>
+                        <td><span class="badge ${p.trust === 'TRUSTED' ? 'applied' : 'pending'}">${p.trust}</span></td>
+                        <td>${p.oracleAccess}</td>
+                        <td><code>${p.executionMode}</code></td>
+                        <td><span class="badge ${p.status.includes('ACTIVE') || p.status.includes('READY') ? 'applied' : 'failed'}">${p.status}</span></td>
+                        <td><strong>${p.discoveredJobsCount}</strong> / <strong>${p.appliedJobsCount}</strong></td>
+                    </tr>
+                `).join('');
             }
         }
 
