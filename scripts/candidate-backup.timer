@@ -1,0 +1,9 @@
+[Unit]
+Description=Candidate Knowledge Automated Daily Backup Schedule (3:00 AM UTC / 8:30 AM IST)
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,20 @@
+[Unit]
+Description=Authenticated Candidate Knowledge Base Web Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/automation
+Environment=PORT=3005
+Environment=DASHBOARD_USER=admin
+Environment=DASHBOARD_PASSWORD=openclaw2026
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node apps/dashboard/server.js
+Restart=always
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

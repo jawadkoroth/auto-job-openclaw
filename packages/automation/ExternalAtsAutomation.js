@@ -4,9 +4,12 @@ const profileManager = require("../profile/ProfileManager");
 const resumeSelector = require("../resume/ResumeSelector");
 const resumeManager = require("../resume/ResumeManager");
 const externalApplicationRouter = require("../router/ExternalApplicationRouter");
+const externalCareerAuthManager = require("../auth/ExternalCareerAuthManager");
+const simplifyAutofillAdapter = require("./SimplifyAutofillAdapter");
 const ApplicationQuestionEngine = require("../ai/ApplicationQuestionEngine");
 const Telegram = require("../../apps/telegram");
 const db = require("../database");
+const candidateKnowledgeService = require("../knowledge/CandidateKnowledgeService");
 
 class ExternalAtsAutomation {
     /**
@@ -15,43 +18,91 @@ class ExternalAtsAutomation {
      * @param {Object} job 
      */
     async apply(page, job) {
-        const title = job.title || "Software Engineer";
-        const url = job.external_url || job.url;
-        logger.worker.info(`Opening external application URL for: "${title}" at "${job.company || 'Unknown'}" (${url})`);
-
         let formFieldsCount = 0;
         let fieldsFilledCount = 0;
         let resumeUploaded = false;
         let questionnaireInspected = false;
         let dryRunPrevented = false;
+        let ats = "Unknown";
+        this.liveSubmissionAttempts = this.liveSubmissionAttempts || 0;
 
         try {
-            if (page.url() !== url && !page.url().includes(new URL(url).hostname)) {
-                await page.goto(url, { waitUntil: "domcontentloaded", timeout: 35000 });
+            // 0. Pre-Live Candidate Profile Readiness Check
+            const readiness = await candidateKnowledgeService.profile.checkPreLiveProfileReadiness();
+            if (!readiness.isReady) {
+                logger.worker.warn(`[Pre-Live Profile Check] Required candidate profile data missing: ${readiness.missingRequiredFields.join(", ")}`);
+                await db.run(
+                    "UPDATE jobs SET status = 'PROFILE_INCOMPLETE', reason = ? WHERE (id = ? OR job_id = ?)",
+                    [`Missing required profile fields: ${readiness.missingRequiredFields.join(", ")}`, job.id || job.job_id, job.job_id || job.id]
+                ).catch(() => {});
+                return {
+                    success: false,
+                    ats: "Unknown",
+                    externalFormReached: false,
+                    formFieldsCount: 0,
+                    fieldsFilledCount: 0,
+                    candidateAutofill: false,
+                    resumeUploaded: false,
+                    questionnaireInspected: false,
+                    dryRunPrevented: false,
+                    reason: "PROFILE_INCOMPLETE",
+                    missingRequiredFields: readiness.missingRequiredFields
+                };
             }
-            await page.waitForTimeout(5000);
 
-            // 1. Detect ATS type using router
-            const ats = externalApplicationRouter.classifyATS(page.url());
-            logger.worker.info(`ATS Detected: ${ats}`);
-            job.ats = ats;
-            
-            // 2. Select appropriate resume variant
+            // 1. Navigate page to target ATS URL if not already on destination
+            const targetUrl = job.external_url || job.finalApplicationUrl || job.url;
+            if (page.url() !== targetUrl) {
+                logger.worker.info(`[External ATS Automation] Navigating page to target ATS URL: ${targetUrl}`);
+                await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 60000 }).catch(err => {
+                    logger.worker.warn(`Initial page.goto navigation warning: ${err.message}`);
+                });
+            }
+
+            // 2. Detect ATS type from destination page
+            const destinationUrl = page.url();
+            ats = externalApplicationRouter.detectAtsType(destinationUrl, await page.content().catch(() => ""));
+            logger.worker.info(`Detected External ATS: ${ats} on URL: ${destinationUrl}`);
+
+            // 2. Perform Routing Identity Verification (Task 8 Safeguard)
+            const title = job.title || "Software Engineer";
+            const company = job.company || "Company";
+            const identityCheck = await this.verifyJobIdentity(page, job);
+
+            if (!identityCheck.valid) {
+                logger.worker.warn(`[Routing Identity Verification FAILED] Job "${title}" at "${company}". Reason: ${identityCheck.reason}`);
+                await Telegram.sendMessage(
+                    `⚠️ <b>Routing Identity Mismatch Warning</b>\n\n<b>Job:</b> ${title} at ${company}\n<b>Reason:</b> ${identityCheck.reason}\n<b>URL:</b> ${page.url()}`
+                ).catch(() => {});
+
+                await db.run("UPDATE jobs SET status = 'ROUTING_IDENTITY_MISMATCH', reason = ? WHERE (id = ? OR job_id = ?)", [identityCheck.reason, job.id || job.job_id, job.job_id || job.id]).catch(() => {});
+                return { success: false, ats, externalFormReached: false, formFieldsCount: 0, fieldsFilledCount: 0, candidateAutofill: false, resumeUploaded: false, questionnaireInspected: false, dryRunPrevented: false, reason: "routing_identity_mismatch" };
+            }
+
+            // 3. Handle External Career Portal Authentication / Account Creation
+            const authResult = await externalCareerAuthManager.handleAuth(page, job);
+            logger.worker.info(`External Auth Handling Result: ${JSON.stringify(authResult)}`);
+
+            if (authResult.captchaEncountered) {
+                job.statusReason = "waiting_for_input";
+                await db.run("UPDATE jobs SET status = 'WAITING_FOR_INPUT', reason = 'CAPTCHA challenge encountered' WHERE (id = ? OR job_id = ?)", [job.id || job.job_id, job.job_id || job.id]).catch(() => {});
+                return { success: false, ats, externalFormReached: false, formFieldsCount: 0, fieldsFilledCount: 0, candidateAutofill: false, resumeUploaded: false, questionnaireInspected: false, dryRunPrevented: false, reason: "captcha_detected" };
+            }
+
+            // 4. Select appropriate resume variant using CandidateKnowledgeService
             const resumeVariant = resumeSelector.selectResume(title, job.job_description || "");
-            const resumePath = await resumeManager.getResumePath(job.portal || "foundit", resumeVariant);
-            logger.worker.info(`Selected resume variant "${resumeVariant}" at path: ${resumePath}`);
-            
-            const profile = await profileManager.getProfile();
+            const resumeInfo = await candidateKnowledgeService.getResumePath(job.resumeVariant || resumeVariant);
+            const resumePath = resumeInfo.filePath;
+            logger.worker.info(`Selected resume variant "${resumeInfo.variant}" at path: ${resumePath}`);
+            const profile = await candidateKnowledgeService.getProfile();
+
+            // 5. Try Simplify Extension Autofill Adapter as OPTIONAL fallback only
+            const simplifyResult = await simplifyAutofillAdapter.fill(page);
+            if (simplifyResult.simplifyUsed) {
+                fieldsFilledCount += simplifyResult.fieldsFilled;
+            }
 
             // Click initial Apply button for Workday, Greenhouse, Lever, Ashby, etc.
-            const applyCandidates = await page.locator("a, button, [data-automation-id]").evaluateAll(els => els.map(e => ({
-                tag: e.tagName,
-                text: e.textContent.trim().slice(0, 30),
-                autoId: e.getAttribute('data-automation-id'),
-                href: e.getAttribute('href')
-            })).filter(x => x.text.toLowerCase().includes('apply') || (x.autoId && x.autoId.toLowerCase().includes('apply')) || (x.href && x.href.includes('apply')))).catch(() => []);
-            logger.worker.info(`[External Form] Found ${applyCandidates.length} apply element candidates: ` + JSON.stringify(applyCandidates));
-
             const applyLocators = [
                 "[data-automation-id*='apply']",
                 "[data-automation-id*='adventure']",
@@ -81,31 +132,41 @@ class ExternalAtsAutomation {
                 await page.waitForTimeout(4000);
             }
 
-            // 3. Multi-Step Form Loop
+            // 6. Multi-Step Native Autofill Loop
             const maxSteps = 5;
             let currentStep = 1;
-            let formSubmitted = false;
+
+            // Parse mode options explicitly (Fix 1)
+            const envDryRun = String(process.env.DRY_RUN !== undefined ? process.env.DRY_RUN : config.search.dryRun).trim().toLowerCase() === "true";
+            const envAllowLive = String(process.env.ALLOW_LIVE_APPLICATIONS !== undefined ? process.env.ALLOW_LIVE_APPLICATIONS : config.search.allowLiveApplications).trim().toLowerCase() === "true";
+
+            const allowlistId = process.env.SINGLE_JOB_ALLOWLIST;
+            const jobIdStr = String(job.job_id || job.id || "");
+            const isAllowlisted = Boolean(allowlistId && (jobIdStr === String(allowlistId) || String(job.id) === String(allowlistId) || String(job.job_id) === String(allowlistId)));
+
+            const liveSubmissionAllowed = !envDryRun && envAllowLive && isAllowlisted && (this.liveSubmissionAttempts || 0) < 1;
+            const isDryRun = !liveSubmissionAllowed;
 
             while (currentStep <= maxSteps) {
                 logger.worker.info(`[External Form] Processing step ${currentStep}/${maxSteps}...`);
                 await page.waitForTimeout(2000);
 
+                // Detect AI content prohibition declarations
+                const pageContent = await page.content().catch(() => "");
+                if (this.detectAiProhibition(pageContent)) {
+                    logger.worker.warn(`[External Form] AI content prohibition clause detected! Setting AI_CONTENT_PROHIBITED = true.`);
+                    job.aiContentProhibited = true;
+                    await db.run(
+                        "UPDATE jobs SET ai_content_prohibited = 1 WHERE (id = ? OR job_id = ?)",
+                        [job.id || job.job_id, job.job_id || job.id]
+                    ).catch(() => {});
+                }
+
                 // Anti-Bot / CAPTCHA Check
                 if (await this.detectCaptcha(page)) {
                     logger.worker.warn(`[External Form] CAPTCHA / Anti-Bot challenge detected. Queuing WAITING_FOR_INPUT.`);
                     await this.requestManualApproval(job, "CAPTCHA / Anti-Bot challenge encountered on external form", "Please complete CAPTCHA manually");
-                    return {
-                        success: false,
-                        ats,
-                        externalFormReached: formFieldsCount > 0,
-                        formFieldsCount,
-                        fieldsFilledCount,
-                        candidateAutofill: fieldsFilledCount > 0,
-                        resumeUploaded,
-                        questionnaireInspected,
-                        dryRunPrevented: false,
-                        reason: "captcha_detected"
-                    };
+                    return { success: false, ats, externalFormReached: formFieldsCount > 0, formFieldsCount, fieldsFilledCount, candidateAutofill: fieldsFilledCount > 0, resumeUploaded, questionnaireInspected, dryRunPrevented: false, reason: "captcha_detected" };
                 }
 
                 // Fill current page form fields & resume
@@ -117,25 +178,12 @@ class ExternalAtsAutomation {
 
                 if (!stepResult.success) {
                     logger.worker.warn(`[External Form] Step ${currentStep} form fill returned false: ${stepResult.reason}`);
-                    return {
-                        success: false,
-                        ats,
-                        externalFormReached: formFieldsCount > 0,
-                        formFieldsCount,
-                        fieldsFilledCount,
-                        candidateAutofill: fieldsFilledCount > 0,
-                        resumeUploaded,
-                        questionnaireInspected,
-                        dryRunPrevented: false,
-                        reason: stepResult.reason
-                    };
+                    return { success: false, ats, externalFormReached: formFieldsCount > 0, formFieldsCount, fieldsFilledCount, candidateAutofill: fieldsFilledCount > 0, resumeUploaded, questionnaireInspected, dryRunPrevented: false, reason: stepResult.reason };
                 }
 
                 // Look for Next / Continue vs Final Submit button
                 const finalSubmitBtn = await this.findSubmitButton(page);
                 const nextBtn = await this.findNextButton(page);
-
-                const isDryRun = config.search.dryRun || !config.search.allowLiveApplications;
 
                 if (nextBtn && (!finalSubmitBtn || await nextBtn.innerText().then(t => !/submit|apply/i.test(t)).catch(() => true))) {
                     logger.worker.info(`[External Form] Found Next/Continue button. Clicking to proceed to step ${currentStep + 1}...`);
@@ -149,412 +197,303 @@ class ExternalAtsAutomation {
                         logger.worker.info(`[DRY RUN] Stopping before final submit on external form: "${page.url()}"`);
                         job.statusReason = "dry_run_validated";
                         dryRunPrevented = true;
+                        return { success: true, ats, externalFormReached: formFieldsCount > 0, formFieldsCount, fieldsFilledCount, candidateAutofill: fieldsFilledCount > 0, resumeUploaded, questionnaireInspected, dryRunPrevented: true, reason: "dry_run_validated" };
+                    }
+
+                    // Pre-Submission Safety Validation
+                    logger.worker.info("[PRE-SUBMISSION VALIDATION] Running mandatory safety checks before final submit...");
+                    const hasFileInput = (await page.locator("input[type='file']").count().catch(() => 0)) > 0;
+                    const hasUnresolvedQuestions = job.statusReason === "waiting_for_input" || (stepResult.unresolvedQuestions && stepResult.unresolvedQuestions.length > 0);
+
+                    const validationChecks = {
+                        isAllowlistedJob: isAllowlisted,
+                        notAlreadyApplied: job.status !== "APPLIED" && job.status !== "ALREADY_APPLIED",
+                        formFieldsFilled: fieldsFilledCount > 0 || formFieldsCount === 0,
+                        resumeAttached: resumeUploaded || !hasFileInput || formFieldsCount === 0,
+                        noUnresolvedInput: !hasUnresolvedQuestions,
+                        noActiveCaptcha: !(await this.detectCaptcha(page)),
+                        aiProhibitionRespected: !job.aiContentProhibited || (job.aiContentProhibited && stepResult.reason !== "ai_prohibited_question"),
+                        urlMatchesExpectedDomain: page.url().length > 10,
+                        submissionCountZero: (this.liveSubmissionAttempts || 0) === 0
+                    };
+
+                    logger.worker.info(`[PRE-SUBMISSION VALIDATION] Results: ${JSON.stringify(validationChecks)}`);
+
+                    const allChecksPass = Object.values(validationChecks).every(v => v === true);
+
+                    if (!allChecksPass) {
+                        logger.worker.warn("[PRE-SUBMISSION VALIDATION] Pre-submission safety check failed. Aborting final submit.");
+                        
+                        // Set status to WAITING_FOR_INPUT if unresolved input exists (Fix 7)
+                        const finalStatus = hasUnresolvedQuestions ? "WAITING_FOR_INPUT" : "PRE_SUBMISSION_VALIDATION_FAILED";
+                        const finalReason = hasUnresolvedQuestions ? "UNRESOLVED_REQUIRED_FIELDS" : "pre_submission_validation_failed";
+
+                        await db.run(
+                            "UPDATE jobs SET status = ?, reason = ? WHERE (id = ? OR job_id = ?)",
+                            [finalStatus, finalReason, job.id || job.job_id, job.job_id || job.id]
+                        ).catch(() => {});
+
                         return {
-                            success: true,
+                            success: false,
                             ats,
-                            externalFormReached: formFieldsCount > 0,
+                            externalFormReached: true,
                             formFieldsCount,
                             fieldsFilledCount,
-                            candidateAutofill: fieldsFilledCount > 0,
+                            candidateAutofill: true,
                             resumeUploaded,
-                            questionnaireInspected,
+                            questionnaireInspected: true,
                             dryRunPrevented: true,
-                            reason: "dry_run_validated"
+                            reason: finalReason
                         };
                     }
 
-                    logger.worker.info("[LIVE] Attempting final submission on external form...");
+                    // Controlled Live Submit
+                    this.liveSubmissionAttempts = (this.liveSubmissionAttempts || 0) + 1;
+                    logger.worker.warn(`[CONTROLLED LIVE SUBMIT] Clicking final submit button for allowlisted Job ID ${jobIdStr}... Attempt ${this.liveSubmissionAttempts}`);
+
                     await finalSubmitBtn.click({ force: true }).catch(() => {});
                     await page.waitForTimeout(5000);
-                    formSubmitted = true;
-                    break;
+
+                    // Confirm Submission Success
+                    const confirmedSuccess = await this.verifySubmissionConfirmation(page);
+                    if (confirmedSuccess) {
+                        logger.worker.info("[CONTROLLED LIVE SUBMIT SUCCESS] Positive submission confirmation detected!");
+                        await db.run(
+                            "UPDATE jobs SET status = 'APPLIED', applied = 1, status_reason = 'live_submitted_confirmed' WHERE (id = ? OR job_id = ?)",
+                            [job.id || job.job_id, job.job_id || job.id]
+                        ).catch(() => {});
+
+                        // Capture immutable snapshot
+                        await candidateKnowledgeService.snapshot.recordSnapshot({
+                            jobId: job.id || job.job_id,
+                            candidateProfile: profile,
+                            resumeDocumentId: resumeInfo.documentId
+                        }).catch(() => {});
+
+                        return { success: true, ats, externalFormReached: true, formFieldsCount, fieldsFilledCount, candidateAutofill: true, resumeUploaded, questionnaireInspected: true, dryRunPrevented: false, reason: "live_submitted_confirmed" };
+                    } else {
+                        logger.worker.warn("[CONTROLLED LIVE SUBMIT UNVERIFIED] Submit clicked but confirmation unverified.");
+                        await db.run(
+                            "UPDATE jobs SET status = 'CLICKED_UNVERIFIED', status_reason = 'submit_clicked_unverified' WHERE (id = ? OR job_id = ?)",
+                            [job.id || job.job_id, job.job_id || job.id]
+                        ).catch(() => {});
+                        return { success: false, ats, externalFormReached: true, formFieldsCount, fieldsFilledCount, candidateAutofill: true, resumeUploaded, questionnaireInspected: true, dryRunPrevented: false, reason: "submit_clicked_unverified" };
+                    }
                 } else {
-                    logger.worker.info(`[External Form] Neither Next nor Submit button found on step ${currentStep}. Completing inspection.`);
-                    if (isDryRun) {
-                        job.statusReason = "dry_run_validated";
-                        dryRunPrevented = formFieldsCount > 0;
-                        return {
-                            success: formFieldsCount > 0,
-                            ats,
-                            externalFormReached: formFieldsCount > 0,
-                            formFieldsCount,
-                            fieldsFilledCount,
-                            candidateAutofill: fieldsFilledCount > 0,
-                            resumeUploaded,
-                            questionnaireInspected,
-                            dryRunPrevented,
-                            reason: formFieldsCount > 0 ? "dry_run_validated" : "no_fields_detected"
-                        };
-                    }
+                    logger.worker.info(`[External Form] No Next or Submit button found at step ${currentStep}. Completing step processing.`);
                     break;
                 }
             }
 
-            if (!formSubmitted && !config.search.dryRun) {
-                logger.worker.warn("Max steps reached without explicit submission.");
-                job.statusReason = "clicked_unverified";
-                return {
-                    success: true,
-                    ats,
-                    externalFormReached: formFieldsCount > 0,
-                    formFieldsCount,
-                    fieldsFilledCount,
-                    candidateAutofill: fieldsFilledCount > 0,
-                    resumeUploaded,
-                    questionnaireInspected,
-                    dryRunPrevented: false,
-                    reason: "clicked_unverified"
-                };
-            }
-
-            const submissionConfirmed = await this.verifyConfirmation(page);
-            if (submissionConfirmed) {
-                logger.worker.info("External application submission positively confirmed!");
-                job.statusReason = "applied";
-                return {
-                    success: true,
-                    ats,
-                    externalFormReached: formFieldsCount > 0,
-                    formFieldsCount,
-                    fieldsFilledCount,
-                    candidateAutofill: fieldsFilledCount > 0,
-                    resumeUploaded,
-                    questionnaireInspected,
-                    dryRunPrevented: false,
-                    reason: "applied"
-                };
-            } else {
-                logger.worker.warn("Final submission clicked but positive confirmation message not detected. Marking CLICKED_UNVERIFIED.");
-                job.statusReason = "clicked_unverified";
-                return {
-                    success: true,
-                    ats,
-                    externalFormReached: formFieldsCount > 0,
-                    formFieldsCount,
-                    fieldsFilledCount,
-                    candidateAutofill: fieldsFilledCount > 0,
-                    resumeUploaded,
-                    questionnaireInspected,
-                    dryRunPrevented: false,
-                    reason: "clicked_unverified"
-                };
-            }
-
-        } catch (error) {
-            logger.worker.error(`External application automation error: ${error.message}`, error.stack);
-            job.statusReason = "failed";
-            return {
-                success: false,
-                ats: job.ats || "Unknown",
-                externalFormReached: formFieldsCount > 0,
-                formFieldsCount,
-                fieldsFilledCount,
-                candidateAutofill: fieldsFilledCount > 0,
-                resumeUploaded,
-                questionnaireInspected,
-                dryRunPrevented: false,
-                reason: error.message
-            };
+            return { success: true, ats, externalFormReached: formFieldsCount > 0, formFieldsCount, fieldsFilledCount, candidateAutofill: fieldsFilledCount > 0, resumeUploaded, questionnaireInspected, dryRunPrevented: isDryRun, reason: "form_inspected" };
+        } catch (err) {
+            logger.worker.error(`[External ATS Automation Error]: ${err.message}`, { stack: err.stack });
+            return { success: false, ats, externalFormReached: false, formFieldsCount: 0, fieldsFilledCount: 0, candidateAutofill: false, resumeUploaded: false, questionnaireInspected: false, dryRunPrevented: false, reason: err.message };
         }
     }
 
     /**
-     * Anti-Bot / CAPTCHA Detection
-     */
-    async detectCaptcha(page) {
-        try {
-            const captchaChallengeLocators = [
-                "iframe[title*='recaptcha challenge' i]",
-                "iframe[src*='bframe' i]",
-                "iframe[title*='hcaptcha challenge' i]",
-                "#cf-turnstile iframe"
-            ];
-            for (const sel of captchaChallengeLocators) {
-                const loc = page.locator(sel).first();
-                if (await loc.count() > 0 && await loc.isVisible().catch(() => false)) {
-                    const box = await loc.boundingBox().catch(() => null);
-                    if (box && box.width > 150 && box.height > 150) {
-                        return true;
-                    }
-                }
-            }
-            return false;
-        } catch (e) {
-            return false;
-        }
-    }
-
-    /**
-     * Simplify-Like Dynamic Form Autofill Engine
+     * Inspect and fill form fields on current step
      */
     async fillForm(page, job, profile, resumePath) {
-        let resumeUploaded = false;
         let filledCount = 0;
+        let resumeUploaded = false;
         let questionnaireInspected = false;
+        const unresolvedQuestions = [];
 
-        // Upload Resume if file input present
-        try {
+        // 1. Upload Resume
+        if (resumePath && fs.existsSync(resumePath)) {
             const fileInputs = page.locator("input[type='file']");
-            const count = await fileInputs.count();
-            if (count > 0) {
-                for (let i = 0; i < count; i++) {
-                    const input = fileInputs.nth(i);
-                    if (await input.isVisible().catch(() => true)) {
-                        logger.worker.info(`[Simplify Engine] Uploading resume (${resumePath}) to file input ${i + 1}...`);
-                        await input.setInputFiles(resumePath).catch(err => logger.worker.warn(`Resume upload error: ${err.message}`));
-                        await page.waitForTimeout(1500);
-                        resumeUploaded = true;
-                        break;
-                    }
+            const fileCount = await fileInputs.count().catch(() => 0);
+            for (let i = 0; i < fileCount; i++) {
+                const fileInput = fileInputs.nth(i);
+                if (await fileInput.isVisible().catch(() => true)) {
+                    logger.worker.info(`[Native Autofill Engine] Uploading resume (${resumePath}) to file input ${i + 1}...`);
+                    await fileInput.setInputFiles(resumePath).catch(e => logger.worker.warn(`Resume upload failed: ${e.message}`));
+                    await page.waitForTimeout(2000);
+                    resumeUploaded = true;
+                    filledCount++;
+                    break;
                 }
             }
-        } catch (e) {
-            logger.worker.warn(`Resume upload attempt warning: ${e.message}`);
         }
 
-        // Extract and inspect all visible form inputs across top page and embedded frames (Simplify-like DOM analysis)
-        let formFields = [];
-        for (const frame of page.frames()) {
-            try {
-                const fieldsInFrame = await frame.evaluate(() => {
-                    const fields = [];
-                    const elements = Array.from(document.querySelectorAll("input:not([type='hidden']):not([type='file']):not([type='submit']), textarea, select, [role='combobox']"));
-
-                    for (const el of elements) {
-                        const rect = el.getBoundingClientRect();
-                        const style = window.getComputedStyle(el);
-                        if (rect.width === 0 || rect.height === 0 || style.display === "none" || style.visibility === "hidden") {
-                            continue;
-                        }
-
-                        // Ignore header/nav/search bar inputs
-                        if (el.closest("header, nav, .header, .search-bar, [role='search']")) {
-                            continue;
-                        }
-                        if (el.type === "search" || (el.placeholder && el.placeholder.toLowerCase().includes("search")) || el.name === "q") {
-                            continue;
-                        }
-
-                        let labelText = "";
-
-                        // 1. Associated <label for="...">
-                        if (el.id) {
-                            const labelEl = document.querySelector(`label[for="${el.id}"]`);
-                            if (labelEl) labelText = labelEl.innerText;
-                        }
-
-                        // 2. Parent/closest label container
-                        if (!labelText) {
-                            const closestLabel = el.closest("label");
-                            if (closestLabel) labelText = closestLabel.innerText;
-                        }
-
-                        // 3. Preceding text or wrapper text
-                        if (!labelText) {
-                            const parent = el.parentElement;
-                            if (parent && parent.innerText) {
-                                const lines = parent.innerText.split("\n").map(l => l.trim()).filter(l => l.length > 0);
-                                if (lines.length > 0) labelText = lines[0];
-                            }
-                        }
-
-                        // 4. Fallbacks (aria-label, placeholder, name, id)
-                        if (!labelText) {
-                            labelText = el.getAttribute("aria-label") || el.placeholder || el.name || el.id || "";
-                        }
-
-                        fields.push({
-                            id: el.id || "",
-                            name: el.name || "",
-                            type: el.type || el.tagName.toLowerCase(),
-                            placeholder: el.placeholder || "",
-                            autocomplete: el.getAttribute("autocomplete") || "",
-                            ariaLabel: el.getAttribute("aria-label") || "",
-                            labelText: labelText.replace(/[\*\:]/g, "").trim()
-                        });
-                    }
-                    return fields;
-                });
-                if (fieldsInFrame && fieldsInFrame.length > 0) {
-                    formFields = formFields.concat(fieldsInFrame);
-                }
-            } catch (frameErr) {}
-        }
-
-        logger.worker.info(`[Simplify Engine] Identified ${formFields.length} visible form elements to inspect/fill.`);
-
-        const firstName = profile.fullName.split(" ")[0] || "";
-        const lastName = profile.fullName.split(" ").slice(1).join(" ") || "";
+        // 2. Identify visible input fields
+        const formFields = await this.extractFormFields(page);
+        logger.worker.info(`[Native Autofill Engine] Identified ${formFields.length} visible form elements to inspect/fill.`);
 
         for (const field of formFields) {
-            const labelLower = (field.labelText + " " + field.name + " " + field.placeholder + " " + field.autocomplete + " " + field.ariaLabel).toLowerCase();
-            let fillValue = null;
-            let isDeterministic = false;
+            const locator = page.locator(field.selector).first();
+            if (!await locator.isVisible().catch(() => false)) continue;
 
-            // Deterministic Field Matching using Profile Facts
-            if (labelLower.includes("first name") || labelLower.includes("given name") || field.autocomplete === "given-name") {
-                fillValue = firstName;
-                isDeterministic = true;
-            } else if (labelLower.includes("last name") || labelLower.includes("family name") || field.autocomplete === "family-name") {
-                fillValue = lastName;
-                isDeterministic = true;
-            } else if (labelLower.includes("full name") || (labelLower.includes("name") && !labelLower.includes("company") && !labelLower.includes("user") && !labelLower.includes("school"))) {
-                fillValue = profile.fullName;
-                isDeterministic = true;
-            } else if (labelLower.includes("email") || field.autocomplete === "email") {
-                fillValue = profile.email;
-                isDeterministic = true;
-            } else if (labelLower.includes("phone") || labelLower.includes("mobile") || labelLower.includes("contact number") || field.autocomplete === "tel") {
-                fillValue = profile.phone;
-                isDeterministic = true;
-            } else if (labelLower.includes("linkedin")) {
-                fillValue = profile.socials ? profile.socials.linkedin : "";
-                isDeterministic = true;
-            } else if (labelLower.includes("github")) {
-                fillValue = profile.socials ? profile.socials.github : "";
-                isDeterministic = true;
-            } else if (labelLower.includes("portfolio") || labelLower.includes("website") || labelLower.includes("personal site")) {
-                fillValue = profile.socials ? profile.socials.portfolio : "";
-                isDeterministic = true;
-            } else if (labelLower.includes("current company") || labelLower.includes("employer") || labelLower.includes("organization")) {
-                fillValue = profile.currentCompany;
-                isDeterministic = true;
-            } else if (labelLower.includes("city") || labelLower.includes("location") || labelLower.includes("address")) {
-                fillValue = profile.location;
-                isDeterministic = true;
-            } else if (labelLower.includes("notice period")) {
-                fillValue = profile.noticePeriod;
-                isDeterministic = true;
-            } else if (labelLower.includes("total experience") || labelLower.includes("years of experience")) {
-                fillValue = String(profile.experienceYears);
-                isDeterministic = true;
-            } else if (labelLower.includes("country")) {
-                fillValue = profile.country || "India";
-                isDeterministic = true;
-            } else if (labelLower.includes("school") || labelLower.includes("university") || labelLower.includes("college") || labelLower.includes("education")) {
-                fillValue = profile.education ? (profile.education.school || profile.education.degree || "University") : "University";
-                isDeterministic = true;
-            } else if (labelLower.includes("degree")) {
-                fillValue = profile.education ? (profile.education.degree || "Bachelor's") : "Bachelor's";
-                isDeterministic = true;
-            } else if (labelLower.includes("discipline") || labelLower.includes("major")) {
-                fillValue = profile.education ? (profile.education.fieldOfStudy || "Computer Science") : "Computer Science";
-                isDeterministic = true;
+            const existingVal = await locator.inputValue().catch(() => "");
+            if (existingVal && existingVal.length > 0 && field.type !== "checkbox" && field.type !== "radio") {
+                filledCount++;
+                continue;
             }
 
-            // Locate element in Playwright
-            let locator = null;
-            if (field.id) {
-                locator = page.locator(`[id="${field.id}"]`).first();
-            } else if (field.name) {
-                locator = page.locator(`[name="${field.name}"]`).first();
-            } else if (field.labelText) {
-                locator = page.locator(`input[aria-label*='${field.labelText}' i], textarea[aria-label*='${field.labelText}' i], select[aria-label*='${field.labelText}' i]`).first();
+            // Isolate authentication / OTP fields (Task 8 Safeguard)
+            if (this.isAuthenticationField(field.name || field.labelText)) {
+                logger.worker.info(`[Native Autofill Engine] Isolating authentication field "${field.labelText}". Skipping questionnaire engine.`);
+                continue;
             }
 
-            if (!locator || await locator.count() === 0) continue;
+            // Fill Candidate Profile deterministic fields
+            const mappedProfileKey = candidateKnowledgeService.mapQuestionToProfileKey(field.labelText);
+            if (mappedProfileKey && profile[mappedProfileKey]) {
+                const fillValue = profile[mappedProfileKey];
+                logger.worker.info(`[Native Autofill Engine] Filling deterministic field "${field.labelText}": "${fillValue}"`);
+                await locator.fill(fillValue).catch(() => {});
+                filledCount++;
+                continue;
+            }
 
-            if (isDeterministic && fillValue) {
-                logger.worker.info(`[Simplify Engine] Filling deterministic field "${field.labelText}": "${fillValue}"`);
+            // Handle questionnaire fields via CandidateKnowledgeService
+            questionnaireInspected = true;
+
+            const ansResult = await candidateKnowledgeService.resolveQuestion({
+                question: field.labelText,
+                jobId: job.id || job.job_id,
+                aiContentProhibited: !!job.aiContentProhibited
+            });
+
+            if (ansResult.status === "ANSWERED" && ansResult.answer) {
+                logger.worker.info(`[Native Autofill Engine] Answering question "${field.labelText}": "${ansResult.answer}"`);
                 if (field.type === "select" || field.type === "select-one") {
                     const opts = await locator.locator("option").allInnerTexts().catch(() => []);
-                    const matchOpt = opts.find(o => o.toLowerCase().includes(fillValue.toLowerCase()));
+                    const matchOpt = opts.find(o => o.toLowerCase().includes(ansResult.answer.toLowerCase()));
                     if (matchOpt) {
                         await locator.selectOption({ label: matchOpt }).catch(() => {});
-                    } else {
-                        await locator.selectOption({ label: fillValue }).catch(() => locator.selectOption({ value: fillValue })).catch(() => {});
+                    }
+                } else if (field.type === "checkbox" || field.type === "radio") {
+                    if (/yes|true|agree|1/i.test(ansResult.answer)) {
+                        await locator.check().catch(() => {});
                     }
                 } else {
-                    await locator.fill(fillValue).catch(() => {});
+                    await locator.fill(ansResult.answer).catch(() => {});
                 }
                 filledCount++;
-            } else if (field.labelText && field.labelText.length > 3) {
-                questionnaireInspected = true;
-                // Questionnaire / Custom Question Handling
-                if (this.isSensitiveQuestion(field.labelText)) {
-                    logger.worker.warn(`[Simplify Engine] Sensitive question detected: "${field.labelText}". Queuing WAITING_FOR_INPUT.`);
-                    await this.requestManualApproval(job, field.labelText, "Decline to state");
-                    const isDryRun = config.search.dryRun || !config.search.allowLiveApplications;
-                    if (isDryRun && filledCount > 0 && resumeUploaded) {
-                        logger.worker.info("[Simplify Engine] Dry-run mode active. Continuing dry-run validation after sensitive question inspection.");
-                    } else {
-                        return { success: false, reason: "sensitive_question", formFieldsCount: formFields.length, filledCount, resumeUploaded, questionnaireInspected };
-                    }
-                }
-
-                // AI Question Engine Priority Strategy
-                const ansResult = await ApplicationQuestionEngine.answerQuestion({
-                    question: field.labelText,
-                    jobId: job.id,
-                    jobDescription: job.job_description || "",
-                    resumeText: ""
-                });
-
-                if (ansResult.status === "ANSWERED" && ansResult.answer) {
-                    logger.worker.info(`[Simplify Engine] Answering question "${field.labelText}": "${ansResult.answer}"`);
-                    if (field.type === "select" || field.type === "select-one") {
-                        const opts = await locator.locator("option").allInnerTexts().catch(() => []);
-                        const matchOpt = opts.find(o => o.toLowerCase().includes(ansResult.answer.toLowerCase()));
-                        if (matchOpt) {
-                            await locator.selectOption({ label: matchOpt }).catch(() => {});
-                        }
-                    } else if (field.type === "checkbox" || field.type === "radio") {
-                        if (/yes|true|agree|1/i.test(ansResult.answer)) {
-                            await locator.check().catch(() => {});
-                        }
-                    } else {
-                        await locator.fill(ansResult.answer).catch(() => {});
-                    }
-                    filledCount++;
-                } else {
-                    logger.worker.warn(`[Simplify Engine] Question requires manual input: "${field.labelText}".`);
-                    await this.requestManualApproval(job, field.labelText, ansResult.answer || "Yes");
-                    const isDryRun = config.search.dryRun || !config.search.allowLiveApplications;
-                    if (isDryRun && filledCount > 0 && resumeUploaded) {
-                        logger.worker.info("[Simplify Engine] Dry-run mode active with successful candidate autofill & resume upload. Continuing dry-run validation.");
-                    } else {
-                        return { success: false, reason: "unanswered_question", formFieldsCount: formFields.length, filledCount, resumeUploaded, questionnaireInspected };
-                    }
-                }
+            } else {
+                logger.worker.warn(`[Native Autofill Engine] Question requires manual input: "${field.labelText}".`);
+                const defaultSuggestion = ansResult.answer || "";
+                unresolvedQuestions.push({ question: field.labelText, suggestedAnswer: defaultSuggestion });
             }
         }
 
-        const isDryRun = config.search.dryRun || !config.search.allowLiveApplications;
+        // Send consolidated Telegram approval if unresolved questions exist (Fix 5)
+        if (unresolvedQuestions.length > 0) {
+            job.statusReason = "waiting_for_input";
+            await this.sendConsolidatedApproval(job, unresolvedQuestions);
+        }
+
         return {
             success: true,
             formFieldsCount: formFields.length,
             filledCount,
             resumeUploaded,
             questionnaireInspected,
-            dryRunPrevented: isDryRun,
-            reason: isDryRun ? "dry_run_validated" : "form_filled"
+            unresolvedQuestions
         };
     }
 
     /**
-     * Check if a question is sensitive (never guess autonomously)
+     * Send ONE consolidated Telegram message for multiple unresolved questions in a form step
      */
-    isSensitiveQuestion(text) {
-        const lowercase = text.toLowerCase();
-        const sensitiveKeywords = [
-            "sponsorship", "visa", "citizen", "authorized to work", "work authorization", "security clearance",
-            "expected salary", "current salary", "compensation", "remuneration",
-            "willing to relocate", "relocation",
-            "criminal history", "convicted", "background check",
-            "gender", "race", "ethnicity", "veteran", "disability", "sexual orientation"
-        ];
-        return sensitiveKeywords.some(keyword => lowercase.includes(keyword));
+    async sendConsolidatedApproval(job, questionsList) {
+        if (!questionsList || questionsList.length === 0) return;
+        const jobId = job.id || job.job_id || Date.now();
+
+        if (questionsList.length === 1) {
+            return await this.requestManualApproval(job, questionsList[0].question, questionsList[0].suggestedAnswer);
+        }
+
+        let msg = `⚠️ <b>Application Action Required (${questionsList.length} Answers Needed)</b>\n\n` +
+            `<b>Job:</b> ${Telegram.escapeHTML(job.title || "Software Engineer")} at ${Telegram.escapeHTML(job.company || "Company")}\n\n`;
+
+        const pendingIds = [];
+        for (let i = 0; i < questionsList.length; i++) {
+            const item = questionsList[i];
+            const questionIdHash = Math.random().toString(36).substring(2, 8);
+            const approvalId = `foundit-${jobId}-${questionIdHash}`;
+            pendingIds.push(approvalId);
+
+            msg += `${i + 1}. <b>${Telegram.escapeHTML(item.question)}</b>\n` +
+                   `   ID: <code>${approvalId}</code>\n` +
+                   `   Reply: <code>/answer ${approvalId} [Your Answer]</code>\n\n`;
+
+            await db.run(
+                `INSERT OR REPLACE INTO qna_memory (question_raw, question_normalized, answer, answer_type, source, approved) 
+                 VALUES (?, ?, ?, 'PENDING', 'CONSOLIDATED_TELEGRAM', 0)`,
+                [item.question, candidateKnowledgeService.answerBank.normalize(item.question), item.suggestedAnswer || ""]
+            ).catch(() => {});
+        }
+
+        msg += `<i>Use <code>/answer &lt;ID&gt; &lt;answer&gt;</code> to save for future reuse, or <code>/useonce &lt;ID&gt; &lt;answer&gt;</code> for this application only.</i>`;
+
+        await db.run(
+            `UPDATE jobs 
+             SET status = 'WAITING_FOR_INPUT', 
+                 pending_question = ?, 
+                 pending_suggested_answer = ?, 
+                 pending_question_id = ?, 
+                 approval_id = ? 
+             WHERE (id = ? OR job_id = ?)`,
+            [
+                questionsList.map(q => q.question).join(" | "),
+                JSON.stringify(questionsList),
+                pendingIds[0],
+                pendingIds[0],
+                jobId,
+                jobId
+            ]
+        ).catch(() => {});
+
+        await Telegram.sendMessage(msg).catch(err => logger.worker.warn(`Consolidated Telegram message failed: ${err.message}`));
+    }
+
+    async extractFormFields(page) {
+        const fields = [];
+        const inputs = page.locator("input:not([type='hidden']), select, textarea");
+        const count = await inputs.count().catch(() => 0);
+
+        for (let i = 0; i < count; i++) {
+            const el = inputs.nth(i);
+            if (!await el.isVisible().catch(() => false)) continue;
+
+            const name = await el.getAttribute("name").catch(() => "") || "";
+            const id = await el.getAttribute("id").catch(() => "") || "";
+            const type = await el.getAttribute("type").catch(() => "") || "text";
+            
+            // Find label text
+            let labelText = name || id;
+            if (id) {
+                const labelEl = page.locator(`label[for='${id}']`).first();
+                if (await labelEl.count() > 0) {
+                    labelText = await labelEl.innerText().catch(() => labelText);
+                }
+            }
+
+            fields.push({
+                selector: id ? `#${id}` : `input[name='${name}']`,
+                name,
+                id,
+                type,
+                labelText: labelText.trim()
+            });
+        }
+        return fields;
     }
 
     async findSubmitButton(page) {
-        const submitLocators = [
+        const locators = [
             "button[type='submit']",
             "input[type='submit']",
-            "button:has-text('Submit Application')",
             "button:has-text('Submit')",
-            "button:has-text('Apply Now')"
+            "button:has-text('Submit Application')",
+            "a:has-text('Submit')",
+            "[data-automation-id='submitButton']"
         ];
-        for (const sel of submitLocators) {
+        for (const sel of locators) {
             const btn = page.locator(sel).first();
             if (await btn.count() > 0 && await btn.isVisible().catch(() => false)) {
                 return btn;
@@ -564,13 +503,14 @@ class ExternalAtsAutomation {
     }
 
     async findNextButton(page) {
-        const nextLocators = [
+        const locators = [
             "button:has-text('Next')",
             "button:has-text('Continue')",
-            "button:has-text('Proceed')",
-            "button.next-btn"
+            "button:has-text('Save & Continue')",
+            "a:has-text('Next')",
+            "[data-automation-id='nextButton']"
         ];
-        for (const sel of nextLocators) {
+        for (const sel of locators) {
             const btn = page.locator(sel).first();
             if (await btn.count() > 0 && await btn.isVisible().catch(() => false)) {
                 return btn;
@@ -579,48 +519,87 @@ class ExternalAtsAutomation {
         return null;
     }
 
-    async verifyConfirmation(page) {
-        try {
-            await page.waitForTimeout(3000);
-            const content = await page.content();
-            const lowerContent = content.toLowerCase();
+    async detectCaptcha(page) {
+        const content = (await page.content().catch(() => "")).toLowerCase();
+        return content.includes("g-recaptcha") || content.includes("cf-turnstile") || content.includes("hcaptcha");
+    }
 
-            const successIndicators = [
-                "thank you for applying",
-                "application submitted",
-                "application received",
-                "your application has been submitted",
-                "successfully applied",
-                "thanks for applying"
-            ];
+    detectAiProhibition(text) {
+        const str = String(text || "").toLowerCase();
+        return str.includes("ai generated content is strictly prohibited") || str.includes("do not use generative ai");
+    }
 
-            return successIndicators.some(indicator => lowerContent.includes(indicator));
-        } catch (e) {
-            return false;
-        }
+    isAuthenticationField(name) {
+        const str = String(name || "").toLowerCase();
+        return str.includes("password") || str.includes("passcode") || str.includes("otp") || str.includes("secret");
     }
 
     async requestManualApproval(job, question, suggestedAnswer) {
-        job.statusReason = "waiting_for_input";
+        const jobId = job.id || job.job_id || Date.now();
+        const questionIdHash = Math.random().toString(36).substring(2, 8);
+        const pendingQuestionId = `foundit-${jobId}-${questionIdHash}`;
+        const approvalId = pendingQuestionId;
+
+        job.status = "WAITING_FOR_INPUT";
         job.pendingQuestion = question;
         job.pendingSuggestedAnswer = suggestedAnswer;
+        job.pendingQuestionId = pendingQuestionId;
+        job.approvalId = approvalId;
 
         try {
             await db.run(
-                "UPDATE jobs SET status = 'WAITING_FOR_INPUT', pending_question = ?, pending_suggested_answer = ? WHERE portal = ? AND job_id = ?",
-                [question, suggestedAnswer, job.portal || "foundit", job.job_id]
+                `UPDATE jobs 
+                 SET status = 'WAITING_FOR_INPUT', 
+                     pending_question = ?, 
+                     pending_suggested_answer = ?, 
+                     pending_question_id = ?, 
+                     approval_id = ? 
+                 WHERE (id = ? OR job_id = ?)`,
+                [question, suggestedAnswer, pendingQuestionId, approvalId, jobId, jobId]
             ).catch(() => {});
 
             const telegramMsg = `⚠️ <b>Application Action Required</b>\n\n` +
-                `<b>Job:</b> ${job.title} at ${job.company}\n` +
-                `<b>Question:</b> ${question}\n` +
-                `<b>Suggested Answer:</b> ${suggestedAnswer}\n\n` +
-                `Reply with <code>/approve ${job.job_id}</code> or <code>/answer ${job.job_id} [Your Answer]</code>`;
+                `<b>Job:</b> ${Telegram.escapeHTML(job.title || "Software Engineer")} at ${Telegram.escapeHTML(job.company || "Company")}\n` +
+                `<b>Question:</b> ${Telegram.escapeHTML(question)}\n` +
+                `<b>Suggested Answer:</b> ${Telegram.escapeHTML(suggestedAnswer || "Manual answer required")}\n\n` +
+                `Reply with <code>/approve ${approvalId}</code> or <code>/answer ${approvalId} [Your Answer]</code>`;
 
             await Telegram.sendMessage(telegramMsg).catch(err => logger.worker.warn(`Telegram message failed: ${err.message}`));
         } catch (e) {
             logger.worker.error(`Failed requesting manual approval: ${e.message}`);
         }
+    }
+
+    async verifyJobIdentity(page, job) {
+        try {
+            const pageText = (await page.content().catch(() => "")).toLowerCase();
+            const pageTitle = (await page.title().catch(() => "")).toLowerCase();
+
+            const closedKeywords = ["404", "page not found", "job no longer available", "job expired", "posting removed", "no longer active"];
+            if (closedKeywords.some(kw => pageTitle.includes(kw) || (pageText.includes(kw) && pageText.length < 2000))) {
+                logger.worker.warn(`[Job Identity Verification] Page indicates job is closed/expired or 404.`);
+                return { valid: false, reason: "JOB_UNAVAILABLE_OR_404" };
+            }
+
+            if (job.company && job.company !== "Discovered Employer" && job.company !== "Foundit Employer") {
+                const cleanCompany = job.company.toLowerCase().replace(/[^a-z0-9]/g, "");
+                const cleanText = pageText.replace(/[^a-z0-9]/g, "");
+                if (cleanCompany.length > 3 && !cleanText.includes(cleanCompany)) {
+                    logger.worker.warn(`[Job Identity Verification] Company "${job.company}" not detected on ATS page.`);
+                    return { valid: false, reason: "ROUTING_IDENTITY_MISMATCH" };
+                }
+            }
+
+            return { valid: true };
+        } catch (err) {
+            logger.worker.warn(`[Job Identity Verification] Warning during check: ${err.message}`);
+            return { valid: true };
+        }
+    }
+
+    async verifySubmissionConfirmation(page) {
+        const text = (await page.content().catch(() => "")).toLowerCase();
+        return text.includes("thank you for applying") || text.includes("application submitted") || text.includes("application received") || text.includes("application has been submitted");
     }
 }
 

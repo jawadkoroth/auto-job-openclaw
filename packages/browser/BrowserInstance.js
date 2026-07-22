@@ -14,6 +14,7 @@ class BrowserInstance {
         this.portalName = portalName.toLowerCase();
         this.context = null;
         this.intentionalClose = false;
+        this.storageStateLoaded = false;
         this.screenshotDir = path.join(process.cwd(), "screenshots");
         fs.ensureDirSync(this.screenshotDir);
         this.tempProfilePath = null;
@@ -109,9 +110,13 @@ class BrowserInstance {
                         }, state.origins);
                     }
                     logger.browser.info(`[${this.portalName}] Successfully loaded storageState.json into persistent context.`);
+                    this.storageStateLoaded = true;
                 } catch (err) {
                     logger.browser.error(`[${this.portalName}] Failed to load storageState.json: ${err.message}`);
+                    this.storageStateLoaded = false;
                 }
+            } else {
+                this.storageStateLoaded = false;
             }
 
             // Configure init scripts to ensure standard window/navigator properties
@@ -235,7 +240,7 @@ class BrowserInstance {
                 this.intentionalClose = true;
                 
                 // Refresh session storage state on close (Task 3)
-                if (this.portalName === "hirist" || this.portalName === "foundit") {
+                if (this.portalName === "hirist" || this.portalName === "foundit" || this.portalName === "linkedin") {
                     try {
                         const sessionPath = contextManager.getContextPath(this.portalName);
                         const storageStatePath = path.join(sessionPath, "storageState.json");

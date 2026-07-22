@@ -8,6 +8,13 @@ const logger = require("../logger");
 class AiService {
     constructor() {
         this.provider = this.resolveProvider();
+        this.circuitTripped = false;
+        this.circuitTrippedReason = "";
+    }
+
+    isQuotaOrAuthError(error) {
+        const msg = String(error.message || "").toLowerCase();
+        return msg.includes("401") || msg.includes("402") || msg.includes("403") || msg.includes("429") || msg.includes("payment") || msg.includes("quota");
     }
 
     /**
@@ -36,6 +43,11 @@ class AiService {
     async parseCommand(commandText) {
         logger.automation.info(`Parsing command: "${commandText}"`);
         
+        if (this.circuitTripped) {
+            logger.automation.warn(`[AI Circuit Breaker] Skipping AI request due to previous error: ${this.circuitTrippedReason}. Invoking fallback rules.`);
+            return this.ruleBasedFallback(commandText);
+        }
+
         const systemPrompt = `
 You are the orchestration AI for an autonomous job application automation platform. 
 Your task is to parse a natural language command into a structured action object.
@@ -74,7 +86,13 @@ Structure:
             logger.automation.info(`Prompt parsed successfully by AI vendor: ${JSON.stringify(result)}`);
             return result;
         } catch (error) {
-            logger.automation.error(`AI Vendor failed (${error.message}). Triggering fallback rules parser.`);
+            if (this.isQuotaOrAuthError(error)) {
+                this.circuitTripped = true;
+                this.circuitTrippedReason = error.message;
+                logger.automation.error(`[AI Circuit Breaker TRIPPED] ${error.message}. Disabling AI provider calls for this run.`);
+            } else {
+                logger.automation.error(`AI Vendor failed (${error.message}). Triggering fallback rules parser.`);
+            }
             return this.ruleBasedFallback(commandText);
         }
     }

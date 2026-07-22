@@ -13,7 +13,16 @@ class ApplicationQuestionEngine {
      * @param {string} [params.jobDescription] Text description of the job
      * @param {string} [params.resumeText] Text of the selected resume
      */
-    async answerQuestion({ question, jobId, jobDescription = "", resumeText = "" }) {
+    /**
+     * Classify and answer a job application question
+     * @param {Object} params
+     * @param {string} params.question The question text
+     * @param {string} params.jobId SQLite job record ID
+     * @param {string} [params.jobDescription] Text description of the job
+     * @param {string} [params.resumeText] Text of the selected resume
+     * @param {boolean} [params.aiContentProhibited] Flag if job prohibits AI-generated content
+     */
+    async answerQuestion({ question, jobId, jobDescription = "", resumeText = "", aiContentProhibited = false }) {
         const profile = await profileManager.getProfile();
         
         // 1. Check Q&A Memory (SQLite) for previously approved answers
@@ -39,7 +48,27 @@ class ApplicationQuestionEngine {
             }
         }
 
-        // 2. Classify the question type using AI
+        // 2. Check for Demographic / Sensitive questions (Disability, Gender, Race, Veteran)
+        if (this.isDemographicQuestion(question)) {
+            logger.automation.info(`Demographic question detected: "${question}". Suggesting neutral default and routing to WAITING_FOR_INPUT.`);
+            return {
+                status: "WAITING_FOR_INPUT",
+                answer: "Decline to self-identify",
+                type: "DEMOGRAPHIC"
+            };
+        }
+
+        // 3. Check for AI Content Prohibition
+        if (aiContentProhibited) {
+            logger.automation.warn(`AI content prohibited for job. Skipping AI classification for question: "${question}". Routing to WAITING_FOR_INPUT.`);
+            return {
+                status: "WAITING_FOR_INPUT",
+                answer: "",
+                type: "AI_PROHIBITED"
+            };
+        }
+
+        // 4. Classify the question type using AI
         const classification = await this.classifyQuestion(question);
         logger.automation.info(`AI classified question "${question}" as type: ${classification.type}`);
 
@@ -58,29 +87,33 @@ class ApplicationQuestionEngine {
             logger.automation.warn(`Factual field "${classification.key}" missing in profile for question: "${question}". Queuing for manual input.`);
             return {
                 status: "WAITING_FOR_INPUT",
+                answer: "",
                 type: "TYPE 1",
                 key: classification.key
             };
         }
 
         if (classification.type === "TYPE 3") {
-            // LEGAL / DEMOGRAPHIC: Return "Decline to answer" or ask
-            if (classification.hasDeclineOption) {
-                return {
-                    status: "ANSWERED",
-                    answer: "Decline to answer",
-                    type: "TYPE 3"
-                };
-            }
-            // Queue for manual review if decline is not possible/available
+            // LEGAL / DEMOGRAPHIC: Return "Decline to self-identify" as suggested default requiring user approval
             return {
                 status: "WAITING_FOR_INPUT",
+                answer: "Decline to self-identify",
                 type: "TYPE 3"
             };
         }
 
         if (classification.type === "TYPE 2") {
-            // PROFESSIONAL DESCRIPTIVE: Generate using AI
+            // PROFESSIONAL DESCRIPTIVE: Check AI Prohibition
+            if (aiContentProhibited) {
+                logger.automation.warn(`AI content prohibited for job. Skipping AI answer generation for question: "${question}". Routing to WAITING_FOR_INPUT.`);
+                return {
+                    status: "WAITING_FOR_INPUT",
+                    answer: "",
+                    type: "AI_PROHIBITED"
+                };
+            }
+
+            // Generate using AI
             const generatedAnswer = await this.generateProfessionalAnswer(question, jobDescription, profile, resumeText);
             return {
                 status: "ANSWERED",
@@ -92,8 +125,22 @@ class ApplicationQuestionEngine {
         // TYPE 4 or Unknown: Queue for manual input
         return {
             status: "WAITING_FOR_INPUT",
+            answer: "",
             type: "TYPE 4"
         };
+    }
+
+    isDemographicQuestion(question) {
+        if (!question) return false;
+        const q = String(question).toLowerCase();
+        const keywords = [
+            "disability", "disabled", "impairment",
+            "gender", "sex", "identity",
+            "race", "ethnicity", "hispanic", "latino",
+            "veteran", "military service", "armed forces",
+            "sexual orientation"
+        ];
+        return keywords.some(kw => q.includes(kw));
     }
 
     normalizeQuestion(question) {

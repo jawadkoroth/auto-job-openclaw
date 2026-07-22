@@ -283,44 +283,58 @@ telegramService.startPolling(async (message) => {
                 `• *Queued tasks*: ${pendingCount}\n` +
                 `• *Scheduler*: active`
             );
-        } else if (text.startsWith("/approve")) {
+        } else if (text.startsWith("/approve") || text.startsWith("/answer") || text.startsWith("/useonce")) {
+            const isUseOnce = text.startsWith("/useonce");
             const parts = text.split(" ");
-            const jobId = parts[1];
-            if (!jobId) {
-                await telegramService.sendMessage("❌ Usage: `/approve <job_id> [optional custom answer]`");
+            const targetId = parts[1];
+            if (!targetId) {
+                await telegramService.sendMessage(
+                    "❌ Usage:\n" +
+                    "• <code>/answer &lt;approval_id&gt; &lt;answer&gt;</code> (Save for future applications)\n" +
+                    "• <code>/useonce &lt;approval_id&gt; &lt;answer&gt;</code> (Use ONCE, do not save to Answer Bank)\n" +
+                    "• <code>/approve &lt;approval_id&gt;</code> (Approve suggested answer for future)"
+                );
                 return;
             }
             
             await db.init();
-            const job = await db.get("SELECT * FROM jobs WHERE id = ?", [jobId]);
+            const job = await db.get(
+                "SELECT * FROM jobs WHERE approval_id = ? OR pending_question_id = ? OR id = ? OR job_id = ? ORDER BY id DESC LIMIT 1",
+                [targetId, targetId, targetId, targetId]
+            );
             if (!job) {
-                await telegramService.sendMessage(`❌ Job with ID \`${jobId}\` not found in database.`);
+                await telegramService.sendMessage(`❌ Pending question record with ID <code>${telegramService.escapeHTML(targetId)}</code> not found in database.`);
                 return;
             }
             
             let finalAnswer = parts.slice(2).join(" ").trim();
             if (!finalAnswer) {
-                finalAnswer = job.pending_suggested_answer || "Yes";
+                finalAnswer = job.pending_suggested_answer || "Decline to self-identify";
             }
             
-            // Save to Q&A memory
-            const normalizedQ = job.pending_question ? job.pending_question.toLowerCase().replace(/[^a-z0-9]/g, "").trim() : "default_q";
+            const candidateKnowledgeService = require("../../packages/knowledge/CandidateKnowledgeService");
+
+            if (!isUseOnce) {
+                // Save to reusable Answer Bank for future applications (Task 4)
+                await candidateKnowledgeService.answerBank.saveAnswer({
+                    question: job.pending_question || "Application Question",
+                    answer: finalAnswer,
+                    answerType: "FACTUAL"
+                });
+            }
+            
+            // Set job back to ELIGIBLE and clear pending fields
             await db.run(
-                `INSERT OR REPLACE INTO qna_memory (question_normalized, question_raw, answer, answer_type, source, approved)
-                 VALUES (?, ?, ?, 'APPROVED', 'TELEGRAM', 1)`,
-                [normalizedQ, job.pending_question, finalAnswer]
+                "UPDATE jobs SET status = 'ELIGIBLE', ignored = 0, applied = 0, pending_question = NULL, pending_suggested_answer = NULL, pending_question_id = NULL, approval_id = NULL WHERE id = ?",
+                [job.id]
             );
             
-            // Set job back to ELIGIBLE (or status = 'ELIGIBLE') and clear pending
-            await db.run(
-                "UPDATE jobs SET status = 'ELIGIBLE', ignored = 0, applied = 0, pending_question = NULL, pending_suggested_answer = NULL WHERE id = ?",
-                [jobId]
-            );
-            
+            const saveMode = isUseOnce ? "<b>USE ONCE ONLY</b> (Not saved to Answer Bank)" : "<b>SAVED FOR FUTURE</b> (Added to Answer Bank)";
             await telegramService.sendMessage(
-                `✅ *Approved answer for ${job.company} - ${job.title}*:\n` +
-                `_"${finalAnswer}"_\n\n` +
-                `The job has been marked as *ELIGIBLE* and will be applied to during the next scheduler run.`
+                `✅ <b>Approved answer for ${telegramService.escapeHTML(job.company || 'Company')} - ${telegramService.escapeHTML(job.title || 'Job')}</b>:\n` +
+                `<i>"${telegramService.escapeHTML(finalAnswer)}"</i>\n` +
+                `Mode: ${saveMode}\n\n` +
+                `The job has been marked as <b>ELIGIBLE</b> for retry.`
             );
         } else {
             await telegramService.sendMessage(`❓ Command not recognized. Send /start to get help.`);

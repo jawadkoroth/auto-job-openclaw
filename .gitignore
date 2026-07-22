@@ -34,3 +34,8 @@ screenshots/
 # Database Files
 *.sqlite
 *.db
+
+# Backups & Resumes
+backups/
+resumes/*.pdf
+

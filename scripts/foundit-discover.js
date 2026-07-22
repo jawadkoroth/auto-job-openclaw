@@ -74,55 +74,55 @@ const path = require("path");
                 jobsFoundCount = searchResults.length;
                 console.log(`[foundit:discover] Search completed. Found ${jobsFoundCount} postings.`);
 
-                // 4. Inspect Jobs & Capture External Apply URLs
-                for (const job of searchResults) {
+                // 4. Inspect Jobs & Capture External Apply URLs directly on SRP page
+                const titleLinks = page.locator(".jobTitle, .title, a[href*='job-detail']");
+                const titleLinkCount = await titleLinks.count();
+
+                for (let i = 0; i < Math.min(titleLinkCount, searchResults.length); i++) {
+                    const job = searchResults[i] || {};
                     try {
                         eligibleJobsCount++;
-                        console.log(`[foundit:discover] Inspecting job: "${job.title}" at "${job.company}" (${job.url})`);
-                        await page.goto(job.url, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
-                        await page.waitForTimeout(1500);
+                        const linkEl = titleLinks.nth(i);
+                        const titleText = await linkEl.textContent().catch(() => job.title || "");
+                        console.log(`[foundit:discover] Inspecting job ${i + 1}/${titleLinkCount}: "${titleText.trim()}" at "${job.company || 'Employer'}"`);
 
-                        const externalApplyBtn = page.locator(`
-                            a:has-text('Apply on company website'), 
-                            button:has-text('Apply on company website'), 
-                            a:has-text('Apply on Company Site'), 
-                            button:has-text('Apply on Company Site'),
-                            a:has-text('Company Website'),
-                            a[data-apply-type='external'],
-                            a.btn-apply-external,
-                            a[href*='redirect']
-                        `).first();
+                        await linkEl.click({ force: true }).catch(() => {});
+                        await page.waitForTimeout(2000);
 
-                        if (await externalApplyBtn.count() > 0 && await externalApplyBtn.isVisible().catch(() => false)) {
-                            console.log("[foundit:discover] External apply button detected. Capturing redirect URL...");
-                            
+                        const applyBtn = page.locator("button:has-text('Apply Now'), a:has-text('Apply Now'), button:has-text('Apply on company website'), a:has-text('Apply on company website')").first();
+                        if (await applyBtn.count() > 0 && await applyBtn.isVisible().catch(() => false)) {
+                            console.log("[foundit:discover] External apply button detected. Capturing popup redirect URL...");
                             const [popup] = await Promise.all([
-                                page.context().waitForEvent("page", { timeout: 15000 }).catch(() => null),
-                                externalApplyBtn.click({ force: true }).catch(() => {})
+                                page.context().waitForEvent("page", { timeout: 10000 }).catch(() => null),
+                                applyBtn.click({ force: true }).catch(() => {})
                             ]);
 
                             const targetPage = popup || page;
                             await targetPage.waitForLoadState("domcontentloaded").catch(() => {});
-                            await targetPage.waitForTimeout(3000);
+                            await targetPage.waitForTimeout(2000);
 
                             const externalUrl = targetPage.url();
                             if (externalUrl && !externalUrl.includes("foundit.in")) {
                                 externalUrlsCapturedCount++;
                                 const classifiedAts = externalApplicationRouter.classifyATS(externalUrl);
-                                console.log(`[foundit:discover] Captured External URL: ${externalUrl} (ATS: ${classifiedAts})`);
+                                const jobId = job.job_id || `foundit-real-${Date.now()}-${i}`;
+                                const companyName = job.company && job.company !== "Foundit Employer" ? job.company : "Discovered Employer";
+                                console.log(`[foundit:discover] Captured External URL: ${externalUrl} (ATS: ${classifiedAts}, Company: ${companyName})`);
 
-                                // Save to local SQLite database as EXTERNAL_PENDING
-                                const existing = await db.get("SELECT id FROM jobs WHERE portal = ? AND job_id = ?", ["foundit", job.job_id]);
-                                if (!existing) {
+                                // Check if already applied in local SQLite DB
+                                const existing = await db.get("SELECT id, status FROM jobs WHERE portal = ? AND (job_id = ? OR external_url = ?)", ["foundit", jobId, externalUrl]);
+                                if (existing && (existing.status === "APPLIED" || existing.status === "ALREADY_APPLIED")) {
+                                    console.log(`[foundit:discover] Job ${jobId} already APPLIED. Skipping queue.`);
+                                } else if (!existing) {
                                     await db.run(
                                         `INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, external_url, ats, status) 
                                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                                        ["foundit", job.job_id, job.company, job.title, job.location, job.experience || "", job.salary || "", job.url, externalUrl, classifiedAts, "EXTERNAL_PENDING"]
+                                        ["foundit", jobId, companyName, titleText.trim(), job.location || "Bangalore", job.experience || "2-5 Yrs", job.salary || "Not Disclosed", job.url || page.url(), externalUrl, classifiedAts, "EXTERNAL_PENDING"]
                                     );
                                 } else {
                                     await db.run(
-                                        `UPDATE jobs SET external_url = ?, ats = ?, status = 'EXTERNAL_PENDING' WHERE portal = ? AND job_id = ?`,
-                                        [externalUrl, classifiedAts, "foundit", job.job_id]
+                                        `UPDATE jobs SET external_url = ?, ats = ?, status = 'EXTERNAL_PENDING' WHERE id = ?`,
+                                        [externalUrl, classifiedAts, existing.id]
                                     );
                                 }
                             }
@@ -132,7 +132,7 @@ const path = require("path");
                             }
                         }
                     } catch (jobErr) {
-                        console.warn(`[foundit:discover] Failed inspecting job ${job.url}: ${jobErr.message}`);
+                        console.warn(`[foundit:discover] Failed inspecting card ${i}: ${jobErr.message}`);
                     }
                 }
             } else {

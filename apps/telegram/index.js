@@ -27,31 +27,54 @@ const localLogger = {
     debug: (msg, meta) => logger.telegram.debug(redactSecrets(msg), meta)
 };
 
+function escapeHTML(str) {
+    if (str === null || str === undefined) return "";
+    return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+
 function markdownToHTML(text) {
     if (!text) return "";
     
-    // First, escape HTML special chars
-    let escaped = text
-        .replace(/&/g, "&amp;")
+    // 1. Preserve existing valid Telegram HTML tags by replacing them with placeholders
+    const placeholders = [];
+    const htmlTagRegex = /<\/?(b|i|code|pre|a|u|s|tg-spoiler)(\s+[^>]*>|>)/gi;
+    let textWithPlaceholders = text.replace(htmlTagRegex, (tag) => {
+        placeholders.push(tag);
+        return `___TELEGRAM_HTML_TAG_${placeholders.length - 1}___`;
+    });
+        
+    // 2. Escape HTML special chars in the remaining text (avoiding double-escaping existing entities)
+    let escaped = textWithPlaceholders
+        .replace(/&(?!amp;|lt;|gt;|quot;|#39;)/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
         
-    // Now convert Markdown tokens to HTML tags
-    // 1. Triple backticks code blocks: ```code``` -> <pre>code</pre>
+    // 3. Restore valid HTML tags
+    escaped = escaped.replace(/___TELEGRAM_HTML_TAG_(\d+)___/g, (match, index) => {
+        return placeholders[parseInt(index, 10)];
+    });
+        
+    // 4. Convert Markdown tokens to HTML tags
+    // Triple backticks code blocks: ```code``` -> <pre>code</pre>
     escaped = escaped.replace(/```([\s\S]*?)```/g, (match, p1) => {
         return `<pre>${p1}</pre>`;
     });
     
-    // 2. Single backtick inline code: `code` -> <code>code</code>
+    // Single backtick inline code: `code` -> <code>code</code>
     escaped = escaped.replace(/`([^`]+)`/g, (match, p1) => {
         return `<code>${p1}</code>`;
     });
     
-    // 3. Bold: *text* or **text** -> <b>text</b>
+    // Bold: **text** or *text* -> <b>text</b>
     escaped = escaped.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
     escaped = escaped.replace(/\*([^*]+)\*/g, '<b>$1</b>');
     
-    // 4. Italic: _text_ -> <i>text</i>
+    // Italic: _text_ -> <i>text</i>
     escaped = escaped.replace(/_([^_]+)_/g, '<i>$1</i>');
     
     return escaped;
@@ -215,6 +238,18 @@ class TelegramService {
         this.isPolling = false;
         localLogger.info("Telegram Bot listener stopped.");
     }
+
+    escapeHTML(str) {
+        return escapeHTML(str);
+    }
+
+    markdownToHTML(str) {
+        return markdownToHTML(str);
+    }
 }
 
-module.exports = new TelegramService();
+const telegramService = new TelegramService();
+telegramService.escapeHTML = escapeHTML;
+telegramService.markdownToHTML = markdownToHTML;
+
+module.exports = telegramService;

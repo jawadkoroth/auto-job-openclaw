@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenClaw Candidate Knowledge & Automation Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0f172a;
+            --panel: #1e293b;
+            --card: #334155;
+            --accent: #38bdf8;
+            --accent-hover: #0284c7;
+            --success: #22c55e;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --text: #f8fafc;
+            --muted: #94a3b8;
+            --border: #475569;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', sans-serif; }
+        body { background-color: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
+
+        header { background: rgba(30, 41, 59, 0.85); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; }
+        header h1 { font-size: 1.25rem; font-weight: 700; color: var(--accent); display: flex; align-items: center; gap: 0.5rem; }
+
+        nav { display: flex; gap: 0.5rem; }
+        .tab-btn { background: transparent; border: none; color: var(--muted); padding: 0.5rem 1rem; border-radius: 0.375rem; cursor: pointer; font-weight: 500; transition: all 0.2s; }
+        .tab-btn:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+        .tab-btn.active { color: #fff; background: var(--accent); }
+
+        main { flex: 1; padding: 2rem; max-width: 1400px; margin: 0 auto; width: 100%; }
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .alert-banner { background: rgba(245, 158, 11, 0.15); border: 1px solid var(--warning); color: #fde047; padding: 1rem; border-radius: 0.5rem; margin-bottom: 1.5rem; display: none; }
+        .alert-banner.danger { background: rgba(239, 68, 68, 0.15); border-color: var(--danger); color: #fca5a5; }
+
+        .grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
+        .stat-card { background: var(--panel); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1.5rem; display: flex; flex-direction: column; gap: 0.5rem; }
+        .stat-card .label { color: var(--muted); font-size: 0.875rem; }
+        .stat-card .value { font-size: 1.75rem; font-weight: 700; color: var(--text); }
+
+        .card { background: var(--panel); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1.5rem; margin-bottom: 1.5rem; }
+        .card h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem; color: var(--accent); display: flex; justify-content: space-between; align-items: center; }
+
+        table { width: 100%; border-collapse: collapse; text-align: left; }
+        th, td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); font-size: 0.875rem; }
+        th { color: var(--muted); font-weight: 600; background: rgba(0,0,0,0.2); }
+        tr:hover { background: rgba(255,255,255,0.02); }
+
+        .badge { padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; }
+        .badge.applied { background: rgba(34, 197, 94, 0.2); color: var(--success); }
+        .badge.pending { background: rgba(245, 158, 11, 0.2); color: var(--warning); }
+        .badge.failed { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
+        .badge.default { background: rgba(56, 189, 248, 0.2); color: var(--accent); }
+
+        .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+        .form-group { display: flex; flex-direction: column; gap: 0.375rem; }
+        .form-group label { font-size: 0.85rem; color: var(--muted); font-weight: 500; }
+        .form-group input, .form-group textarea, .form-group select { background: var(--bg); border: 1px solid var(--border); border-radius: 0.375rem; padding: 0.625rem; color: var(--text); font-size: 0.9rem; }
+        .form-group input:focus, .form-group textarea:focus { border-color: var(--accent); outline: none; }
+
+        .btn { background: var(--accent); color: #fff; border: none; padding: 0.625rem 1.25rem; border-radius: 0.375rem; font-weight: 600; cursor: pointer; transition: background 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; }
+        .btn:hover { background: var(--accent-hover); }
+        .btn-sm { padding: 0.375rem 0.75rem; font-size: 0.8rem; }
+        .btn-danger { background: var(--danger); }
+        .btn-danger:hover { background: #dc2626; }
+        .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+        .btn-outline:hover { background: var(--card); }
+
+        .pending-card { background: var(--card); border-radius: 0.5rem; padding: 1.25rem; margin-bottom: 1rem; border-left: 4px solid var(--warning); }
+        .pending-card h3 { font-size: 1rem; margin-bottom: 0.5rem; color: #fff; }
+        .pending-card p { font-size: 0.9rem; color: var(--muted); margin-bottom: 0.5rem; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>⚡ OpenClaw Candidate Knowledge Base</h1>
+        <nav>
+            <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
+            <button class="tab-btn" onclick="switchTab('profile')">Profile</button>
+            <button class="tab-btn" onclick="switchTab('answers')">Answer Bank</button>
+            <button class="tab-btn" onclick="switchTab('pending')">Pending Qs</button>
+            <button class="tab-btn" onclick="switchTab('documents')">CV / Resume</button>
+            <button class="tab-btn" onclick="switchTab('cover')">Cover Letters</button>
+            <button class="tab-btn" onclick="switchTab('applications')">Applications</button>
+        </nav>
+    </header>
+
+    <main>
+        <div id="readiness-banner" class="alert-banner danger">
+            ⚠️ <strong>Candidate Profile Incomplete Warning:</strong> <span id="banner-missing-text"></span>. Automated applications may stop until missing fields are configured.
+        </div>
+
+        <!-- 1. OVERVIEW TAB -->
+        <div id="overview" class="tab-content active">
+            <div class="grid-4">
+                <div class="stat-card">
+                    <span class="label">Total Applications</span>
+                    <span class="value" id="stat-apps">0</span>
+                </div>
+                <div class="stat-card">
+                    <span class="label">Pending Questions</span>
+                    <span class="value" id="stat-pending" style="color: var(--warning);">0</span>
+                </div>
+                <div class="stat-card">
+                    <span class="label">Answer Bank Entries</span>
+                    <span class="value" id="stat-answers">0</span>
+                </div>
+                <div class="stat-card">
+                    <span class="label">Current Default CV</span>
+                    <span class="value" id="stat-cv" style="font-size: 1.1rem; color: var(--accent);">Loading...</span>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Pending Questions Action Needed</h2>
+                <table id="table-overview-pending">
+                    <thead>
+                        <tr>
+                            <th>Job</th>
+                            <th>Company</th>
+                            <th>Question</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td colspan="4" style="text-align: center; color: var(--muted);">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 2. CANDIDATE PROFILE TAB -->
+        <div id="profile" class="tab-content">
+            <div class="card">
+                <h2>Candidate Profile Facts (Oracle Single Source of Truth)</h2>
+                <form id="form-profile" onsubmit="saveProfile(event)">
+                    <div class="form-grid">
+                        <div class="form-group"><label>First Name*</label><input type="text" name="firstName" id="prof-firstName"></div>
+                        <div class="form-group"><label>Last Name*</label><input type="text" name="lastName" id="prof-lastName"></div>
+                        <div class="form-group"><label>Full Name*</label><input type="text" name="fullName" id="prof-fullName"></div>
+                        <div class="form-group"><label>Email Address*</label><input type="email" name="email" id="prof-email"></div>
+                        <div class="form-group"><label>Phone Number*</label><input type="text" name="phone" id="prof-phone"></div>
+                        <div class="form-group"><label>Current Location / City*</label><input type="text" name="currentLocation" id="prof-currentLocation"></div>
+                        <div class="form-group"><label>Country*</label><input type="text" name="country" id="prof-country"></div>
+                        <div class="form-group"><label>Current Company</label><input type="text" name="currentCompany" id="prof-currentCompany"></div>
+                        <div class="form-group"><label>Current Job Title</label><input type="text" name="currentJobTitle" id="prof-currentJobTitle"></div>
+                        <div class="form-group"><label>Total Experience (Yrs)</label><input type="text" name="totalExperience" id="prof-totalExperience"></div>
+                        <div class="form-group"><label>Notice Period</label><input type="text" name="noticePeriod" id="prof-noticePeriod"></div>
+                        <div class="form-group"><label>LinkedIn URL*</label><input type="text" name="linkedinUrl" id="prof-linkedinUrl"></div>
+                        <div class="form-group"><label>GitHub URL</label><input type="text" name="githubUrl" id="prof-githubUrl"></div>
+                        <div class="form-group"><label>Portfolio URL</label><input type="text" name="portfolioUrl" id="prof-portfolioUrl"></div>
+                        <div class="form-group"><label>Education Institution*</label><input type="text" name="educationSchool" id="prof-educationSchool"></div>
+                        <div class="form-group"><label>Degree*</label><input type="text" name="educationDegree" id="prof-educationDegree"></div>
+                        <div class="form-group"><label>Discipline / Field of Study*</label><input type="text" name="educationDiscipline" id="prof-educationDiscipline"></div>
+                        <div class="form-group"><label>Education Start Year*</label><input type="text" name="educationStartYear" id="prof-educationStartYear"></div>
+                        <div class="form-group"><label>Education End/Grad Year*</label><input type="text" name="educationEndYear" id="prof-educationEndYear"></div>
+                    </div>
+                    <br>
+                    <button type="submit" class="btn">Save Profile Changes</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- 3. ANSWER BANK TAB -->
+        <div id="answers" class="tab-content">
+            <div class="card">
+                <h2>Add / Save New Answer Bank Entry</h2>
+                <form id="form-new-answer" onsubmit="saveNewAnswer(event)">
+                    <div class="form-grid">
+                        <div class="form-group"><label>Original Question</label><input type="text" id="ans-question" required></div>
+                        <div class="form-group"><label>Canonical Key</label><input type="text" id="ans-key" placeholder="e.g. experience_devops"></div>
+                        <div class="form-group"><label>Approved Answer</label><input type="text" id="ans-answer" required></div>
+                        <div class="form-group"><label>Answer Type</label>
+                            <select id="ans-type">
+                                <option value="FACTUAL">FACTUAL</option>
+                                <option value="BEHAVIORAL">BEHAVIORAL</option>
+                            </select>
+                        </div>
+                    </div>
+                    <br>
+                    <button type="submit" class="btn">Add Answer Entry</button>
+                </form>
+            </div>
+
+            <div class="card">
+                <h2>Answer Bank Entries</h2>
+                <table id="table-answers">
+                    <thead>
+                        <tr>
+                            <th>Canonical Key</th>
+                            <th>Question</th>
+                            <th>Answer</th>
+                            <th>Usage</th>
+                            <th>Auto-Use</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 4. PENDING QUESTIONS TAB -->
+        <div id="pending" class="tab-content">
+            <div class="card">
+                <h2>Pending Questions Needing Answer</h2>
+                <div id="pending-container">Loading...</div>
+            </div>
+        </div>
+
+        <!-- 5. CV / RESUME MANAGER TAB -->
+        <div id="documents" class="tab-content">
+            <div class="card">
+                <h2>Upload New Single Default Active CV (PDF Only)</h2>
+                <form id="form-cv-upload" onsubmit="uploadCv(event)">
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label>Choose PDF File</label>
+                            <input type="file" id="cv-file" accept="application/pdf" required>
+                        </div>
+                    </div>
+                    <br>
+                    <button type="submit" class="btn">Upload & Set as Active Default CV</button>
+                </form>
+            </div>
+
+            <div class="card">
+                <h2>CV / Resume Repository</h2>
+                <table id="table-cvs">
+                    <thead>
+                        <tr>
+                            <th>Filename</th>
+                            <th>Default</th>
+                            <th>Status</th>
+                            <th>Uploaded At</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 6. COVER LETTERS TAB -->
+        <div id="cover" class="tab-content">
+            <div class="card">
+                <h2>Add Cover Letter</h2>
+                <form id="form-cover" onsubmit="saveCoverLetter(event)">
+                    <div class="form-grid">
+                        <div class="form-group"><label>Title</label><input type="text" id="cl-title" required></div>
+                        <div class="form-group"><label>Target Role (Optional)</label><input type="text" id="cl-role"></div>
+                        <div class="form-group"><label>Target Company (Optional)</label><input type="text" id="cl-company"></div>
+                        <div class="form-group" style="grid-column: 1 / -1;"><label>Content</label><textarea id="cl-content" rows="4" required></textarea></div>
+                    </div>
+                    <br>
+                    <button type="submit" class="btn">Save Cover Letter</button>
+                </form>
+            </div>
+
+            <div class="card">
+                <h2>Cover Letters</h2>
+                <table id="table-cover">
+                    <thead>
+                        <tr>
+                            <th>Title</th>
+                            <th>Target Role</th>
+                            <th>Target Company</th>
+                            <th>Default</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 7. APPLICATIONS TAB -->
+        <div id="applications" class="tab-content">
+            <div class="card">
+                <h2>
+                    Job Applications History
+                    <select id="filter-app-status" onchange="loadApplications()" style="font-size: 0.9rem; padding: 0.375rem;">
+                        <option value="ALL">All Statuses</option>
+                        <option value="APPLIED">APPLIED</option>
+                        <option value="WAITING_FOR_INPUT">WAITING_FOR_INPUT</option>
+                        <option value="READY_TO_RESUME">READY_TO_RESUME</option>
+                        <option value="EXTERNAL_PENDING">EXTERNAL_PENDING</option>
+                        <option value="EXTERNAL_IN_PROGRESS">EXTERNAL_IN_PROGRESS</option>
+                        <option value="FAILED">FAILED</option>
+                    </select>
+                </h2>
+                <table id="table-applications">
+                    <thead>
+                        <tr>
+                            <th>Job ID</th>
+                            <th>Title</th>
+                            <th>Company</th>
+                            <th>Portal</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            
+            event.target.classList.add('active');
+            document.getElementById(tabId).classList.add('active');
+
+            if (tabId === 'overview') loadOverview();
+            if (tabId === 'profile') loadProfile();
+            if (tabId === 'answers') loadAnswers();
+            if (tabId === 'pending') loadPending();
+            if (tabId === 'documents') loadCvs();
+            if (tabId === 'cover') loadCoverLetters();
+            if (tabId === 'applications') loadApplications();
+        }
+
+        async function apiGet(endpoint) {
+            const res = await fetch(endpoint);
+            return res.json();
+        }
+
+        async function apiPost(endpoint, data) {
+            const res = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            return res.json();
+        }
+
+        async function apiDelete(endpoint) {
+            const res = await fetch(endpoint, { method: 'DELETE' });
+            return res.json();
+        }
+
+        async function loadOverview() {
+            const data = await apiGet('/api/stats');
+            if (data.success) {
+                document.getElementById('stat-apps').innerText = data.totalApplications;
+                document.getElementById('stat-pending').innerText = data.pendingQuestionsCount;
+                document.getElementById('stat-answers').innerText = data.answerBankCount;
+                document.getElementById('stat-cv').innerText = data.defaultCvFilename || 'None';
+
+                const banner = document.getElementById('readiness-banner');
+                if (!data.isProfileReady && data.missingRequiredFields.length > 0) {
+                    document.getElementById('banner-missing-text').innerText = data.missingRequiredFields.join(', ');
+                    banner.style.display = 'block';
+                } else {
+                    banner.style.display = 'none';
+                }
+
+                const tbody = document.querySelector('#table-overview-pending tbody');
+                if (data.pendingQuestions.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--muted);">No pending questions! All caught up.</td></tr>';
+                } else {
+                    tbody.innerHTML = data.pendingQuestions.map(q => `
+                        <tr>
+                            <td>${q.job_id || q.id}</td>
+                            <td>${q.company || 'Company'} - ${q.title || 'Role'}</td>
+                            <td>${q.pending_question || 'Input Needed'}</td>
+                            <td><button class="btn btn-sm" onclick="switchTab('pending')">Resolve</button></td>
+                        </tr>
+                    `).join('');
+                }
+            }
+        }
+
+        async function loadProfile() {
+            const data = await apiGet('/api/profile');
+            if (data.success && data.profile) {
+                const prof = data.profile;
+                for (const key of Object.keys(prof)) {
+                    const el = document.getElementById(`prof-${key}`);
+                    if (el) el.value = prof[key] || '';
+                }
+            }
+        }
+
+        async function saveProfile(e) {
+            e.preventDefault();
+            const form = document.getElementById('form-profile');
+            const formData = new FormData(form);
+            const data = {};
+            formData.forEach((val, key) => data[key] = val);
+
+            const res = await apiPost('/api/profile', data);
+            alert(res.message || 'Profile saved!');
+            loadOverview();
+        }
+
+        async function loadAnswers() {
+            const data = await apiGet('/api/answers');
+            const tbody = document.querySelector('#table-answers tbody');
+            if (data.success) {
+                tbody.innerHTML = data.answers.map(a => `
+                    <tr>
+                        <td><code>${a.canonical_key || 'custom'}</code></td>
+                        <td>${a.original_question}</td>
+                        <td><strong>${a.approved_answer}</strong></td>
+                        <td>${a.usage_count || 0}</td>
+                        <td>${a.auto_use_enabled ? 'YES' : 'NO'}</td>
+                        <td><button class="btn btn-sm btn-danger" onclick="deleteAnswer('${a.id}')">Delete</button></td>
+                    </tr>
+                `).join('');
+            }
+        }
+
+        async function saveNewAnswer(e) {
+            e.preventDefault();
+            const question = document.getElementById('ans-question').value;
+            const canonicalKey = document.getElementById('ans-key').value;
+            const answer = document.getElementById('ans-answer').value;
+            const answerType = document.getElementById('ans-type').value;
+
+            const res = await apiPost('/api/answers', { question, canonicalKey, answer, answerType });
+            alert(res.message || 'Saved!');
+            document.getElementById('form-new-answer').reset();
+            loadAnswers();
+        }
+
+        async function deleteAnswer(id) {
+            if (confirm('Delete this Answer Bank entry?')) {
+                await apiDelete(`/api/answers/${id}`);
+                loadAnswers();
+            }
+        }
+
+        async function loadPending() {
+            const data = await apiGet('/api/stats');
+            const container = document.getElementById('pending-container');
+            if (data.success && data.pendingQuestions.length > 0) {
+                container.innerHTML = data.pendingQuestions.map(q => `
+                    <div class="pending-card">
+                        <h3>${q.company || 'Job'} - ${q.title || 'Role'}</h3>
+                        <p><strong>Question:</strong> ${q.pending_question || 'Input required'}</p>
+                        ${q.pending_suggested_answer ? `<p><strong>Suggested Answer:</strong> ${q.pending_suggested_answer}</p>` : ''}
+                        <br>
+                        <div class="form-group">
+                            <input type="text" id="ans-input-${q.id}" placeholder="Enter answer here..." value="${q.pending_suggested_answer || ''}">
+                        </div>
+                        <br>
+                        <div style="display: flex; gap: 0.5rem;">
+                            <button class="btn btn-sm" onclick="resolveQuestion('${q.id}', true)">Save for Future & Resolve</button>
+                            <button class="btn btn-sm btn-outline" onclick="resolveQuestion('${q.id}', false)">Use Once Only</button>
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                container.innerHTML = '<p style="color: var(--muted);">No pending questions at this time.</p>';
+            }
+        }
+
+        async function resolveQuestion(jobId, saveForFuture) {
+            const answer = document.getElementById(`ans-input-${jobId}`).value;
+            if (!answer) return alert('Please enter an answer!');
+
+            const res = await apiPost('/api/pending/resolve', { jobId, answer, saveForFuture });
+            alert(res.message || 'Resolved!');
+            loadOverview();
+            loadPending();
+        }
+
+        async function loadCvs() {
+            const data = await apiGet('/api/documents');
+            const tbody = document.querySelector('#table-cvs tbody');
+            if (data.success) {
+                tbody.innerHTML = data.documents.map(d => `
+                    <tr>
+                        <td><strong>${d.filename}</strong></td>
+                        <td>${d.is_default ? '<span class="badge default">ACTIVE DEFAULT</span>' : 'Archived'}</td>
+                        <td>${d.is_active ? 'ACTIVE' : 'INACTIVE'}</td>
+                        <td>${new Date(d.uploaded_at).toLocaleDateString()}</td>
+                        <td>
+                            ${!d.is_default ? `<button class="btn btn-sm btn-outline" onclick="setDefaultCv('${d.document_id}')">Set Default</button>` : ''}
+                            <button class="btn btn-sm btn-danger" onclick="deleteCv('${d.document_id}')">Delete</button>
+                        </td>
+                    </tr>
+                `).join('');
+            }
+        }
+
+        async function uploadCv(e) {
+            e.preventDefault();
+            const fileInput = document.getElementById('cv-file');
+            if (!fileInput.files || fileInput.files.length === 0) return alert('Select a PDF file!');
+            const file = fileInput.files[0];
+
+            const reader = new FileReader();
+            reader.onload = async function() {
+                const base64Data = reader.result.split(',')[1];
+                const res = await apiPost('/api/documents/upload', { filename: file.name, base64Data });
+                alert(res.message || 'CV Uploaded!');
+                fileInput.value = '';
+                loadCvs();
+                loadOverview();
+            };
+            reader.readAsDataURL(file);
+        }
+
+        async function setDefaultCv(documentId) {
+            await apiPost('/api/documents/default', { documentId });
+            loadCvs();
+            loadOverview();
+        }
+
+        async function deleteCv(documentId) {
+            if (confirm('Delete/Archive this CV?')) {
+                await apiDelete(`/api/documents/${documentId}`);
+                loadCvs();
+            }
+        }
+
+        async function loadCoverLetters() {
+            const data = await apiGet('/api/cover-letters');
+            const tbody = document.querySelector('#table-cover tbody');
+            if (data.success) {
+                tbody.innerHTML = data.coverLetters.map(cl => `
+                    <tr>
+                        <td><strong>${cl.title}</strong></td>
+                        <td>${cl.target_role || 'All'}</td>
+                        <td>${cl.target_company || 'All'}</td>
+                        <td>${cl.is_default ? '<span class="badge default">DEFAULT</span>' : 'NO'}</td>
+                        <td><button class="btn btn-sm btn-danger" onclick="deleteCoverLetter('${cl.id}')">Delete</button></td>
+                    </tr>
+                `).join('');
+            }
+        }
+
+        async function saveCoverLetter(e) {
+            e.preventDefault();
+            const title = document.getElementById('cl-title').value;
+            const targetRole = document.getElementById('cl-role').value;
+            const targetCompany = document.getElementById('cl-company').value;
+            const content = document.getElementById('cl-content').value;
+
+            const res = await apiPost('/api/cover-letters', { title, targetRole, targetCompany, content });
+            alert(res.message || 'Saved!');
+            document.getElementById('form-cover').reset();
+            loadCoverLetters();
+        }
+
+        async function deleteCoverLetter(id) {
+            if (confirm('Delete this cover letter?')) {
+                await apiDelete(`/api/cover-letters/${id}`);
+                loadCoverLetters();
+            }
+        }
+
+        async function loadApplications() {
+            const status = document.getElementById('filter-app-status').value;
+            const data = await apiGet(`/api/applications?status=${status}`);
+            const tbody = document.querySelector('#table-applications tbody');
+            if (data.success) {
+                tbody.innerHTML = data.applications.map(app => `
+                    <tr>
+                        <td>${app.job_id || app.id}</td>
+                        <td>${app.title}</td>
+                        <td>${app.company}</td>
+                        <td>${app.portal}</td>
+                        <td><span class="badge ${app.status.toLowerCase()}">${app.status}</span></td>
+                        <td><button class="btn btn-sm btn-danger" onclick="deleteApp('${app.id}', '${app.status}')">Delete</button></td>
+                    </tr>
+                `).join('');
+            }
+        }
+
+        async function deleteApp(id, status) {
+            if (status === 'APPLIED') {
+                if (!confirm('WARNING: This application record is marked APPLIED. Are you sure you want to delete it?')) return;
+            } else {
+                if (!confirm('Delete application record?')) return;
+            }
+            await apiDelete(`/api/applications/${id}`);
+            loadApplications();
+        }
+
+        // Initialize Overview on load
+        loadOverview();
+    </script>
+</body>
+</html>

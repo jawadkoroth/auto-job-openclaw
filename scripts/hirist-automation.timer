@@ -1,0 +1,10 @@
+[Unit]
+Description=Hirist Daily Automation Schedule (10:00 AM & 2:00 PM IST)
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 UTC
+OnCalendar=*-*-* 08:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

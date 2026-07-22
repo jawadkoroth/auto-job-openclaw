@@ -1,0 +1,14 @@
+[Unit]
+Description=Candidate Knowledge Automated Daily Backup Service
+After=network.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/automation
+ExecStart=/bin/bash /home/ubuntu/automation/scripts/backup-candidate-knowledge.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
