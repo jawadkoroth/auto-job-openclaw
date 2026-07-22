@@ -365,9 +365,9 @@
                             <th>Portal</th>
                             <th>Category</th>
                             <th>Trust</th>
-                            <th>Oracle Access</th>
-                            <th>Execution Mode</th>
-                            <th>Status</th>
+                            <th>Discovery</th>
+                            <th>App Automation</th>
+                            <th>Overall Status</th>
                             <th>Discovered / Applied</th>
                         </tr>
                     </thead>
@@ -948,9 +948,9 @@
                         <td><strong>${p.name}</strong></td>
                         <td>${p.category}</td>
                         <td><span class="badge ${p.trust === 'TRUSTED' ? 'applied' : 'pending'}">${p.trust}</span></td>
-                        <td>${p.oracleAccess}</td>
-                        <td><code>${p.executionMode}</code></td>
-                        <td><span class="badge ${p.status.includes('ACTIVE') || p.status.includes('READY') ? 'applied' : 'failed'}">${p.status}</span></td>
+                        <td><span class="badge ${p.discoveryAutomation === 'ACTIVE' || p.status.includes('ACTIVE') ? 'applied' : 'pending'}">${p.discoveryAutomation || 'ACTIVE'}</span></td>
+                        <td><span class="badge ${p.appAutomation === 'ACTIVE' ? 'applied' : 'failed'}">${p.appAutomation || (p.status === 'ACTIVE' ? 'ACTIVE' : 'INACTIVE')}</span></td>
+                        <td><span class="badge ${p.status === 'ACTIVE' || p.status === 'ACTIVE_SCHEDULED' ? 'applied' : (p.status === 'DRY_RUN_VALIDATED' ? 'pending' : 'failed')}">${p.status}</span></td>
                         <td><strong>${p.discoveredJobsCount}</strong> / <strong>${p.appliedJobsCount}</strong></td>
                     </tr>
                 `).join('');

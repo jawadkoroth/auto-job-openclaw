@@ -80,6 +80,7 @@ module.exports = async function search(plugin, page, queryOptions = {}) {
                 final_application_url: finalUrl,
                 ats: detectedAts,
                 is_india_eligible: locationCheck.eligible ? 1 : 0,
+                location_category: locationCheck.category,
                 location_reason: locationCheck.reason
             });
         }

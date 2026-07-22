@@ -4,6 +4,7 @@ const db = require("../packages/database");
 const candidateKnowledgeService = require("../packages/knowledge/CandidateKnowledgeService");
 const WeWorkRemotelyPlugin = require("../packages/plugins/weworkremotely");
 const ExternalApplicationRouter = require("../packages/router/ExternalApplicationRouter");
+const { checkLocationEligibility } = require("../packages/router/LocationEligibilityFilter");
 
 const DRY_RUN = process.env.DRY_RUN !== "false";
 const ALLOW_LIVE_APPLICATIONS = process.env.ALLOW_LIVE_APPLICATIONS === "true";
@@ -23,10 +24,7 @@ async function runWwrRunner() {
         headless: true,
         args: ["--no-sandbox", "--disable-dev-shm-usage"]
     });
-    const context = await browser.newContext({
-        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    });
-    const page = await context.newPage();
+    const page = await browser.newPage();
 
     const logger = {
         info: (msg) => console.log(`[INFO] ${msg}`),
@@ -38,36 +36,91 @@ async function runWwrRunner() {
     const plugin = new WeWorkRemotelyPlugin({ logger });
 
     // Step 1: Job Discovery
-    console.log("--- Step 1: Job Discovery ---");
     const discovered = await plugin.search(page);
 
-    let totalDiscovered = discovered.length;
-    let relevantCount = 0;
-    let indiaEligibleCount = 0;
-    let locationRejectedCount = 0;
+    let countDiscovered = discovered.length;
+    let countRelevant = 0;
+    let countIndiaEligible = 0;
+    let countWorldwideEligible = 0;
+    let countApacEligible = 0;
+    let countLocationRestricted = 0;
+    let countLocationUnknown = 0;
+
+    let countCtaDetected = 0;
+    let countResolved = 0;
+    let countUnresolved = 0;
+
+    let atsCounts = {
+        Greenhouse: 0,
+        Lever: 0,
+        Workday: 0,
+        Ashby: 0,
+        SmartRecruiters: 0,
+        BambooHR: 0,
+        OracleHCM: 0,
+        SuccessFactors: 0,
+        Taleo: 0,
+        GenericCareerPages: 0,
+        UnsupportedATS: 0
+    };
+
+    let jobsReadyForAutomation = 0;
+    let jobsWaitingForInput = 0;
+    let jobsRequiringUnsupportedAts = 0;
     let duplicatesCount = 0;
-    let directAppsCount = 0;
-    let externalAtsCount = 0;
-    let supportedAtsCount = 0;
-    let unsupportedAtsCount = 0;
-    let readyToApplyCount = 0;
 
     const readyJobs = [];
+    const diagnosticRows = [];
 
-    // Step 2: Relevance & Location Filtering & Deduplication
-    console.log("\n--- Step 2: Relevance, Location & ATS Inspection ---");
+    // Step 2: Relevance, Location & ATS Classification
     for (const job of discovered) {
         const titleLower = job.title.toLowerCase();
         const isRelevant = ["devops", "cloud", "platform", "infrastructure", "sre", "kubernetes", "aws"].some(k => titleLower.includes(k));
         
         if (!isRelevant) continue;
-        relevantCount++;
+        countRelevant++;
 
-        if (job.is_india_eligible === 0) {
-            locationRejectedCount++;
+        const locEval = checkLocationEligibility(job.location, job.title);
+
+        if (locEval.category === "WORLDWIDE_ELIGIBLE") {
+            countWorldwideEligible++;
+            countIndiaEligible++;
+        } else if (locEval.category === "INDIA_ELIGIBLE") {
+            countIndiaEligible++;
+        } else if (locEval.category === "APAC_ELIGIBLE") {
+            countApacEligible++;
+            countIndiaEligible++;
+        } else if (locEval.category === "LOCATION_RESTRICTED") {
+            countLocationRestricted++;
+            diagnosticRows.push({
+                jobId: job.job_id,
+                title: job.title.slice(0, 25),
+                company: job.company.slice(0, 18),
+                location: job.location,
+                locCategory: locEval.category,
+                ctaFound: "NO",
+                finalHostname: "weworkremotely.com",
+                atsClass: "Unknown",
+                isSupported: "NO",
+                reasonUnsupported: "LOCATION_RESTRICTED"
+            });
+            continue;
+        } else {
+            countLocationUnknown++;
+            diagnosticRows.push({
+                jobId: job.job_id,
+                title: job.title.slice(0, 25),
+                company: job.company.slice(0, 18),
+                location: job.location,
+                locCategory: "LOCATION_UNKNOWN",
+                ctaFound: "NO",
+                finalHostname: "weworkremotely.com",
+                atsClass: "Unknown",
+                isSupported: "NO",
+                reasonUnsupported: "LOCATION_ELIGIBILITY_UNRESOLVED"
+            });
             continue;
         }
-        indiaEligibleCount++;
 
         // Deduplicate against database
         const existing = await db.get(
@@ -83,23 +136,49 @@ async function runWwrRunner() {
         const finalUrl = job.final_application_url || job.url;
         const atsType = ExternalApplicationRouter.classifyATS(finalUrl);
 
-        console.log(`[JOB] "${job.title}" at "${job.company}" -> Location: ${job.location} | ATS: ${atsType} | Target URL: ${finalUrl}`);
+        let finalHostname = "weworkremotely.com";
+        try { finalHostname = new URL(finalUrl).hostname; } catch (e) {}
 
-        job.final_application_url = finalUrl;
-        job.ats = atsType;
-        job.is_supported_ats = (atsType === "Greenhouse" || atsType === "Lever" || atsType === "Workday" || atsType === "Ashby" || atsType === "SmartRecruiters" || atsType === "BambooHR" || atsType === "LINKEDIN_JOB") ? 1 : 0;
+        const ctaFound = !finalUrl.includes("weworkremotely.com") ? "YES" : "NO";
+        if (ctaFound === "YES") countResolved++; else countUnresolved++;
 
-        if (job.is_supported_ats === 1) {
-            supportedAtsCount++;
-            readyToApplyCount++;
+        let isSupported = "NO";
+        let reasonUnsupported = "UNSUPPORTED_ATS";
+
+        if (atsType === "Greenhouse") { atsCounts.Greenhouse++; isSupported = "YES"; }
+        else if (atsType === "Lever") { atsCounts.Lever++; isSupported = "YES"; }
+        else if (atsType === "Workday") { atsCounts.Workday++; isSupported = "YES"; }
+        else if (atsType === "Ashby") { atsCounts.Ashby++; isSupported = "YES"; }
+        else if (atsType === "SmartRecruiters") { atsCounts.SmartRecruiters++; isSupported = "YES"; }
+        else if (atsType === "BambooHR") { atsCounts.BambooHR++; isSupported = "YES"; }
+        else if (atsType.includes("Oracle")) { atsCounts.OracleHCM++; isSupported = "YES"; }
+        else if (atsType === "SuccessFactors") { atsCounts.SuccessFactors++; isSupported = "YES"; }
+        else if (atsType === "Taleo") { atsCounts.Taleo++; isSupported = "YES"; }
+        else if (atsType === "Generic Company Career Page") { atsCounts.GenericCareerPages++; isSupported = "NO"; reasonUnsupported = "GENERIC_CAREER_PAGE"; }
+        else { atsCounts.UnsupportedATS++; isSupported = "NO"; }
+
+        if (isSupported === "YES") {
+            jobsReadyForAutomation++;
             readyJobs.push(job);
+            reasonUnsupported = "NONE";
         } else {
-            unsupportedAtsCount++;
+            jobsRequiringUnsupportedAts++;
         }
 
-        externalAtsCount++;
+        diagnosticRows.push({
+            jobId: job.job_id,
+            title: job.title.slice(0, 25),
+            company: job.company.slice(0, 18),
+            location: job.location,
+            locCategory: locEval.category,
+            ctaFound,
+            finalHostname,
+            atsClass: atsType,
+            isSupported,
+            reasonUnsupported
+        });
 
-        // Insert / Update job record in database
+        // Insert or update record in database
         await db.run(`
             INSERT INTO jobs (job_id, portal, title, company, location, url, final_application_url, ats, status, is_remote)
             VALUES (?, 'weworkremotely', ?, ?, ?, ?, ?, ?, 'ELIGIBLE', 1)
@@ -107,25 +186,46 @@ async function runWwrRunner() {
         `, [job.job_id, job.title, job.company, job.location, job.url, finalUrl, atsType]).catch(() => {});
     }
 
-    // Output Metrics Report
-    console.log("\n==================================================");
-    console.log("WE WORK REMOTELY (WWR) DRY RUN METRICS REPORT");
+    // Output WWR Application Routing Validation Report
     console.log("==================================================");
-    console.log(`Jobs Discovered:            ${totalDiscovered}`);
-    console.log(`Relevant Jobs:              ${relevantCount}`);
-    console.log(`India Eligible:             ${indiaEligibleCount}`);
-    console.log(`Location Rejected:          ${locationRejectedCount}`);
-    console.log(`Duplicates Skipped:         ${duplicatesCount}`);
-    console.log(`Direct Applications:        ${directAppsCount}`);
-    console.log(`External ATS Jobs:          ${externalAtsCount}`);
-    console.log(`Supported ATS Jobs:         ${supportedAtsCount}`);
-    console.log(`Unsupported ATS Jobs:       ${unsupportedAtsCount}`);
-    console.log(`Jobs Ready to Apply:        ${readyToApplyCount}`);
+    console.log("WWR APPLICATION ROUTING VALIDATION");
+    console.log("==================================================");
+    console.log(`Jobs Discovered:                  ${countDiscovered}`);
+    console.log(`Relevant Jobs:                    ${countRelevant}`);
+    console.log(`India Eligible:                   ${countIndiaEligible}`);
+    console.log(`Worldwide Eligible:               ${countWorldwideEligible}`);
+    console.log(`APAC Eligible:                    ${countApacEligible}`);
+    console.log(`Location Restricted:              ${countLocationRestricted}`);
+    console.log(`Location Unknown:                 ${countLocationUnknown}`);
+    console.log(`Duplicates:                       ${duplicatesCount}`);
+    console.log(`--------------------------------------------------`);
+    console.log(`Apply CTA Detected:               ${countCtaDetected}`);
+    console.log(`External Destinations Resolved:   ${countResolved}`);
+    console.log(`External Destinations Unresolved: ${countUnresolved}`);
+    console.log(`--------------------------------------------------`);
+    console.log(`Greenhouse:                       ${atsCounts.Greenhouse}`);
+    console.log(`Lever:                            ${atsCounts.Lever}`);
+    console.log(`Workday:                          ${atsCounts.Workday}`);
+    console.log(`Ashby:                            ${atsCounts.Ashby}`);
+    console.log(`SmartRecruiters:                  ${atsCounts.SmartRecruiters}`);
+    console.log(`BambooHR:                         ${atsCounts.BambooHR}`);
+    console.log(`Oracle HCM:                       ${atsCounts.OracleHCM}`);
+    console.log(`SuccessFactors:                   ${atsCounts.SuccessFactors}`);
+    console.log(`Taleo:                            ${atsCounts.Taleo}`);
+    console.log(`Generic Career Pages:             ${atsCounts.GenericCareerPages}`);
+    console.log(`Unsupported ATS:                  ${atsCounts.UnsupportedATS}`);
+    console.log(`--------------------------------------------------`);
+    console.log(`Jobs Ready For Automation:        ${jobsReadyForAutomation}`);
+    console.log(`Jobs Waiting For Input:           ${jobsWaitingForInput}`);
+    console.log(`Jobs Requiring Unsupported ATS:   ${jobsRequiringUnsupportedAts}`);
     console.log("==================================================\n");
+
+    console.log("--- 24-Job Routing Diagnostic Table ---");
+    console.table(diagnosticRows);
 
     // Controlled Live Application Stage
     if (!DRY_RUN && ALLOW_LIVE_APPLICATIONS && SINGLE_JOB_ALLOWLIST) {
-        console.log(`--- Step 3: Controlled Live Application Attempt for Allowlisted Job ID "${SINGLE_JOB_ALLOWLIST}" ---`);
+        console.log(`\n--- Step 3: Controlled Live Application Attempt for Allowlisted Job ID "${SINGLE_JOB_ALLOWLIST}" ---`);
         const targetJob = readyJobs.find(j => j.job_id === SINGLE_JOB_ALLOWLIST || j.job_id.includes(SINGLE_JOB_ALLOWLIST));
         
         if (!targetJob) {
@@ -136,7 +236,7 @@ async function runWwrRunner() {
             console.log(`Live application result:`, result);
         }
     } else {
-        console.log("DRY_RUN=true: No live application submitted.");
+        console.log("\nDRY_RUN=true: Discovery Active / Application Automation Inactive. No live submission attempted.");
     }
 
     await browser.close();
