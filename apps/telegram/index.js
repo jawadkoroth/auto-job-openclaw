@@ -70,12 +70,24 @@ function markdownToHTML(text) {
         return `<code>${p1}</code>`;
     });
     
+    // Protect <code>...</code> and <pre>...</pre> content from italic _ text _ conversion
+    const codeBlocks = [];
+    escaped = escaped.replace(/<(code|pre)[\s\S]*?<\/\1>/gi, (match) => {
+        codeBlocks.push(match);
+        return `___CODE_BLOCK_${codeBlocks.length - 1}___`;
+    });
+
     // Bold: **text** or *text* -> <b>text</b>
     escaped = escaped.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
     escaped = escaped.replace(/\*([^*]+)\*/g, '<b>$1</b>');
     
     // Italic: _text_ -> <i>text</i>
     escaped = escaped.replace(/_([^_]+)_/g, '<i>$1</i>');
+
+    // Restore protected code blocks
+    escaped = escaped.replace(/___CODE_BLOCK_(\d+)___/g, (match, index) => {
+        return codeBlocks[parseInt(index, 10)];
+    });
     
     return escaped;
 }
