@@ -275,7 +275,7 @@ module.exports = async function apply(plugin, page, job) {
         }
     } else {
         logger.warn(`No standard apply buttons found for job_id: ${job.job_id}. Skipping.`);
-        job.statusReason = "external";
+        job.statusReason = "APPLY_BUTTON_NOT_FOUND";
         return false;
     }
 };

@@ -41,7 +41,7 @@ module.exports = {
 
     ai: {
         openRouterKey: process.env.OPENROUTER_API_KEY || "",
-        model: "google/gemini-2.5-flash" // Recommended fast default model
+        model: process.env.OPENROUTER_MODEL || "google/gemini-2.5-flash" // Recommended fast default model
     },
 
     search: {

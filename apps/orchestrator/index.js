@@ -342,24 +342,84 @@ telegramService.startPolling(async (message) => {
         return;
     }
 
-    await telegramService.sendMessage(`🤖 *OpenClaw AI* is parsing: "${text}"...`);
-    
+    // Intent Router: Classify intent before deciding to create tasks vs conversation
+    let classification = { intent: "CONVERSATION" };
     try {
-        const parsed = await aiService.parseCommand(text);
-        
-        await telegramService.sendMessage(
-            `🎯 *Parsed Command*:\n` +
-            `• *Portal*: \`${parsed.plugin}\`\n` +
-            `• *Action*: \`${parsed.action}\`\n` +
-            `• *Params*: \`${JSON.stringify(parsed.args)}\`\n\n` +
-            `Registering task in SQLite queue...`
-        );
+        classification = await aiService.classifyIntent(text);
+    } catch (classErr) {
+        logger.scheduler.warn(`Intent classification error: ${classErr.message}. Falling back to CONVERSATION.`);
+    }
 
-        const taskId = await taskQueue.push(parsed.plugin, parsed.action, parsed.args);
-        await telegramService.sendMessage(`✅ *Task Queued* (Task ID: \`${taskId.substring(0, 8)}\`). Processing starting shortly.`);
+    const intent = classification.intent;
+
+    if (intent === "AMBIGUOUS") {
+        await telegramService.sendMessage(
+            `❓ *Ambiguous Command*: "${telegramService.escapeHTML(text)}"\n\n` +
+            `Please specify the action or role you want to target.\n` +
+            `• Example: _"Apply for DevOps jobs on Hirist"_\n` +
+            `• Example: _"Search Cloud Engineer jobs"`
+        );
+        return;
+    }
+
+    if (intent === "STATUS_QUERY") {
+        await db.init();
+        const hiristAppliedToday = (await db.get(
+            "SELECT COUNT(*) as count FROM jobs WHERE portal = 'hirist' AND (applied = 1 OR status = 'APPLIED') AND date(timestamp) = date('now')"
+        )).count;
+
+        const totalAppliedToday = (await db.get(
+            "SELECT COUNT(*) as count FROM jobs WHERE (applied = 1 OR status = 'APPLIED') AND date(timestamp) = date('now')"
+        )).count;
+
+        const totalWaiting = (await db.get(
+            "SELECT COUNT(*) as count FROM jobs WHERE status = 'WAITING_FOR_INPUT'"
+        )).count;
+
+        await telegramService.sendMessage(
+            `📊 *Application Status Summary*\n\n` +
+            `• *Hirist Applications Today*: ${hiristAppliedToday}\n` +
+            `• *Total Applications Today*: ${totalAppliedToday}\n` +
+            `• *Jobs Waiting for Input*: ${totalWaiting}\n\n` +
+            `System scheduler is active.`
+        );
+        return;
+    }
+
+    if (intent === "AUTOMATION") {
+        try {
+            const parsed = await aiService.parseCommand(text);
+            if (!parsed || !parsed.plugin || !parsed.action) {
+                await telegramService.sendMessage(
+                    `⚠️ Could not parse explicit automation command from "${telegramService.escapeHTML(text)}". No task was created.`
+                );
+                return;
+            }
+
+            await telegramService.sendMessage(
+                `🎯 *Parsed Command*:\n` +
+                `• *Portal*: \`${parsed.plugin}\`\n` +
+                `• *Action*: \`${parsed.action}\`\n` +
+                `• *Params*: \`${JSON.stringify(parsed.args)}\`\n\n` +
+                `Registering task in SQLite queue...`
+            );
+
+            const taskId = await taskQueue.push(parsed.plugin, parsed.action, parsed.args);
+            await telegramService.sendMessage(`✅ *Task Queued* (Task ID: \`${taskId.substring(0, 8)}\`). Processing starting shortly.`);
+        } catch (err) {
+            logger.scheduler.error(`Command parsing failed: ${err.message}`);
+            await telegramService.sendMessage(`❌ *Error*: Automation command parsing failed: \`${err.message}\`. No task created.`);
+        }
+        return;
+    }
+
+    // Default: CONVERSATION -> OpenRouter AI
+    try {
+        const aiResponse = await aiService.generateText(text);
+        await telegramService.sendMessage(aiResponse);
     } catch (err) {
-        logger.scheduler.error(`Command parsing failed: ${err.message}`);
-        await telegramService.sendMessage(`❌ *Error*: Parsing failed: \`${err.message}\``);
+        logger.scheduler.error(`OpenRouter AI chat failed: ${err.message}`);
+        await telegramService.sendMessage(`⚠️ OpenRouter AI response error: \`${telegramService.escapeHTML(err.message)}\`. No task created.`);
     }
 });
 
