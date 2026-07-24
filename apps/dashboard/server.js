@@ -504,6 +504,25 @@ const server = http.createServer(async (req, res) => {
             });
         }
 
+        // --- 12. Normalized Conversations & Intelligence Endpoints ---
+        if (pathname === "/api/conversations" && method === "GET") {
+            const conversations = await db.all("SELECT * FROM conversations ORDER BY id DESC").catch(() => []);
+            return sendJson(res, 200, { success: true, conversations });
+        }
+
+        if (pathname === "/api/employer-knowledge" && method === "GET") {
+            const employerKnowledgeService = require("../../packages/knowledge/EmployerKnowledgeService");
+            const intelligence = await employerKnowledgeService.getAllEmployerKnowledge();
+            return sendJson(res, 200, { success: true, employerKnowledge: intelligence });
+        }
+
+        if (pathname === "/api/interviews" && method === "GET") {
+            const interviews = await db.all(
+                "SELECT * FROM conversations WHERE interview_requested = 1 OR coding_test_requested = 1 ORDER BY id DESC"
+            ).catch(() => []);
+            return sendJson(res, 200, { success: true, interviews });
+        }
+
         // --- Serve Static Dashboard Files ---
         if (pathname === "/" || pathname === "/index.html") {
             return serveStatic(res, path.join(__dirname, "public", "index.html"), "text/html");

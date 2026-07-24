@@ -104,6 +104,9 @@
         <h1>⚡ OpenClaw Candidate Knowledge Base</h1>
         <nav>
             <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
+            <button class="tab-btn" onclick="switchTab('conversations-tab')">Conversations</button>
+            <button class="tab-btn" onclick="switchTab('employer-intel-tab')">Employer Knowledge</button>
+            <button class="tab-btn" onclick="switchTab('interviews-tab')">Interviews</button>
             <button class="tab-btn" onclick="switchTab('profile')">Profile</button>
             <button class="tab-btn" onclick="switchTab('answers')">Answer Bank</button>
             <button class="tab-btn" onclick="switchTab('pending')">Pending Qs</button>
@@ -155,6 +158,67 @@
                     <tbody>
                         <tr><td colspan="4" style="text-align: center; color: var(--muted);">Loading...</td></tr>
                     </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 1B. CONVERSATIONS TAB -->
+        <div id="conversations-tab" class="tab-content">
+            <div class="card">
+                <h2>Active Conversations & Message Lifecycle</h2>
+                <table id="table-conversations">
+                    <thead>
+                        <tr>
+                            <th>Conversation ID</th>
+                            <th>Portal</th>
+                            <th>Company</th>
+                            <th>Recruiter</th>
+                            <th>Status</th>
+                            <th>Last Message</th>
+                            <th>Last Checked</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 1C. EMPLOYER KNOWLEDGE TAB -->
+        <div id="employer-intel-tab" class="tab-content">
+            <div class="card">
+                <h2>Employer & Recruiter Intelligence Bank</h2>
+                <table id="table-employer-intel">
+                    <thead>
+                        <tr>
+                            <th>Company Name</th>
+                            <th>Portal</th>
+                            <th>Recruiter</th>
+                            <th>Notice Question Format</th>
+                            <th>Salary Question Format</th>
+                            <th>Coding Test Provider</th>
+                            <th>Last Updated</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 1D. INTERVIEWS TAB -->
+        <div id="interviews-tab" class="tab-content">
+            <div class="card">
+                <h2>Interview Invitations & Assessment Requests</h2>
+                <table id="table-interviews">
+                    <thead>
+                        <tr>
+                            <th>Company</th>
+                            <th>Portal</th>
+                            <th>Type</th>
+                            <th>Latest Message</th>
+                            <th>Last Updated</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
                 </table>
             </div>
         </div>
@@ -427,6 +491,9 @@
             document.getElementById(tabId).classList.add('active');
 
             if (tabId === 'overview') loadOverview();
+            if (tabId === 'conversations-tab') loadConversations();
+            if (tabId === 'employer-intel-tab') loadEmployerKnowledge();
+            if (tabId === 'interviews-tab') loadInterviews();
             if (tabId === 'profile') loadProfile();
             if (tabId === 'answers') loadAnswers();
             if (tabId === 'pending') loadPending();
@@ -435,6 +502,58 @@
             if (tabId === 'applications') loadApplications();
             if (tabId === 'portals') loadPortalsMatrix();
             if (tabId === 'explorer') loadDataExplorer();
+        }
+
+        async function loadConversations() {
+            const data = await apiGet('/api/conversations');
+            const tbody = document.querySelector('#table-conversations tbody');
+            if (data.success && data.conversations) {
+                tbody.innerHTML = data.conversations.map(c => `
+                    <tr>
+                        <td><code>${c.conversation_id}</code></td>
+                        <td>${c.portal}</td>
+                        <td><strong>${c.company || 'Employer'}</strong></td>
+                        <td>${c.recruiter_name || 'N/A'}</td>
+                        <td><span class="badge ${c.conversation_status ? c.conversation_status.toLowerCase() : 'default'}">${c.conversation_status || 'CREATED'}</span></td>
+                        <td>${c.last_message ? String(c.last_message).slice(0, 60) + '...' : 'N/A'}</td>
+                        <td>${c.last_checked_at ? new Date(c.last_checked_at).toLocaleString() : 'Never'}</td>
+                    </tr>
+                `).join('');
+            }
+        }
+
+        async function loadEmployerKnowledge() {
+            const data = await apiGet('/api/employer-knowledge');
+            const tbody = document.querySelector('#table-employer-intel tbody');
+            if (data.success && data.employerKnowledge) {
+                tbody.innerHTML = data.employerKnowledge.map(k => `
+                    <tr>
+                        <td><strong>${k.company_name}</strong></td>
+                        <td>${k.portal}</td>
+                        <td>${k.recruiter_name || 'N/A'}</td>
+                        <td>${k.expected_notice_question || 'Default Standard'}</td>
+                        <td>${k.expected_salary_question || 'Default Standard'}</td>
+                        <td>${k.coding_test_provider || 'N/A'}</td>
+                        <td>${new Date(k.updated_at).toLocaleDateString()}</td>
+                    </tr>
+                `).join('');
+            }
+        }
+
+        async function loadInterviews() {
+            const data = await apiGet('/api/interviews');
+            const tbody = document.querySelector('#table-interviews tbody');
+            if (data.success && data.interviews) {
+                tbody.innerHTML = data.interviews.map(i => `
+                    <tr>
+                        <td><strong>${i.company || 'Employer'}</strong></td>
+                        <td>${i.portal}</td>
+                        <td><span class="badge ${i.interview_requested ? 'applied' : 'pending'}">${i.interview_requested ? 'INTERVIEW' : 'CODING TEST'}</span></td>
+                        <td>${i.last_message ? String(i.last_message).slice(0, 100) : 'Invitation received'}</td>
+                        <td>${new Date(i.updated_at).toLocaleString()}</td>
+                    </tr>
+                `).join('');
+            }
         }
 
         function openModal(title, contentHtml) {

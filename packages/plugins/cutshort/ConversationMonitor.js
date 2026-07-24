@@ -1,3 +1,4 @@
+const conversationEngine = require("../../automation/ConversationEngine");
 const questionnaireEngine = require("./QuestionnaireEngine");
 const telegramService = require("../../../apps/telegram");
 const db = require("../../database");
@@ -5,11 +6,15 @@ const logger = require("../../logger").automation;
 
 class ConversationMonitor {
     /**
-     * Check existing conversations on Cutshort
+     * Check active conversations on Cutshort (Phase 3 Optimization)
      * @param {import("playwright").Page} page 
      * @returns {Promise<{ scanned: number, updated: number, pendingInput: number }>}
      */
     async scanConversations(page) {
+        // Fetch active conversations only from normalized table (Phase 3)
+        const activeConversations = await conversationEngine.getActiveConversations("cutshort");
+        logger.info(`[ConversationMonitor] Active conversations pending scan: ${activeConversations.length}`);
+
         logger.info("[ConversationMonitor] Navigating to Cutshort Messages (https://cutshort.io/messages)...");
         await page.goto("https://cutshort.io/messages", { waitUntil: "domcontentloaded", timeout: 35000 }).catch(() => {});
         await page.waitForTimeout(3000);
@@ -44,7 +49,7 @@ class ConversationMonitor {
             }
         }
 
-        logger.info(`[ConversationMonitor] Found ${threads.length} conversation threads.`);
+        logger.info(`[ConversationMonitor] Found ${threads.length} total conversation threads on page.`);
         results.scanned = threads.length;
 
         for (let idx = 0; idx < Math.min(threads.length, 10); idx++) {
@@ -56,6 +61,10 @@ class ConversationMonitor {
                 // Extract conversation company / title
                 const headerText = await page.locator("header, [class*='header' i], [class*='chat-title' i]").first().innerText().catch(() => "");
                 const lastMsgText = await page.locator("[class*='message' i], [class*='chat-bubble' i]").last().innerText().catch(() => "");
+                const convId = `cutshort_thread_${idx + 1}`;
+
+                // Touch last_checked_at timestamp (Phase 3)
+                await conversationEngine.touchLastChecked(convId);
 
                 logger.info(`[ConversationMonitor] Thread #${idx + 1} Last Message: "${lastMsgText.slice(0, 80)}..."`);
 
@@ -63,7 +72,17 @@ class ConversationMonitor {
                 const isClosed = await page.locator("text=/closed/i, text=/rejected/i, text=/position filled/i").count().catch(() => 0);
                 if (isClosed > 0) {
                     logger.info(`[ConversationMonitor] Conversation #${idx + 1} marked CLOSED/REJECTED.`);
-                    await db.run("UPDATE jobs SET status = 'CLOSED', updated_at = CURRENT_TIMESTAMP WHERE portal = 'cutshort' AND (company LIKE ? OR title LIKE ?)", [`%${headerText.slice(0, 15)}%`, `%${headerText.slice(0, 15)}%`]).catch(() => {});
+                    await conversationEngine.getOrCreateConversation({
+                        conversationId: convId,
+                        portal: "cutshort",
+                        jobId: `job_${idx + 1}`,
+                        company: headerText
+                    });
+                    await conversationEngine.updateConversation(convId, {
+                        conversation_status: "CLOSED",
+                        closed: 1,
+                        last_message: lastMsgText
+                    });
                     results.updated++;
                     continue;
                 }
@@ -76,15 +95,24 @@ class ConversationMonitor {
                     const eventType = isInterview ? "INTERVIEW_REQUESTED" : "CODING_TEST_RECEIVED";
                     logger.info(`[ConversationMonitor] Detected event: ${eventType}`);
 
+                    await conversationEngine.getOrCreateConversation({
+                        conversationId: convId,
+                        portal: "cutshort",
+                        jobId: `job_${idx + 1}`,
+                        company: headerText
+                    });
+
+                    await conversationEngine.updateConversation(convId, {
+                        conversation_status: eventType,
+                        last_message: lastMsgText,
+                        interview_requested: isInterview ? 1 : 0,
+                        coding_test_requested: isCodingTest ? 1 : 0
+                    });
+
                     await telegramService.sendNotification({
-                        title: `Cutshort Update: ${eventType}`,
+                        title: `Cutshort Event: ${eventType}`,
                         message: `Employer Message from ${headerText}:\n"${lastMsgText.slice(0, 300)}"`
                     }).catch(() => {});
-
-                    await db.run(
-                        "UPDATE jobs SET status = ?, last_employer_message = ?, updated_at = CURRENT_TIMESTAMP WHERE portal = 'cutshort' AND (company LIKE ? OR title LIKE ?)",
-                        [eventType, lastMsgText, `%${headerText.slice(0, 15)}%`, `%${headerText.slice(0, 15)}%`]
-                    ).catch(() => {});
 
                     results.updated++;
                     continue;
@@ -94,7 +122,7 @@ class ConversationMonitor {
                 const hasQuestionnaire = await page.locator("form, [class*='question' i], [class*='FormGroup' i]").count().catch(() => 0);
                 if (hasQuestionnaire > 0) {
                     logger.info(`[ConversationMonitor] Detected questionnaire in conversation thread #${idx + 1}`);
-                    const mockJob = { job_id: `conv_${idx}`, company: headerText || "Cutshort Employer", title: "Cutshort Application" };
+                    const mockJob = { portal: "cutshort", job_id: `conv_${idx}`, company: headerText || "Cutshort Employer", title: "Cutshort Application" };
                     const qRes = await questionnaireEngine.processQuestionnaire(page, mockJob);
                     if (!qRes.success && qRes.status === "WAITING_FOR_INPUT") {
                         results.pendingInput++;

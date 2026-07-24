@@ -1,4 +1,6 @@
+const conversationEngine = require("../../automation/ConversationEngine");
 const candidateKnowledgeService = require("../../knowledge/CandidateKnowledgeService");
+const employerKnowledgeService = require("../../knowledge/EmployerKnowledgeService");
 const telegramService = require("../../../apps/telegram");
 const db = require("../../database");
 const logger = require("../../logger").automation;
@@ -101,57 +103,36 @@ class QuestionnaireEngine {
             if (!qText || qText.length < 3) continue;
 
             const answerType = await this.detectAnswerType(qEl);
-            const normQ = candidateKnowledgeService.mapQuestionToProfileKey(qText) || qText;
 
             logger.info(`[QuestionnaireEngine] Question ${idx + 1}/${questions.length}: "${qText}" (Type: ${answerType})`);
 
-            // Check if job was previously paused on this question and has pending answer
-            const existingUnresolved = await db.getUnresolvedPendingQuestion("cutshort", job.job_id, qText).catch(() => null);
-            
-            // Resolve question via Candidate Knowledge Pipeline
-            const resolved = await candidateKnowledgeService.resolveQuestion({
-                question: qText,
+            // Resolve via Conversation Engine pipeline
+            const resolved = await conversationEngine.resolveQuestion({
+                questionText: qText,
+                portal: job.portal || "cutshort",
                 jobId: job.job_id,
-                aiContentProhibited: Boolean(job.ai_content_prohibited)
+                company: job.company
             });
 
             if (resolved.status === "ANSWERED" && resolved.answer) {
                 logger.info(`[QuestionnaireEngine] Resolved question: "${qText}" -> "${resolved.answer}" (${resolved.type})`);
                 await this.fillAnswer(qEl, answerType, resolved.answer);
                 await page.waitForTimeout(500);
+
+                // Update Employer Knowledge for future applications
+                await employerKnowledgeService.updateEmployerKnowledge({
+                    portal: job.portal || "cutshort",
+                    companyName: job.company,
+                    questionnaireItem: { question: qText, answer: resolved.answer }
+                }).catch(() => {});
             } else {
                 // UNRESOLVED -> Route to WAITING_FOR_INPUT
-                logger.warn(`[QuestionnaireEngine] Unresolved question: "${qText}". Transitioning job ${job.job_id} -> WAITING_FOR_INPUT`);
-                
-                const pendingQuestionId = db.generatePendingQuestionId(job.job_id, qText);
-                const approvalId = db.generateApprovalId("cutshort", job.job_id, qText);
-
-                await db.run(
-                    `UPDATE jobs SET 
-                        status = 'WAITING_FOR_INPUT', 
-                        pending_question = ?, 
-                        pending_question_id = ?, 
-                        approval_id = ?,
-                        updated_at = CURRENT_TIMESTAMP
-                     WHERE portal = 'cutshort' AND (job_id = ? OR id = ?)`,
-                    [qText, pendingQuestionId, approvalId, job.job_id, job.job_id]
-                );
-
-                // Dispatch ONE Telegram Notification
-                await telegramService.sendQuestionPrompt({
-                    jobId: job.job_id,
-                    company: job.company,
-                    title: job.title,
-                    question: qText,
-                    portal: "cutshort",
-                    approvalId: approvalId
-                }).catch(e => logger.error(`[QuestionnaireEngine] Telegram notification failed: ${e.message}`));
-
+                logger.warn(`[QuestionnaireEngine] Unresolved question: "${qText}". Application ${job.job_id} paused -> WAITING_FOR_INPUT`);
                 return {
                     success: false,
                     status: "WAITING_FOR_INPUT",
                     pendingQuestion: qText,
-                    approvalId
+                    approvalId: resolved.approvalId
                 };
             }
         }

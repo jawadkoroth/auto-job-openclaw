@@ -205,6 +205,51 @@ class Database {
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             `);
+
+            // Normalized Conversations Table
+            await rawRun(`
+                CREATE TABLE IF NOT EXISTS conversations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT UNIQUE NOT NULL,
+                    portal TEXT NOT NULL,
+                    job_id TEXT NOT NULL,
+                    company TEXT,
+                    recruiter_name TEXT,
+                    conversation_status TEXT DEFAULT 'CONVERSATION_CREATED',
+                    last_message TEXT,
+                    last_message_at DATETIME,
+                    last_checked_at DATETIME,
+                    questionnaire_status TEXT,
+                    needs_attention INTEGER DEFAULT 0,
+                    waiting_for_input INTEGER DEFAULT 0,
+                    interview_requested INTEGER DEFAULT 0,
+                    coding_test_requested INTEGER DEFAULT 0,
+                    offer_received INTEGER DEFAULT 0,
+                    closed INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
+
+            // Employer Knowledge Intelligence Store
+            await rawRun(`
+                CREATE TABLE IF NOT EXISTS employer_knowledge (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    company_name TEXT NOT NULL,
+                    portal TEXT NOT NULL,
+                    recruiter_name TEXT,
+                    question_patterns TEXT,
+                    common_questionnaire TEXT,
+                    expected_notice_question TEXT,
+                    expected_salary_question TEXT,
+                    coding_test_provider TEXT,
+                    interview_process TEXT,
+                    average_response_days INTEGER,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(portal, company_name)
+                )
+            `);
         })();
 
         return this.initPromise;
