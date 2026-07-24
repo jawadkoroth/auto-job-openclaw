@@ -93,6 +93,10 @@ class Database {
             await rawRun("ALTER TABLE jobs ADD COLUMN final_application_url TEXT").catch(() => {});
             await rawRun("ALTER TABLE jobs ADD COLUMN routing_status TEXT").catch(() => {});
             await rawRun("ALTER TABLE jobs ADD COLUMN application_method TEXT").catch(() => {});
+            await rawRun("ALTER TABLE jobs ADD COLUMN conversation_id TEXT").catch(() => {});
+            await rawRun("ALTER TABLE jobs ADD COLUMN last_employer_message TEXT").catch(() => {});
+            await rawRun("ALTER TABLE jobs ADD COLUMN last_questionnaire_at DATETIME").catch(() => {});
+            await rawRun("ALTER TABLE jobs ADD COLUMN questionnaire_status TEXT").catch(() => {});
 
             // Create Q&A memory table
             await rawRun(`
@@ -291,6 +295,9 @@ class Database {
     async isDuplicateJob(portal, jobId) {
         await this.init().catch(() => {});
         const activeStatuses = [
+            "DISCOVERED", "APPLY_STARTED", "CONVERSATION_CREATED", 
+            "QUESTIONNAIRE_PENDING", "QUESTIONNAIRE_IN_PROGRESS", "QUESTIONNAIRE_SUBMITTED", 
+            "APPLICATION_SUBMITTED", "EMPLOYER_PENDING", "SHORTLISTED",
             "EXTERNAL_PENDING", "EXTERNAL_IN_PROGRESS", "WAITING_FOR_INPUT", 
             "READY_TO_RESUME", "CLICKED_UNVERIFIED", "APPLIED", "ALREADY_APPLIED"
         ];

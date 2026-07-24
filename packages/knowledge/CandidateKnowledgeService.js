@@ -108,13 +108,18 @@ class CandidateKnowledgeService {
         if (q.includes("linkedin")) return "linkedinUrl";
         if (q.includes("github")) return "githubUrl";
         if (q.includes("website") || q.includes("portfolio")) return "portfolioUrl";
-        if (q.includes("location") || q.includes("city")) return "currentLocation";
+        if (q.includes("noticeperiod") || q.includes("notice") || q.includes("howsooncanstart") || q.includes("servingnotice")) return "noticePeriod";
+        if (q.includes("remotework") || q.includes("remotepreference") || q.includes("open2remote") || q.includes("workfromhome") || q.includes("wfh") || q.includes("remote")) return "remotePreference";
+        if (q.includes("relocat") || q.includes("relocating") || q.includes("open2relocate")) return "relocation";
+        if (q.includes("currentctc") || q.includes("currentsalary") || q.includes("presentctc") || q.includes("currentfixed")) return "currentCTC";
+        if (q.includes("expectedctc") || q.includes("expectedsalary") || q.includes("salaryexpectation") || q.includes("ctcexpectation") || q.includes("desiredsalary") || q.includes("salaryexpectations")) return "expectedCTC";
+        if (q.includes("totalexperience") || q.includes("overallexperience") || q.includes("yearsofexperience") || q.includes("experience")) return "totalExperience";
+        if (q.includes("joiningdate") || q.includes("availability") || q.includes("whencanstart") || q.includes("earlieststart")) return "availability";
+        if (q.includes("location") || q.includes("city") || q.includes("located")) return "location";
         if (q.includes("country")) return "country";
         if (q.includes("state")) return "state";
         if (q.includes("currentcompany") || q.includes("currentemployer")) return "currentCompany";
         if (q.includes("currenttitle") || q.includes("currentjobtitle") || q.includes("currentrole")) return "currentJobTitle";
-        if (q.includes("totalexperience") || q.includes("totalyearsofexperience")) return "totalExperience";
-        if (q.includes("noticeperiod") || q.includes("howsooncanstart")) return "noticePeriod";
         if (q.includes("school") || q.includes("university") || q.includes("college") || q.includes("institution")) return "educationSchool";
         if (q.includes("degree")) return "educationDegree";
         if (q.includes("discipline") || q.includes("fieldofstudy") || q.includes("major")) return "educationDiscipline";
@@ -128,7 +133,7 @@ class CandidateKnowledgeService {
         const keywords = [
             "disability", "disabled", "gender", "sex", "race", "ethnicity", "hispanic", "latino",
             "veteran", "military", "sexual orientation", "criminal", "background check",
-            "salary expectation", "expected salary", "current salary", "visa sponsorship", "work authorization"
+            "visa sponsorship", "work authorization"
         ];
         return keywords.some(kw => q.includes(kw));
     }

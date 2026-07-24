@@ -10,13 +10,21 @@ class CandidateProfile {
             email: "", // MUST come from real production data
             phone: "", // MUST come from real production data
             currentLocation: "Bangalore",
+            location: "Bangalore",
             city: "Bangalore",
             state: "Karnataka",
             country: "India",
             currentCompany: "",
             currentJobTitle: "DevOps & Cloud Engineer",
             totalExperience: "5",
+            experience: "5",
             noticePeriod: "1 Month",
+            remotePreference: "Open to Remote, Hybrid, and On-site",
+            relocation: "Yes",
+            currentCTC: "18 LPA",
+            expectedCTC: "24 LPA",
+            expectedSalary: "24 LPA",
+            availability: "Immediate / 30 Days",
             linkedinUrl: "https://linkedin.com/in/jawadkoroth",
             githubUrl: "https://github.com/jawadkoroth",
             portfolioUrl: "https://jawadkoroth.dev",
@@ -45,7 +53,14 @@ class CandidateProfile {
         const clean = String(rawKey).trim().toLowerCase().replace(/[^a-z0-9]/g, "");
         if (clean === "email" || clean === "emailaddress" || clean === "realemailaddress") return "email";
         if (clean === "phone" || clean === "phonenumber" || clean === "mobile" || clean === "mobilenumber" || clean === "realphonenumber") return "phone";
-        if (clean === "location" || clean === "city" || clean === "currentlocation") return "currentLocation";
+        if (clean === "location" || clean === "city" || clean === "currentlocation") return "location";
+        if (clean === "noticeperiod" || clean === "notice") return "noticePeriod";
+        if (clean === "remotework" || clean === "remotepreference" || clean === "remote") return "remotePreference";
+        if (clean === "relocation" || clean === "relocate") return "relocation";
+        if (clean === "currentctc" || clean === "currentsalary") return "currentCTC";
+        if (clean === "expectedctc" || clean === "expectedsalary" || clean === "salaryexpectations") return "expectedCTC";
+        if (clean === "experience" || clean === "totalexperience") return "totalExperience";
+        if (clean === "joiningdate" || clean === "availability" || clean === "earlieststartdate") return "availability";
         if (clean === "school" || clean === "university" || clean === "educationschool") return "educationSchool";
         if (clean === "degree" || clean === "educationdegree") return "educationDegree";
         if (clean === "discipline" || clean === "fieldofstudy" || clean === "educationdiscipline") return "educationDiscipline";

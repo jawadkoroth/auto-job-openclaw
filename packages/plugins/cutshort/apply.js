@@ -2,6 +2,7 @@ const candidateKnowledgeService = require("../../knowledge/CandidateKnowledgeSer
 const externalApplicationRouter = require("../../router/ExternalApplicationRouter");
 const externalAtsAutomation = require("../../automation/ExternalAtsAutomation");
 const telegramService = require("../../../apps/telegram");
+const questionnaireEngine = require("./QuestionnaireEngine");
 const db = require("../../database");
 
 module.exports = async function apply(plugin, page, job) {
@@ -11,6 +12,9 @@ module.exports = async function apply(plugin, page, job) {
 
     logger.info(`Processing Cutshort application for Job ID: ${job.job_id} ("${job.title}" at "${job.company}")`);
     logger.info(`Mode: DRY_RUN=${isDryRun}, ALLOW_LIVE_APPLICATIONS=${allowLive}`);
+
+    // Update state machine: APPLY_STARTED
+    await db.run("UPDATE jobs SET status = 'APPLY_STARTED', updated_at = CURRENT_TIMESTAMP WHERE portal = 'cutshort' AND job_id = ?", [job.job_id]);
 
     try {
         // Step 1: Navigate to Job Details page
@@ -52,7 +56,7 @@ module.exports = async function apply(plugin, page, job) {
             const appliedIndicator = await page.locator("text=/applied/i, text=/already applied/i, button:disabled:has-text('Applied')").count().catch(() => 0);
             if (appliedIndicator > 0) {
                 logger.info(`Job ${job.job_id} is already applied on Cutshort.`);
-                await db.run("UPDATE jobs SET applied = 1, status = 'APPLIED', reason = 'ALREADY_APPLIED_ON_PORTAL' WHERE portal = 'cutshort' AND job_id = ?", [job.job_id]);
+                await db.run("UPDATE jobs SET applied = 1, status = 'APPLICATION_SUBMITTED', reason = 'ALREADY_APPLIED_ON_PORTAL' WHERE portal = 'cutshort' AND job_id = ?", [job.job_id]);
                 return true;
             }
 
@@ -70,8 +74,8 @@ module.exports = async function apply(plugin, page, job) {
             return await externalAtsAutomation.processExternalJob(page, { ...job, external_url: btnHref, ats: atsName });
         }
 
-        // Click Apply Button
-        logger.info("Clicking Cutshort Apply button...");
+        // Click Apply Button -> Initiates Conversation
+        logger.info("Clicking Cutshort Apply button to initiate conversation...");
         await applyBtn.click().catch(() => {});
         await page.waitForTimeout(3000);
 
@@ -85,7 +89,6 @@ module.exports = async function apply(plugin, page, job) {
                 await db.run("UPDATE jobs SET status = 'FAILED', reason = 'AUTH_REQUIRED' WHERE portal = 'cutshort' AND job_id = ?", [job.job_id]);
                 return false;
             }
-            // Retry navigation and click apply after login
             await page.goto(job.url, { waitUntil: "domcontentloaded", timeout: 30000 });
             await page.waitForTimeout(2000);
             const retryBtn = page.locator("button:has-text('Apply')").first();
@@ -95,10 +98,11 @@ module.exports = async function apply(plugin, page, job) {
             }
         }
 
-        // Step 5: Check Application Drawer / Modal Form / Questions
-        logger.info("Inspecting Cutshort application form / questions...");
-        
-        // Handle Cover Letter / Note to recruiter if present
+        // State Machine: CONVERSATION_CREATED
+        await db.run("UPDATE jobs SET status = 'CONVERSATION_CREATED', updated_at = CURRENT_TIMESTAMP WHERE portal = 'cutshort' AND job_id = ?", [job.job_id]);
+        logger.info(`Conversation created on Cutshort for job ${job.job_id}`);
+
+        // Step 5: Handle Cover Letter / Note to recruiter if present
         const noteTextarea = page.locator("textarea[placeholder*='note' i], textarea[placeholder*='cover' i], textarea[placeholder*='why' i], textarea").first();
         if (await noteTextarea.isVisible().catch(() => false)) {
             const coverLetter = await candidateKnowledgeService.getCoverLetter({ company: job.company, role: job.title });
@@ -118,33 +122,17 @@ module.exports = async function apply(plugin, page, job) {
             }
         }
 
-        // Handle Application Questions
-        const questionInputs = page.locator("label, div[class*='question'], [class*='FormGroup']");
-        const qCount = await questionInputs.count().catch(() => 0);
+        // Step 6: Process Questionnaire via QuestionnaireEngine
+        logger.info("Executing QuestionnaireEngine on Cutshort application drawer/conversation...");
+        await db.run("UPDATE jobs SET status = 'QUESTIONNAIRE_IN_PROGRESS', updated_at = CURRENT_TIMESTAMP WHERE portal = 'cutshort' AND job_id = ?", [job.job_id]);
 
-        for (let i = 0; i < qCount; i++) {
-            const qEl = questionInputs.nth(i);
-            const qText = await qEl.innerText().catch(() => "");
-            if (!qText || qText.length < 5) continue;
-
-            const res = await candidateKnowledgeService.resolveQuestion({ question: qText, jobId: job.job_id });
-            if (res.status === "WAITING_FOR_INPUT") {
-                logger.warn(`Unresolved question encountered on Cutshort: "${qText}". Status -> WAITING_FOR_INPUT`);
-                await db.run("UPDATE jobs SET status = 'WAITING_FOR_INPUT', pending_question = ? WHERE portal = 'cutshort' AND job_id = ?", [qText, job.job_id]);
-
-                await telegramService.sendQuestionPrompt({
-                    jobId: job.job_id,
-                    company: job.company,
-                    title: job.title,
-                    question: qText,
-                    portal: "cutshort"
-                }).catch(e => logger.error(`Telegram prompt failed: ${e.message}`));
-
-                return false;
-            }
+        const qResult = await questionnaireEngine.processQuestionnaire(page, job);
+        if (!qResult.success) {
+            logger.warn(`Questionnaire execution paused for job ${job.job_id}. Reason/Status: ${qResult.status}`);
+            return false;
         }
 
-        // Step 6: Final Submission vs DRY RUN
+        // Step 7: Final Submission vs DRY RUN
         const submitBtnSelectors = [
             "button:has-text('Submit')",
             "button:has-text('Send')",
@@ -163,30 +151,31 @@ module.exports = async function apply(plugin, page, job) {
         }
 
         if (isDryRun || !allowLive) {
-            logger.info(`DRY_RUN active. All fields & CV processed for Cutshort job ${job.job_id}. NOT clicking submit.`);
-            await db.run("UPDATE jobs SET status = 'DRY_RUN_PASSED', application_method = 'NATIVE' WHERE portal = 'cutshort' AND job_id = ?", [job.job_id]);
+            logger.info(`DRY_RUN active. Questionnaire & fields processed for Cutshort job ${job.job_id}. NOT clicking final submit.`);
+            await db.run("UPDATE jobs SET status = 'QUESTIONNAIRE_SUBMITTED', application_method = 'NATIVE' WHERE portal = 'cutshort' AND job_id = ?", [job.job_id]);
             return true;
         }
 
-        // LIVE SUBMISSION
+        // LIVE SUBMISSION & STRICT SUCCESS DETECTION (Phase 5)
         if (finalSubmitBtn) {
             logger.info("Executing LIVE submission on Cutshort...");
             await finalSubmitBtn.click();
             await page.waitForTimeout(4000);
 
-            const confirmMsg = await page.locator("text=/submitted/i, text=/success/i, text=/applied/i, [class*='success']").count().catch(() => 0);
+            // Phase 5 Success Detection: wait for explicit confirmation
+            const confirmMsg = await page.locator("text=/submitted/i, text=/questionnaire submitted/i, text=/application submitted/i, text=/success/i, text=/message sent/i, [class*='success']").count().catch(() => 0);
             if (confirmMsg > 0) {
                 logger.info(`✅ Submission confirmed for Cutshort job ${job.job_id}`);
-                await db.run("UPDATE jobs SET applied = 1, status = 'APPLIED', application_method = 'NATIVE' WHERE portal = 'cutshort' AND job_id = ?", [job.job_id]);
+                await db.run("UPDATE jobs SET applied = 1, status = 'APPLICATION_SUBMITTED', questionnaire_status = 'QUESTIONNAIRE_SUBMITTED', application_method = 'NATIVE', updated_at = CURRENT_TIMESTAMP WHERE portal = 'cutshort' AND job_id = ?", [job.job_id]);
                 return true;
             } else {
                 logger.warn(`Submission clicked but confirmation unobserved for Cutshort job ${job.job_id}. Marking CLICKED_UNVERIFIED.`);
-                await db.run("UPDATE jobs SET status = 'CLICKED_UNVERIFIED', application_method = 'NATIVE' WHERE portal = 'cutshort' AND job_id = ?", [job.job_id]);
+                await db.run("UPDATE jobs SET status = 'CLICKED_UNVERIFIED', questionnaire_status = 'QUESTIONNAIRE_SUBMITTED', application_method = 'NATIVE', updated_at = CURRENT_TIMESTAMP WHERE portal = 'cutshort' AND job_id = ?", [job.job_id]);
                 return true;
             }
         } else {
-            logger.info("Cutshort application completed upon primary click.");
-            await db.run("UPDATE jobs SET applied = 1, status = 'APPLIED', application_method = 'NATIVE' WHERE portal = 'cutshort' AND job_id = ?", [job.job_id]);
+            logger.info("Cutshort conversation application completed upon primary action.");
+            await db.run("UPDATE jobs SET applied = 1, status = 'APPLICATION_SUBMITTED', questionnaire_status = 'QUESTIONNAIRE_SUBMITTED', application_method = 'NATIVE', updated_at = CURRENT_TIMESTAMP WHERE portal = 'cutshort' AND job_id = ?", [job.job_id]);
             return true;
         }
 

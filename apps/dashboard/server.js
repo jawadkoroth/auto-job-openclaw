@@ -482,6 +482,28 @@ const server = http.createServer(async (req, res) => {
             });
         }
 
+        // --- 11. Cutshort Conversation Flow & Metrics Endpoint ---
+        if (pathname === "/api/cutshort/conversations" && method === "GET") {
+            const cutshortJobs = await db.all("SELECT * FROM jobs WHERE portal = 'cutshort' ORDER BY id DESC").catch(() => []);
+            const metrics = {
+                total: cutshortJobs.length,
+                conversationCreated: cutshortJobs.filter(j => j.status === "CONVERSATION_CREATED").length,
+                questionnairePending: cutshortJobs.filter(j => j.status === "QUESTIONNAIRE_PENDING" || j.status === "QUESTIONNAIRE_IN_PROGRESS").length,
+                questionnaireSubmitted: cutshortJobs.filter(j => j.status === "QUESTIONNAIRE_SUBMITTED" || j.questionnaire_status === "QUESTIONNAIRE_SUBMITTED").length,
+                applicationSubmitted: cutshortJobs.filter(j => j.status === "APPLICATION_SUBMITTED" || j.status === "APPLIED").length,
+                employerWaiting: cutshortJobs.filter(j => j.status === "EMPLOYER_PENDING").length,
+                interviewRequested: cutshortJobs.filter(j => j.status === "INTERVIEW_REQUESTED").length,
+                waitingForInput: cutshortJobs.filter(j => j.status === "WAITING_FOR_INPUT").length,
+                closed: cutshortJobs.filter(j => j.status === "CLOSED" || j.status === "REJECTED").length
+            };
+
+            return sendJson(res, 200, {
+                success: true,
+                metrics,
+                conversations: cutshortJobs
+            });
+        }
+
         // --- Serve Static Dashboard Files ---
         if (pathname === "/" || pathname === "/index.html") {
             return serveStatic(res, path.join(__dirname, "public", "index.html"), "text/html");

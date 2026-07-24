@@ -53,9 +53,10 @@
         tr:hover { background: rgba(255,255,255,0.02); }
 
         .badge { padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; }
-        .badge.applied { background: rgba(34, 197, 94, 0.2); color: var(--success); }
-        .badge.pending { background: rgba(245, 158, 11, 0.2); color: var(--warning); }
-        .badge.failed { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
+        .badge.applied, .badge.application_submitted, .badge.questionnaire_submitted { background: rgba(34, 197, 94, 0.2); color: var(--success); }
+        .badge.pending, .badge.waiting_for_input, .badge.questionnaire_pending, .badge.employer_pending { background: rgba(245, 158, 11, 0.2); color: var(--warning); }
+        .badge.interview_requested, .badge.conversation_created, .badge.questionnaire_in_progress { background: rgba(56, 189, 248, 0.2); color: var(--accent); }
+        .badge.failed, .badge.closed, .badge.rejected { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
         .badge.default { background: rgba(56, 189, 248, 0.2); color: var(--accent); }
 
         .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
