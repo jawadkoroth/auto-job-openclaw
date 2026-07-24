@@ -1,7 +1,7 @@
 const questionnaireEngine = require("./QuestionnaireEngine");
 const telegramService = require("../../../apps/telegram");
 const db = require("../../database");
-const logger = require("../../logger");
+const logger = require("../../logger").automation;
 
 class ConversationMonitor {
     /**
