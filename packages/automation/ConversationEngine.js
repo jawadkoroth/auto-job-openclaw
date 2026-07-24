@@ -1,4 +1,5 @@
 const db = require("../database");
+const eventBus = require("../events/EventBus");
 const candidateKnowledgeService = require("../knowledge/CandidateKnowledgeService");
 const employerKnowledgeService = require("../knowledge/EmployerKnowledgeService");
 const telegramService = require("../../apps/telegram");
@@ -25,6 +26,13 @@ class ConversationEngine {
             ) VALUES (?, ?, ?, ?, ?, 'CONVERSATION_CREATED')`,
             [conversationId, portal, jobId, company || "", recruiterName || "Recruiter"]
         );
+
+        eventBus.publish(eventBus.EVENTS.CONVERSATION_CREATED, {
+            conversationId,
+            portal,
+            jobId,
+            company
+        });
 
         return await db.get("SELECT * FROM conversations WHERE conversation_id = ?", [conversationId]);
     }
@@ -108,6 +116,15 @@ class ConversationEngine {
                 questionPattern: rawQ
             }).catch(() => {});
 
+            eventBus.publish(eventBus.EVENTS.QUESTION_ANSWERED, {
+                portal,
+                jobId,
+                company,
+                question: rawQ,
+                answer: resolved.answer,
+                source: resolved.type
+            });
+
             return resolved;
         }
 
@@ -118,6 +135,16 @@ class ConversationEngine {
             const match = empKnowledge.common_questionnaire.find(item => item.question === rawQ || item.question === normQ);
             if (match && match.answer) {
                 logger.info(`[ConversationEngine] Resolved via Employer Knowledge match: "${rawQ}" -> "${match.answer}"`);
+
+                eventBus.publish(eventBus.EVENTS.QUESTION_ANSWERED, {
+                    portal,
+                    jobId,
+                    company,
+                    question: rawQ,
+                    answer: match.answer,
+                    source: "EMPLOYER_KNOWLEDGE"
+                });
+
                 return { status: "ANSWERED", answer: match.answer, type: "EMPLOYER_KNOWLEDGE" };
             }
         }
@@ -138,6 +165,14 @@ class ConversationEngine {
              WHERE portal = ? AND (job_id = ? OR id = ?)`,
             [rawQ, pendingQuestionId, approvalId, portal, jobId, jobId]
         );
+
+        eventBus.publish(eventBus.EVENTS.WAITING_FOR_INPUT, {
+            portal,
+            jobId,
+            company,
+            question: rawQ,
+            approvalId
+        });
 
         // Dispatch Telegram Notification
         await telegramService.sendQuestionPrompt({

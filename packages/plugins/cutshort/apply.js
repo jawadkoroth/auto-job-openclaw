@@ -1,4 +1,5 @@
 const conversationEngine = require("../../automation/ConversationEngine");
+const eventBus = require("../../events/EventBus");
 const candidateKnowledgeService = require("../../knowledge/CandidateKnowledgeService");
 const externalApplicationRouter = require("../../router/ExternalApplicationRouter");
 const externalAtsAutomation = require("../../automation/ExternalAtsAutomation");
@@ -16,6 +17,12 @@ module.exports = async function apply(plugin, page, job) {
 
     // Update state machine: APPLY_STARTED
     await db.run("UPDATE jobs SET status = 'APPLY_STARTED', updated_at = CURRENT_TIMESTAMP WHERE portal = 'cutshort' AND job_id = ?", [job.job_id]);
+    eventBus.publish(eventBus.EVENTS.APPLICATION_STARTED, {
+        portal: "cutshort",
+        jobId: job.job_id,
+        company: job.company,
+        title: job.title
+    });
 
     try {
         // Step 1: Navigate to Job Details page

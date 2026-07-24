@@ -954,13 +954,36 @@
                         <td>${app.title}</td>
                         <td>${app.company}</td>
                         <td>${app.portal}</td>
-                        <td><span class="badge ${app.status.toLowerCase()}">${app.status}</span></td>
+                        <td><span class="badge ${app.status ? app.status.toLowerCase() : 'default'}">${app.status}</span></td>
                         <td>
+                            <button class="btn btn-sm btn-outline" onclick="viewApplicationTimeline('${app.id}')">Timeline</button>
                             <button class="btn btn-sm btn-outline" onclick="viewApplicationDetails('${app.id}')">View</button>
                             <button class="btn btn-sm btn-danger" onclick="deleteApp('${app.id}', '${app.status}')">Delete</button>
                         </td>
                     </tr>
                 `).join('');
+            }
+        }
+
+        async function viewApplicationTimeline(id) {
+            const data = await apiGet(`/api/applications/${id}/timeline`);
+            if (data.success && data.timeline) {
+                const events = data.timeline;
+                const eventsHtml = events.length === 0 ? '<p style="color: var(--muted);">No event timeline records found for this application.</p>' :
+                    events.map((e, idx) => `
+                        <div style="border-left: 3px solid var(--accent); padding-left: 1rem; margin-bottom: 1rem;">
+                            <div style="font-size: 0.75rem; color: var(--muted);">${new Date(e.timestamp).toLocaleString()}</div>
+                            <div style="font-size: 0.95rem; font-weight: 600; color: var(--accent);">${idx + 1}. ${e.event_type}</div>
+                            ${e.payload && Object.keys(e.payload).length > 0 ? `<pre style="background: rgba(0,0,0,0.2); padding: 0.5rem; border-radius: 0.25rem; font-size: 0.75rem; margin-top: 0.25rem;">${JSON.stringify(e.payload, null, 2)}</pre>` : ''}
+                        </div>
+                    `).join('');
+
+                openModal(`Application Lifecycle Timeline — Job ID: ${data.jobId || id}`, `
+                    <div style="margin-bottom: 1rem;">
+                        <p style="color: var(--muted); font-size: 0.85rem;">Total Events Recorded: <strong>${data.eventsCount}</strong></p>
+                    </div>
+                    <div>${eventsHtml}</div>
+                `);
             }
         }
 

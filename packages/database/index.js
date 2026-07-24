@@ -250,6 +250,20 @@ class Database {
                     UNIQUE(portal, company_name)
                 )
             `);
+
+            // Application Lifecycle Event History Table
+            await rawRun(`
+                CREATE TABLE IF NOT EXISTS application_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id TEXT UNIQUE NOT NULL,
+                    job_id TEXT NOT NULL,
+                    conversation_id TEXT,
+                    portal TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    payload TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
         })();
 
         return this.initPromise;

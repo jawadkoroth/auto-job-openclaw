@@ -523,6 +523,33 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, { success: true, interviews });
         }
 
+        // --- 13. Application Event Timeline Endpoint ---
+        if (pathname.startsWith("/api/applications/") && pathname.endsWith("/timeline") && method === "GET") {
+            const id = pathname.replace("/api/applications/", "").replace("/timeline", "");
+            const job = await db.get("SELECT * FROM jobs WHERE id = ? OR job_id = ?", [id, id]);
+            const targetJobId = job ? job.job_id : id;
+
+            const events = await db.all(
+                "SELECT * FROM application_events WHERE job_id = ? OR job_id = ? ORDER BY id ASC",
+                [targetJobId, id]
+            ).catch(() => []);
+
+            const parsedEvents = events.map(e => {
+                try {
+                    return { ...e, payload: e.payload ? JSON.parse(e.payload) : {} };
+                } catch (err) {
+                    return e;
+                }
+            });
+
+            return sendJson(res, 200, {
+                success: true,
+                jobId: targetJobId,
+                eventsCount: parsedEvents.length,
+                timeline: parsedEvents
+            });
+        }
+
         // --- Serve Static Dashboard Files ---
         if (pathname === "/" || pathname === "/index.html") {
             return serveStatic(res, path.join(__dirname, "public", "index.html"), "text/html");
