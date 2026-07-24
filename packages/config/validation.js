@@ -96,7 +96,7 @@ async function validatePortalConfig(portalName) {
  */
 async function validateAllPortals() {
     const results = {};
-    const allPortals = ["naukri", "linkedin", "foundit", "hirist", "instahyre", "wellfound", "remoteok", "weworkremotely"];
+    const allPortals = ["naukri", "linkedin", "foundit", "hirist", "instahyre", "wellfound", "remoteok", "weworkremotely", "cutshort"];
     
     for (const portal of allPortals) {
         const res = await validatePortalConfig(portal);

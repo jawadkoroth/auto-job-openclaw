@@ -158,12 +158,25 @@ const server = http.createServer(async (req, res) => {
         // --- 3b. Portals Compatibility Matrix Route ---
         if (pathname === "/api/portals/matrix" && method === "GET") {
             const portalCounts = await db.all(
-                "SELECT portal, COUNT(*) as total, SUM(CASE WHEN status='APPLIED' THEN 1 ELSE 0 END) as appliedCount FROM jobs GROUP BY portal"
+                `SELECT 
+                    portal, 
+                    COUNT(*) as total, 
+                    SUM(CASE WHEN status='APPLIED' THEN 1 ELSE 0 END) as appliedCount,
+                    SUM(CASE WHEN status='WAITING_FOR_INPUT' THEN 1 ELSE 0 END) as waitingCount,
+                    SUM(CASE WHEN status='FAILED' THEN 1 ELSE 0 END) as failureCount,
+                    MAX(timestamp) as lastRunTimestamp
+                 FROM jobs GROUP BY portal`
             ).catch(() => []);
 
             const countsMap = {};
             for (const pc of portalCounts) {
-                countsMap[(pc.portal || "").toLowerCase()] = { total: pc.total, applied: pc.appliedCount };
+                countsMap[(pc.portal || "").toLowerCase()] = {
+                    total: pc.total || 0,
+                    applied: pc.appliedCount || 0,
+                    waiting: pc.waitingCount || 0,
+                    failures: pc.failureCount || 0,
+                    lastRun: pc.lastRunTimestamp || null
+                };
             }
 
             const matrix = [
@@ -171,7 +184,7 @@ const server = http.createServer(async (req, res) => {
                 { name: "LinkedIn Jobs", category: "Global / India", trust: "TRUSTED", oracleAccess: "PASS (HTTP 200)", executionMode: "Oracle VM Intermediary / External ATS", schedule: "On-demand / Flow", status: "ACTIVE", indiaEligible: true, remoteEligible: true },
                 { name: "Foundit", category: "India General", trust: "TRUSTED_WITH_CAUTION", oracleAccess: "Browser HTTP 403 (Cloudflare)", executionMode: "Local Discovery -> Oracle External ATS", schedule: "Local Discovery", status: "ACTIVE (EXTERNAL_ATS)", indiaEligible: true, remoteEligible: false },
                 { name: "Instahyre", category: "India Tech", trust: "TRUSTED", oracleAccess: "PASS (Browser HTTP 200)", executionMode: "Oracle VM Playwright", schedule: "On-demand", status: "READY_FOR_AUTOMATION", indiaEligible: true, remoteEligible: true },
-                { name: "Cutshort", category: "India Tech", trust: "TRUSTED", oracleAccess: "PASS (HTTP 200)", executionMode: "Oracle VM API / Browser", schedule: "On-demand", status: "READY_FOR_AUTOMATION", indiaEligible: true, remoteEligible: true },
+                { name: "Cutshort", category: "India Tech", trust: "TRUSTED", oracleAccess: "PASS (HTTP 200)", executionMode: "Oracle VM Browser / Native ATS", schedule: "On-demand", status: "VALIDATED", discoveryAutomation: "ACTIVE", appAutomation: "ACTIVE", indiaEligible: true, remoteEligible: true },
                 { name: "Wellfound", category: "Global Startup / Remote", trust: "TRUSTED", oracleAccess: "PASS (HTTP 200)", executionMode: "Oracle VM External ATS", schedule: "On-demand", status: "READY_FOR_AUTOMATION", indiaEligible: true, remoteEligible: true },
                 { name: "We Work Remotely", category: "Global Remote", trust: "TRUSTED", oracleAccess: "PASS (HTTP 200)", executionMode: "Oracle VM RSS / Intermediary", schedule: "12:00 PM IST (Discovery Only)", status: "DRY_RUN_VALIDATED", discoveryAutomation: "ACTIVE", appAutomation: "INACTIVE", indiaEligible: true, remoteEligible: true },
                 { name: "Remote OK", category: "Global Remote", trust: "TRUSTED", oracleAccess: "PASS (HTTP 200)", executionMode: "Oracle VM API / ATS", schedule: "On-demand", status: "READY_FOR_AUTOMATION", indiaEligible: true, remoteEligible: true },
@@ -189,8 +202,15 @@ const server = http.createServer(async (req, res) => {
             const enriched = matrix.map(m => {
                 const key = m.name.toLowerCase().replace(/[^a-z0-9]/g, "");
                 const matchKey = Object.keys(countsMap).find(k => k.includes(key) || key.includes(k));
-                const counts = matchKey ? countsMap[matchKey] : { total: 0, applied: 0 };
-                return { ...m, discoveredJobsCount: counts.total, appliedJobsCount: counts.applied };
+                const counts = matchKey ? countsMap[matchKey] : { total: 0, applied: 0, waiting: 0, failures: 0, lastRun: null };
+                return {
+                    ...m,
+                    discoveredJobsCount: counts.total,
+                    appliedJobsCount: counts.applied,
+                    waitingForInputCount: counts.waiting,
+                    failuresCount: counts.failures,
+                    lastRun: counts.lastRun
+                };
             });
 
             return sendJson(res, 200, { success: true, portals: enriched });

@@ -89,7 +89,7 @@ async function checkHealth() {
     let hasFailedPortal = false;
     if (health.database === "OK") {
         const { validatePortalConfig } = require("../packages/config/validation");
-        const portalsList = ["foundit", "hirist", "instahyre", "wellfound", "remoteok", "weworkremotely"];
+        const portalsList = ["foundit", "hirist", "instahyre", "wellfound", "remoteok", "weworkremotely", "cutshort"];
         
         for (const portal of portalsList) {
             const validation = await validatePortalConfig(portal);
