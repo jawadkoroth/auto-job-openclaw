@@ -97,6 +97,7 @@ class Database {
             await rawRun("ALTER TABLE jobs ADD COLUMN last_employer_message TEXT").catch(() => {});
             await rawRun("ALTER TABLE jobs ADD COLUMN last_questionnaire_at DATETIME").catch(() => {});
             await rawRun("ALTER TABLE jobs ADD COLUMN questionnaire_status TEXT").catch(() => {});
+            await rawRun("ALTER TABLE jobs ADD COLUMN updated_at DATETIME").catch(() => {});
 
             // Create Q&A memory table
             await rawRun(`
