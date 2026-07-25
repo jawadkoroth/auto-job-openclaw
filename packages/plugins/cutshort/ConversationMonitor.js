@@ -1,6 +1,6 @@
 const conversationEngine = require("../../automation/ConversationEngine");
+const eventBus = require("../../events/EventBus");
 const questionnaireEngine = require("./QuestionnaireEngine");
-const telegramService = require("../../../apps/telegram");
 const db = require("../../database");
 const logger = require("../../logger").automation;
 
@@ -109,10 +109,16 @@ class ConversationMonitor {
                         coding_test_requested: isCodingTest ? 1 : 0
                     });
 
-                    await telegramService.sendNotification({
-                        title: `Cutshort Event: ${eventType}`,
-                        message: `Employer Message from ${headerText}:\n"${lastMsgText.slice(0, 300)}"`
-                    }).catch(() => {});
+                    eventBus.publish(
+                        isInterview ? eventBus.EVENTS.INTERVIEW_REQUESTED : eventBus.EVENTS.CODING_TEST_RECEIVED,
+                        {
+                            portal: "cutshort",
+                            jobId: `job_${idx + 1}`,
+                            conversationId: convId,
+                            company: headerText,
+                            message: lastMsgText
+                        }
+                    );
 
                     results.updated++;
                     continue;

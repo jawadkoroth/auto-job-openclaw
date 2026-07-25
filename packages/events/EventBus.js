@@ -97,11 +97,27 @@ class EventBus extends EventEmitter {
             }).catch(() => {});
         });
 
+        this.on(EVENTS.CODING_TEST_RECEIVED, async (data) => {
+            const telegramService = require("../../apps/telegram");
+            await telegramService.sendNotification({
+                title: `💻 Coding Test Received (${data.portal})`,
+                message: `Company: ${data.company || 'Employer'}\nMessage: "${String(data.message || '').slice(0, 300)}"`
+            }).catch(() => {});
+        });
+
         this.on(EVENTS.OFFER_RECEIVED, async (data) => {
             const telegramService = require("../../apps/telegram");
             await telegramService.sendNotification({
                 title: `🎉 Job Offer Received (${data.portal})`,
                 message: `Company: ${data.company || 'Employer'}\nCongratulations!`
+            }).catch(() => {});
+        });
+
+        this.on(EVENTS.APPLICATION_REJECTED, async (data) => {
+            const telegramService = require("../../apps/telegram");
+            await telegramService.sendNotification({
+                title: `❌ Application Status Update (${data.portal})`,
+                message: `Company: ${data.company || 'Employer'}\nStatus: REJECTED/CLOSED`
             }).catch(() => {});
         });
     }

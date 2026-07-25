@@ -102,6 +102,28 @@ class TelegramService {
     }
 
     /**
+     * Send structured notification object via Telegram
+     * @param {Object} params 
+     */
+    async sendNotification({ title, message }) {
+        const text = `<b>${title || "OpenClaw Notification"}</b>\n${message || ""}`;
+        return await this.sendMessage(text);
+    }
+
+    /**
+     * Send question prompt requiring user approval/answer
+     * @param {Object} params 
+     */
+    async sendQuestionPrompt({ jobId, company, title, question, portal, approvalId }) {
+        const text = `<b>❓ ${title || "Question Required"}</b>\n` +
+            `Company: <b>${company || "N/A"}</b> (${portal || "Job Portal"})\n` +
+            `Job ID: <code>${jobId || "N/A"}</code>\n\n` +
+            `Question:\n<i>"${question}"</i>\n\n` +
+            `To answer, reply to this message or update the Candidate Dashboard. (Approval ID: <code>${approvalId || "N/A"}</code>)`;
+        return await this.sendMessage(text);
+    }
+
+    /**
      * Send HTML message to target Telegram Chat
      * @param {string} text 
      */
