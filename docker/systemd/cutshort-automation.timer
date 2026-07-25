@@ -1,9 +1,9 @@
 [Unit]
-Description=Cutshort OpenClaw Production Application Automation Timer (11:30 AM & 3:30 PM IST)
+Description=Cutshort OpenClaw Production Application Automation Timer (9:30 AM & 2:00 PM IST)
 
 [Timer]
-OnCalendar=*-*-* 06:00:00
-OnCalendar=*-*-* 10:00:00
+OnCalendar=*-*-* 04:00:00 UTC
+OnCalendar=*-*-* 08:30:00 UTC
 Persistent=true
 Unit=cutshort-automation.service
 
