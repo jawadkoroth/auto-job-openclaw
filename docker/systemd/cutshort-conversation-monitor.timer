@@ -1,0 +1,10 @@
+[Unit]
+Description=Cutshort OpenClaw Conversation Monitor Timer (Every 30 Minutes)
+
+[Timer]
+OnCalendar=*:0,30
+Persistent=true
+Unit=cutshort-conversation-monitor.service
+
+[Install]
+WantedBy=timers.target

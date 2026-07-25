@@ -4,6 +4,7 @@ npm-debug.log
 
 # Sessions
 sessions/
+sessions/**/storageState.json
 .browser-profiles/
 
 # Environment

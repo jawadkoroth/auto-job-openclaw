@@ -1,0 +1,15 @@
+[Unit]
+Description=Cutshort OpenClaw Production Application Automation Service
+After=network.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/automation
+EnvironmentFile=/home/ubuntu/automation/.env
+ExecStart=/usr/bin/node /home/ubuntu/automation/scripts/run-cutshort-production.js
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

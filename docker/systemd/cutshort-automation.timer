@@ -1,0 +1,11 @@
+[Unit]
+Description=Cutshort OpenClaw Production Application Automation Timer (11:30 AM & 3:30 PM IST)
+
+[Timer]
+OnCalendar=*-*-* 06:00:00
+OnCalendar=*-*-* 10:00:00
+Persistent=true
+Unit=cutshort-automation.service
+
+[Install]
+WantedBy=timers.target
