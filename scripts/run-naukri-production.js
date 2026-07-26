@@ -6,7 +6,8 @@ require("dotenv").config({ path: path.join(__dirname, "../.env") });
 const db = require("../packages/database");
 const logger = require("../packages/logger").plugin("naukri");
 const eventBus = require("../packages/events/EventBus");
-const candidateKnowledgeService = require("../packages/knowledge/CandidateKnowledgeService");
+const candidateProfileService = require("../packages/knowledge/CandidateProfile");
+const intelligentJobRanker = require("../packages/router/IntelligentJobRanker");
 const { checkLocationEligibility } = require("../packages/router/LocationEligibilityFilter");
 const { checkExperienceEligibility } = require("../packages/router/ExperienceEligibilityFilter");
 const resumeManager = require("../packages/resume/ResumeManager");
@@ -34,6 +35,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
     logger.info("==================================================\n");
 
     await db.init();
+    const candidateProfile = await candidateProfileService.getProfile().catch(() => ({}));
 
     const telemetry = {
         timestamp: new Date().toISOString(),
@@ -44,15 +46,18 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
         LocationEligible: 0,
         Duplicates: 0,
         AlreadyApplied: 0,
+        Ranked: 0,
         FinalCandidates: 0,
         Attempted: 0,
         Applied: 0,
         WaitingForInput: 0,
         ExternalRequired: 0,
         Failed: 0,
+        SkippedQualityGate: 0,
         zeroApplicationReason: null,
         dailyLimit: MAX_APPLICATIONS_PER_DAY,
-        dailyAppliedCount: 0
+        dailyAppliedCount: 0,
+        dailyRemainingCapacity: 0
     };
 
     const saveTelemetry = () => {
@@ -71,8 +76,9 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
     );
     const appliedToday = appliedTodayRow ? appliedTodayRow.count : 0;
     telemetry.dailyAppliedCount = appliedToday;
+    telemetry.dailyRemainingCapacity = Math.max(0, MAX_APPLICATIONS_PER_DAY - appliedToday);
 
-    logger.info(`Daily Naukri Applications Counter (IST: ${todayIst}): ${appliedToday} / ${MAX_APPLICATIONS_PER_DAY}`);
+    logger.info(`Daily Naukri Applications Counter (IST: ${todayIst}): ${appliedToday} / ${MAX_APPLICATIONS_PER_DAY} (Remaining: ${telemetry.dailyRemainingCapacity})`);
 
     if (appliedToday >= MAX_APPLICATIONS_PER_DAY && !isDryRun) {
         logger.warn("⚠️ Daily Naukri application limit reached. Skipping further submissions today.");
@@ -87,8 +93,10 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
         const telegramService = require("../apps/telegram");
         await telegramService.sendMessage(
             "<b>⚠️ Naukri Authentication Required</b>\n\n" +
-            "The saved Naukri session has expired or is missing.\n" +
-            "Manual session refresh is required via <code>node scripts/setup-naukri-session.js</code>."
+            "• <b>Portal</b>: <code>Naukri</code>\n" +
+            "• <b>Condition</b>: <code>SESSION_EXPIRED</code>\n" +
+            "• <b>Details</b>: Saved Naukri session missing or expired on Oracle VM.\n" +
+            "• <b>Action</b>: Manual session refresh required via <code>node scripts/setup-naukri-session.js</code>."
         ).catch(() => {});
 
         telemetry.zeroApplicationReason = "AUTH_EXPIRED";
@@ -113,7 +121,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
 
         const page = await context.newPage();
 
-        // 1. Session Health Check
+        // 1. Session Health Check (Phase 8)
         logger.info("[1/4] Verifying Authenticated Naukri Session...");
         await page.goto("https://www.naukri.com/mnjuser/homepage", { waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {});
         await page.waitForTimeout(3000);
@@ -124,9 +132,12 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             logger.error("❌ Naukri session redirect detected. Re-authentication required.");
             const telegramService = require("../apps/telegram");
             await telegramService.sendMessage(
-                "<b>⚠️ Naukri Authentication Required</b>\n\n" +
-                "The saved Naukri session has expired on Oracle VM.\n" +
-                "Manual session refresh is required."
+                "<b>⚠️ Naukri Session Reauth Required</b>\n\n" +
+                "• <b>Portal</b>: <code>Naukri</code>\n" +
+                "• <b>Condition</b>: <code>SESSION_REAUTH_REQUIRED</code>\n" +
+                "• <b>Timestamp</b>: <code>" + new Date().toISOString() + "</code>\n" +
+                "• <b>Final URL</b>: <code>" + currentUrl + "</code>\n" +
+                "• <b>Action</b>: Application run halted safely. Preserving existing job states."
             ).catch(() => {});
 
             telemetry.zeroApplicationReason = "AUTH_EXPIRED";
@@ -137,14 +148,13 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
 
         // 2. Discover Relevant Candidate Jobs
         logger.info("\n[2/4] Executing Fresh Job Discovery across target searches...");
-        const discoveredJobs = [];
+        const rawDiscoveredJobs = [];
         const seenIds = new Set();
 
         for (let sIdx = 0; sIdx < TARGET_SEARCH_URLS.length; sIdx++) {
             const searchUrl = TARGET_SEARCH_URLS[sIdx];
             logger.info(`Searching (${sIdx + 1}/${TARGET_SEARCH_URLS.length}): ${searchUrl}`);
 
-            // Delay between search requests to respect rate limits & avoid Akamai 403
             if (sIdx > 0) {
                 const searchDelay = Math.floor(Math.random() * 3000) + 4000;
                 await page.waitForTimeout(searchDelay);
@@ -174,7 +184,6 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             const cards = page.locator(jobSelector);
             let count = await cards.count().catch(() => 0);
 
-            // Fallback if cards count is 0
             if (count === 0) {
                 const titleLinks = page.locator("a.title, a[href*='job-listings']");
                 count = await titleLinks.count().catch(() => 0);
@@ -245,21 +254,20 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
                         }
                     }
 
-                    discoveredJobs.push({
+                    rawDiscoveredJobs.push({
                         jobId,
                         title: titleText,
                         company,
                         location,
                         experience,
-                        url,
-                        expReason: expCheck.reason
+                        url
                     });
 
                 } catch (cardErr) {}
             }
         }
 
-        // PHASE 4 — ZERO-DISCOVERY ANOMALY SAFEGUARD
+        // PHASE 9 — DISCOVERY ANOMALY SAFEGUARD
         if (telemetry.Discovered === 0) {
             logger.error("❌ DISCOVERY_ANOMALY: All configured search URLs returned 0 job cards!");
             telemetry.zeroApplicationReason = "DISCOVERY_ANOMALY";
@@ -277,187 +285,226 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             process.exit(0);
         }
 
-        telemetry.FinalCandidates = discoveredJobs.length;
-        logger.info(`✓ Discovered ${discoveredJobs.length} eligible unapplied Naukri candidates.`);
+        // PHASE 2 & 3 — INTELLIGENT JOB RANKING
+        logger.info("\n[3/4] Running Intelligent Job Ranking Engine on eligible pool...");
+        const rankedJobs = intelligentJobRanker.rankAndSortJobs(rawDiscoveredJobs, candidateProfile);
+        telemetry.Ranked = rankedJobs.length;
+        telemetry.FinalCandidates = rankedJobs.length;
+
+        console.log("\n==================================================");
+        console.log("NAUKRI RANKING SUMMARY");
+        console.log(`Discovered:               ${telemetry.Discovered}`);
+        console.log(`Role Eligible:            ${telemetry.RoleEligible}`);
+        console.log(`Experience Eligible:      ${telemetry.ExperienceEligible}`);
+        console.log(`Location Eligible:        ${telemetry.LocationEligible}`);
+        console.log(`Duplicates Removed:       ${telemetry.Duplicates}`);
+        console.log(`Already Applied Excluded: ${telemetry.AlreadyApplied}`);
+        console.log(`Ranked Candidates:        ${telemetry.Ranked}`);
+        console.log(`Daily Remaining Capacity: ${telemetry.dailyRemainingCapacity}`);
+        console.log("==================================================\n");
+
+        console.log("TOP RANKED CANDIDATE JOBS:");
+        console.log("--------------------------------------------------");
+        rankedJobs.slice(0, 20).forEach((j, idx) => {
+            console.log(`[Rank ${idx + 1}] Score: ${j.rankScore}/100 | ${j.title}`);
+            console.log(`         Company:     ${j.company}`);
+            console.log(`         Exp:         ${j.experience}`);
+            console.log(`         Location:    ${j.location}`);
+            console.log(`         Explanation: ${j.selectionReason}`);
+            console.log(`         URL:         ${j.url}\n`);
+        });
 
         if (isDryRun) {
-            console.log("\n==================================================");
-            console.log("NAUKRI DRY-RUN REPORT");
-            console.log(`Discovered:          ${telemetry.Discovered}`);
-            console.log(`Role Eligible:       ${telemetry.RoleEligible}`);
-            console.log(`Experience Eligible: ${telemetry.ExperienceEligible}`);
-            console.log(`Location Eligible:   ${telemetry.LocationEligible}`);
-            console.log(`Duplicates:          ${telemetry.Duplicates}`);
-            console.log(`Already Applied:     ${telemetry.AlreadyApplied}`);
-            console.log(`Final Candidates:    ${telemetry.FinalCandidates}`);
-            console.log("==================================================\n");
-
-            console.log("TOP ELIGIBLE CANDIDATE JOBS (WOULD APPLY):");
-            console.log("--------------------------------------------------");
-            discoveredJobs.slice(0, 10).forEach((j, idx) => {
-                console.log(`[${idx + 1}] ${j.title}`);
-                console.log(`    Company:  ${j.company}`);
-                console.log(`    Exp:      ${j.experience}`);
-                console.log(`    Location: ${j.location}`);
-                console.log(`    Eligible: ${j.expReason}`);
-                console.log(`    URL:      ${j.url}\n`);
-            });
-
             saveTelemetry();
             process.exit(0);
         }
 
-        // 3. Process Live Applications
+        // PHASE 4-7 — LIVE APPLICATION WORKFLOW WITH FAILURE ISOLATION
+        logger.info("\n[4/4] Processing Live Applications with Quality Gate & Verification...");
         let applicationsRun = 0;
-        for (const target of discoveredJobs) {
+
+        for (const target of rankedJobs) {
             if (applicationsRun >= MAX_APPLICATIONS_PER_RUN) break;
             if ((appliedToday + applicationsRun) >= MAX_APPLICATIONS_PER_DAY) break;
 
-            telemetry.Attempted++;
-            logger.info(`\n[Application ${applicationsRun + 1}/${MAX_APPLICATIONS_PER_RUN}] Processing: "${target.title}" at "${target.company}" (${target.experience})`);
+            // ISOLATED FAILURE BOUNDARY (Phase 11)
+            try {
+                // 10-Point Application Quality Gate Revalidation (Phase 4)
+                if (!target.jobId || !target.url) {
+                    logger.warn("   [Quality Gate] Invalid job model/url. Skipping.");
+                    telemetry.SkippedQualityGate++;
+                    continue;
+                }
 
-            // Re-verify duplicate immediately prior to opening
-            const preCheck = await db.get("SELECT id FROM jobs WHERE LOWER(portal) = 'naukri' AND job_id = ? AND applied = 1", [target.jobId]);
-            if (preCheck) {
-                logger.info(`   Skipping duplicate ${target.jobId} (already applied in DB).`);
-                continue;
-            }
+                const preCheck = await db.get("SELECT id, applied, status FROM jobs WHERE LOWER(portal) = 'naukri' AND (job_id = ? OR url = ?)", [target.jobId, target.url]);
+                if (preCheck && (preCheck.applied === 1 || ["APPLIED", "EMPLOYER_PENDING", "APPLICATION_SUBMITTED", "INTERVIEW_REQUESTED"].includes(preCheck.status))) {
+                    logger.info(`   [Quality Gate] Job ${target.jobId} already applied in DB. Skipping.`);
+                    telemetry.AlreadyApplied++;
+                    continue;
+                }
 
-            await page.goto(target.url, { waitUntil: "domcontentloaded", timeout: 30000 });
-            await page.waitForTimeout(3000);
+                const expCheck = checkExperienceEligibility(target.experience);
+                if (!expCheck.eligible) {
+                    logger.warn(`   [Quality Gate] Experience revalidation failed for ${target.jobId}. Skipping.`);
+                    telemetry.SkippedQualityGate++;
+                    continue;
+                }
 
-            // Check if already applied on portal
-            const alreadyAppliedLoc = page.locator(".already-applied, button:has-text('Applied'), span:has-text('Applied'), div:has-text('Applied')");
-            if (await alreadyAppliedLoc.count().catch(() => 0) > 0) {
-                logger.info(`   Already applied on Naukri portal for job ${target.jobId}. Updating DB.`);
-                await db.run("INSERT OR REPLACE INTO jobs (portal, job_id, company, title, location, experience, url, status, applied, timestamp) VALUES ('naukri', ?, ?, ?, ?, ?, ?, 'EMPLOYER_PENDING', 1, CURRENT_TIMESTAMP)", [target.jobId, target.company, target.title, target.location, target.experience, target.url]);
-                telemetry.AlreadyApplied++;
-                continue;
-            }
+                const locCheck = checkLocationEligibility(target.location, target.title);
+                if (!locCheck.eligible) {
+                    logger.warn(`   [Quality Gate] Location revalidation failed for ${target.jobId}. Skipping.`);
+                    telemetry.SkippedQualityGate++;
+                    continue;
+                }
 
-            // Check apply button
-            const applyBtnLoc = page.locator("button.apply-button, button.applyBtn, #apply-button, button:has-text('Apply')").first();
-            const applyBtnText = (await applyBtnLoc.count().catch(() => 0) > 0) ? (await applyBtnLoc.textContent().catch(() => "")) : "";
-            const isExternal = applyBtnText.toLowerCase().includes("company site") || applyBtnText.toLowerCase().includes("company website");
+                telemetry.Attempted++;
+                logger.info(`\n[Application ${applicationsRun + 1}/${MAX_APPLICATIONS_PER_RUN}] Attempting Rank #${rankedJobs.indexOf(target) + 1} (Score: ${target.rankScore}/100): "${target.title}" at "${target.company}"`);
 
-            if (isExternal) {
-                logger.info(`   External application required for ${target.jobId}. Marking EXTERNAL_APPLICATION_REQUIRED.`);
-                await db.run("INSERT OR REPLACE INTO jobs (portal, job_id, company, title, location, experience, url, status, applied, timestamp) VALUES ('naukri', ?, ?, ?, ?, ?, ?, 'EXTERNAL_APPLICATION_REQUIRED', 0, CURRENT_TIMESTAMP)", [target.jobId, target.company, target.title, target.location, target.experience, target.url]);
-                telemetry.ExternalRequired++;
-                continue;
-            }
+                await page.goto(target.url, { waitUntil: "domcontentloaded", timeout: 30000 });
+                await page.waitForTimeout(3000);
 
-            if (!(await applyBtnLoc.count().catch(() => 0) > 0)) {
-                logger.warn(`   Apply button not found for ${target.jobId}. Skipping.`);
-                telemetry.Failed++;
-                continue;
-            }
+                // Re-verify UI Applied state
+                const alreadyAppliedLoc = page.locator(".already-applied, button:has-text('Applied'), span:has-text('Applied'), div:has-text('Applied')");
+                if (await alreadyAppliedLoc.count().catch(() => 0) > 0) {
+                    logger.info(`   [Quality Gate] Already applied on Naukri portal for job ${target.jobId}. Updating DB.`);
+                    await db.run("INSERT OR REPLACE INTO jobs (portal, job_id, company, title, location, experience, url, status, applied, timestamp) VALUES ('naukri', ?, ?, ?, ?, ?, ?, 'EMPLOYER_PENDING', 1, CURRENT_TIMESTAMP)", [target.jobId, target.company, target.title, target.location, target.experience, target.url]);
+                    telemetry.AlreadyApplied++;
+                    continue;
+                }
 
-            // Record DB & emit APPLICATION_STARTED
-            await db.run("INSERT OR REPLACE INTO jobs (portal, job_id, company, title, location, experience, url, status, applied, timestamp) VALUES ('naukri', ?, ?, ?, ?, ?, ?, 'APPLICATION_STARTED', 0, CURRENT_TIMESTAMP)", [target.jobId, target.company, target.title, target.location, target.experience, target.url]);
+                // Check Apply button
+                const applyBtnLoc = page.locator("button.apply-button, button.applyBtn, #apply-button, button:has-text('Apply')").first();
+                const applyBtnText = (await applyBtnLoc.count().catch(() => 0) > 0) ? (await applyBtnLoc.textContent().catch(() => "")) : "";
+                const isExternal = applyBtnText.toLowerCase().includes("company site") || applyBtnText.toLowerCase().includes("company website");
 
-            eventBus.publish(eventBus.EVENTS.APPLICATION_STARTED, {
-                portal: "Naukri",
-                jobId: target.jobId,
-                company: target.company,
-                title: target.title,
-                url: target.url
-            });
+                if (isExternal) {
+                    logger.info(`   External application required for ${target.jobId}. Marking EXTERNAL_APPLICATION_REQUIRED.`);
+                    await db.run("INSERT OR REPLACE INTO jobs (portal, job_id, company, title, location, experience, url, status, applied, timestamp) VALUES ('naukri', ?, ?, ?, ?, ?, ?, 'EXTERNAL_APPLICATION_REQUIRED', 0, CURRENT_TIMESTAMP)", [target.jobId, target.company, target.title, target.location, target.experience, target.url]);
+                    telemetry.ExternalRequired++;
+                    continue;
+                }
 
-            // Check file input for resume attachment
-            const fileInputLoc = page.locator("input[type='file']").first();
-            if (await fileInputLoc.count().catch(() => 0) > 0) {
-                try {
-                    const resumePath = await resumeManager.getResumePath("naukri");
-                    await fileInputLoc.setInputFiles(resumePath).catch(() => {});
-                } catch (e) {}
-            }
+                if (!(await applyBtnLoc.count().catch(() => 0) > 0)) {
+                    logger.warn(`   Apply button not found on UI for ${target.jobId}. Skipping.`);
+                    telemetry.Failed++;
+                    continue;
+                }
 
-            // Click Apply
-            logger.info("   Clicking Apply Button on Naukri UI...");
-            await applyBtnLoc.click();
-            await page.waitForTimeout(4000);
+                // Record DB & emit APPLICATION_STARTED
+                await db.run("INSERT OR REPLACE INTO jobs (portal, job_id, company, title, location, experience, url, status, applied, timestamp) VALUES ('naukri', ?, ?, ?, ?, ?, ?, 'APPLICATION_STARTED', 0, CURRENT_TIMESTAMP)", [target.jobId, target.company, target.title, target.location, target.experience, target.url]);
 
-            // Check questionnaire
-            const questLoc = page.locator(".chatbot-container, .questionnaire-container, :has-text('Answer questions')");
-            if (await questLoc.count().catch(() => 0) > 0) {
-                logger.warn(`   Questionnaire pop-up detected for job ${target.jobId}.`);
-                eventBus.publish(eventBus.EVENTS.WAITING_FOR_INPUT, {
+                eventBus.publish(eventBus.EVENTS.APPLICATION_STARTED, {
                     portal: "Naukri",
                     jobId: target.jobId,
                     company: target.company,
                     title: target.title,
-                    question: "Naukri pop-up questionnaire requires candidate input.",
-                    url: target.url
-                });
-                await db.run("UPDATE jobs SET status = 'WAITING_FOR_INPUT' WHERE LOWER(portal) = 'naukri' AND job_id = ?", [target.jobId]);
-                telemetry.WaitingForInput++;
-                continue;
-            }
-
-            // Fresh context post-apply verification
-            const fresh = await chromium.launch({
-                headless: true,
-                args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
-            });
-            const freshCtx = await fresh.newContext({
-                userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                viewport: { width: 1440, height: 900 },
-                storageState: storageStatePath
-            });
-            const freshPage = await freshCtx.newPage();
-            await freshPage.goto(target.url, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
-            await freshPage.waitForTimeout(3000);
-
-            const isVerified = await freshPage.locator(".already-applied, button:has-text('Applied'), span:has-text('Applied')").count().catch(() => 0) > 0;
-            await freshCtx.close().catch(() => {});
-            await fresh.close().catch(() => {});
-
-            if (isVerified) {
-                await db.run("UPDATE jobs SET status = 'EMPLOYER_PENDING', applied = 1, updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [target.jobId]);
-
-                eventBus.publish(eventBus.EVENTS.APPLICATION_SUBMITTED, {
-                    portal: "Naukri",
-                    jobId: target.jobId,
-                    company: target.company,
-                    title: target.title,
-                    status: "EMPLOYER_PENDING",
                     url: target.url
                 });
 
-                applicationsRun++;
-                telemetry.Applied++;
-                logger.info(`✓ Verified Application Submitted for "${target.title}" at "${target.company}".`);
-            } else {
-                logger.warn(`⚠️ Submission unverified for job ${target.jobId}. Setting CLICKED_UNVERIFIED.`);
-                await db.run("UPDATE jobs SET status = 'CLICKED_UNVERIFIED' WHERE LOWER(portal) = 'naukri' AND job_id = ?", [target.jobId]);
+                // Attach Resume
+                const fileInputLoc = page.locator("input[type='file']").first();
+                if (await fileInputLoc.count().catch(() => 0) > 0) {
+                    try {
+                        const resumePath = await resumeManager.getResumePath("naukri");
+                        await fileInputLoc.setInputFiles(resumePath).catch(() => {});
+                    } catch (e) {}
+                }
+
+                // Click Apply
+                logger.info("   Clicking Apply Button on Naukri UI...");
+                await applyBtnLoc.click();
+                await page.waitForTimeout(4000);
+
+                // Check questionnaire
+                const questLoc = page.locator(".chatbot-container, .questionnaire-container, :has-text('Answer questions')");
+                if (await questLoc.count().catch(() => 0) > 0) {
+                    logger.warn(`   Questionnaire pop-up detected for job ${target.jobId}. Setting WAITING_FOR_INPUT.`);
+                    eventBus.publish(eventBus.EVENTS.WAITING_FOR_INPUT, {
+                        portal: "Naukri",
+                        jobId: target.jobId,
+                        company: target.company,
+                        title: target.title,
+                        question: "Naukri pop-up questionnaire requires candidate input.",
+                        url: target.url
+                    });
+                    await db.run("UPDATE jobs SET status = 'WAITING_FOR_INPUT' WHERE LOWER(portal) = 'naukri' AND job_id = ?", [target.jobId]);
+                    telemetry.WaitingForInput++;
+                    continue;
+                }
+
+                // Independent fresh context post-apply verification (Phase 5)
+                const fresh = await chromium.launch({
+                    headless: true,
+                    args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
+                });
+                const freshCtx = await fresh.newContext({
+                    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    viewport: { width: 1440, height: 900 },
+                    storageState: storageStatePath
+                });
+                const freshPage = await freshCtx.newPage();
+                await freshPage.goto(target.url, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+                await freshPage.waitForTimeout(3000);
+
+                const isVerified = await freshPage.locator(".already-applied, button:has-text('Applied'), span:has-text('Applied')").count().catch(() => 0) > 0;
+                await freshCtx.close().catch(() => {});
+                await fresh.close().catch(() => {});
+
+                if (isVerified) {
+                    await db.run("UPDATE jobs SET status = 'EMPLOYER_PENDING', applied = 1, updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [target.jobId]);
+
+                    eventBus.publish(eventBus.EVENTS.APPLICATION_SUBMITTED, {
+                        portal: "Naukri",
+                        jobId: target.jobId,
+                        company: target.company,
+                        title: target.title,
+                        status: "EMPLOYER_PENDING",
+                        url: target.url
+                    });
+
+                    applicationsRun++;
+                    telemetry.Applied++;
+                    logger.info(`✓ Verified Application Submitted for "${target.title}" at "${target.company}".`);
+                } else {
+                    logger.warn(`⚠️ Submission unverified for job ${target.jobId}. Setting CLICKED_UNVERIFIED.`);
+                    await db.run("UPDATE jobs SET status = 'CLICKED_UNVERIFIED' WHERE LOWER(portal) = 'naukri' AND job_id = ?", [target.jobId]);
+                    telemetry.Failed++;
+                }
+
+                if (applicationsRun < MAX_APPLICATIONS_PER_RUN) {
+                    const delayMs = Math.floor(Math.random() * 15000) + 10000;
+                    logger.info(` -> Delaying ${Math.round(delayMs / 1000)}s before next application...`);
+                    await page.waitForTimeout(delayMs);
+                }
+
+            } catch (jobErr) {
+                // ISOLATED FAILURE BOUNDARY — Continue processing next ranked job
+                logger.error(`❌ Non-fatal application error for job ${target.jobId}: ${jobErr.message}`);
                 telemetry.Failed++;
-            }
-
-            if (applicationsRun < MAX_APPLICATIONS_PER_RUN) {
-                const delayMs = Math.floor(Math.random() * 15000) + 10000;
-                logger.info(` -> Delaying ${Math.round(delayMs / 1000)}s before next application...`);
-                await page.waitForTimeout(delayMs);
             }
         }
 
         saveTelemetry();
 
-        // Send Telegram Run Summary
+        // PHASE 10 — TELEGRAM PRODUCTION OBSERVABILITY (RUN COMPLETE SUMMARY)
         const telegramService = require("../apps/telegram");
-        await telegramService.sendRunSummaryNotification({
-            portal: "Naukri",
-            discovered: telemetry.Discovered,
-            eligible: telemetry.FinalCandidates,
-            attempted: telemetry.Attempted,
-            applied: telemetry.Applied,
-            waitingForInput: telemetry.WaitingForInput,
-            failed: telemetry.Failed,
-            skippedDuplicates: telemetry.Duplicates + telemetry.AlreadyApplied
-        }).catch(err => logger.error(`Failed to send Telegram run summary: ${err.message}`));
+        await telegramService.sendMessage(
+            `<b>📊 NAUKRI RUN COMPLETE</b>\n\n` +
+            `• <b>Discovered</b>: ${telemetry.Discovered}\n` +
+            `• <b>Eligible</b>: ${telemetry.ExperienceEligible}\n` +
+            `• <b>Ranked</b>: ${telemetry.Ranked}\n` +
+            `• <b>Attempted</b>: ${telemetry.Attempted}\n` +
+            `• <b>Applied</b>: ${telemetry.Applied}\n` +
+            `• <b>Waiting For Input</b>: ${telemetry.WaitingForInput}\n` +
+            `• <b>External Required</b>: ${telemetry.ExternalRequired}\n` +
+            `• <b>Failed</b>: ${telemetry.Failed}\n` +
+            `• <b>Skipped / Duplicates</b>: ${telemetry.Duplicates + telemetry.AlreadyApplied}\n` +
+            `• <b>Daily Applied Count</b>: ${appliedToday + telemetry.Applied} / ${MAX_APPLICATIONS_PER_DAY}\n` +
+            `• <b>Daily Remaining</b>: ${Math.max(0, MAX_APPLICATIONS_PER_DAY - (appliedToday + telemetry.Applied))}`
+        ).catch(err => logger.error(`Failed to send Telegram run summary: ${err.message}`));
 
     } catch (err) {
-        logger.error(`❌ Production Runner Error: ${err.message}`);
+        logger.error(`❌ Global Production Runner Error: ${err.message}`);
         telemetry.zeroApplicationReason = "RUNNER_ERROR";
         saveTelemetry();
     } finally {
