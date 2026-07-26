@@ -48,17 +48,27 @@ const eventBus = require("../packages/events/EventBus");
             process.exit(1);
         }
 
-        const headlineWidgetHead = "div.widgetHead:has-text('Resume headline'), div:has-text('Resume headline')";
-        await page.waitForSelector(headlineWidgetHead, { timeout: 15000 }).catch(() => {});
+        const headlineWidgetHead = "div.widgetHead:has-text('Resume headline'), div:has-text('Resume headline'), span:has-text('Resume headline')";
+        await page.waitForSelector(headlineWidgetHead, { timeout: 20000 }).catch(() => {});
+        await page.evaluate(() => window.scrollBy(0, 300));
 
-        const headlineWidget = page.locator("div.widgetHead:has-text('Resume headline') + div, .resumeHeadline .widgetCont, div:has-text('Resume headline') + div").first();
+        const headlineWidget = page.locator("div.widgetHead:has-text('Resume headline') + div, .resumeHeadline .widgetCont, div:has-text('Resume headline') + div, span:has-text('Resume headline') + div").first();
         let beforeHeadline = "";
         if (await headlineWidget.count().catch(() => 0) > 0) {
             beforeHeadline = (await headlineWidget.textContent().catch(() => "")).trim();
             logger.info(`✓ Read Resume Headline BEFORE refresh (${beforeHeadline.length} chars).`);
         } else {
-            logger.error("❌ Resume Headline container not found.");
-            process.exit(1);
+            // Retry navigation once
+            logger.warn("⚠️ Resume headline widget delay. Reloading profile page once...");
+            await page.goto("https://www.naukri.com/mnjuser/profile", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+            await page.waitForTimeout(5000);
+            if (await headlineWidget.count().catch(() => 0) > 0) {
+                beforeHeadline = (await headlineWidget.textContent().catch(() => "")).trim();
+                logger.info(`✓ Read Resume Headline BEFORE refresh on retry (${beforeHeadline.length} chars).`);
+            } else {
+                logger.error("❌ Resume Headline container not found after retry.");
+                process.exit(1);
+            }
         }
 
         logger.info("[2/4] Opening Headline Edit Form...");
