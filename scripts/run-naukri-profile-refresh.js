@@ -2,7 +2,7 @@ const { chromium } = require("playwright");
 const fs = require("fs-extra");
 const path = require("path");
 const telegramService = require("../apps/telegram");
-const logger = require("../packages/logger").naukri;
+const logger = require("../packages/logger").plugin("naukri");
 
 (async () => {
     logger.info("==================================================");

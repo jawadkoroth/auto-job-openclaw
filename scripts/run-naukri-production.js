@@ -4,7 +4,7 @@ const { chromium } = require("playwright");
 require("dotenv").config({ path: path.join(__dirname, "../.env") });
 
 const db = require("../packages/database");
-const logger = require("../packages/logger").naukri;
+const logger = require("../packages/logger").plugin("naukri");
 const eventBus = require("../packages/events/EventBus");
 const candidateKnowledgeService = require("../packages/knowledge/CandidateKnowledgeService");
 const { checkLocationEligibility } = require("../packages/router/LocationEligibilityFilter");
