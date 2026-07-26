@@ -164,8 +164,8 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             logger.info(`Searching (${sIdx + 1}/${TARGET_SEARCH_URLS.length}): ${searchUrl}`);
 
             if (sIdx > 0) {
-                const searchDelay = Math.floor(Math.random() * 2000) + 3000;
-                await delay(searchDelay); // Safe process-level delay
+                const searchDelay = Math.floor(Math.random() * 3000) + 5000; // 5-8s natural delay
+                await delay(searchDelay);
             }
 
             let res = null;
@@ -178,19 +178,29 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
                 logger.warn(`Navigation error on ${searchUrl}: ${navErr.message}`);
             }
 
-            if (!navSuccess) {
-                blockedSearchCount++;
-                continue;
+            let title = await discoveryPage.title().catch(() => "");
+            let status = res ? res.status() : 0;
+            let isAccessDenied = !navSuccess || status === 403 || title.toLowerCase().includes("access denied");
+
+            // Akamai 403 Retry Logic with 15s cooldown
+            if (isAccessDenied) {
+                logger.warn(`⚠️ Akamai 403 Access Denied on ${searchUrl}. Waiting 15s backoff cooldown before retry...`);
+                await delay(15000);
+
+                try {
+                    res = await discoveryPage.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+                    await delay(3000);
+                    title = await discoveryPage.title().catch(() => "");
+                    status = res ? res.status() : 0;
+                    isAccessDenied = status === 403 || title.toLowerCase().includes("access denied");
+                } catch (retryErr) {
+                    isAccessDenied = true;
+                }
             }
 
-            const title = await discoveryPage.title().catch(() => "");
-            const status = res ? res.status() : 0;
-            const isAccessDenied = status === 403 || title.toLowerCase().includes("access denied");
-
             if (isAccessDenied) {
-                logger.warn(`⚠️ Akamai 403 Access Denied on ${searchUrl}. Backing off...`);
+                logger.warn(`⚠️ Retry failed for ${searchUrl}. Skipping to next search...`);
                 blockedSearchCount++;
-                await delay(5000); // Process-level safe delay
                 continue;
             }
 
