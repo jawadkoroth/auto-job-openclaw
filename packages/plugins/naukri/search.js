@@ -34,8 +34,8 @@ module.exports = async function search(plugin, page, queryOptions = {}) {
             }
             
             // Selectors for listing cards
-            const jobSelector = "article.jobTuple, div.srp-jobtuple, article.srp-jobtuple, [data-job-id]";
-            await page.waitForSelector(jobSelector, { timeout: 15000 }).catch(() => {
+            const jobSelector = ".cust-job-tuple, article.jobTuple, div.srp-jobtuple, article.srp-jobtuple, [data-job-id]";
+            await page.waitForSelector(jobSelector + ", a.title", { timeout: 15000 }).catch(() => {
                 logger.warn("No job card selectors matching on page within timeout.");
             });
             

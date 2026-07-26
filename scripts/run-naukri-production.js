@@ -63,16 +63,16 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
         } catch (e) {}
     };
 
-    // Calculate daily successful applications count from SQLite
-    const todayStr = new Date().toISOString().split("T")[0];
+    // Calculate daily successful applications count from SQLite using IST calendar day window
+    const todayIst = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }); // YYYY-MM-DD
     const appliedTodayRow = await db.get(
-        "SELECT COUNT(*) as count FROM jobs WHERE portal = 'naukri' AND applied = 1 AND DATE(updated_at) = ?",
-        [todayStr]
+        "SELECT COUNT(*) as count FROM jobs WHERE LOWER(portal) = 'naukri' AND applied = 1 AND DATE(datetime(updated_at, '+05:30')) = ?",
+        [todayIst]
     );
     const appliedToday = appliedTodayRow ? appliedTodayRow.count : 0;
     telemetry.dailyAppliedCount = appliedToday;
 
-    logger.info(`Daily Naukri Applications Counter: ${appliedToday} / ${MAX_APPLICATIONS_PER_DAY}`);
+    logger.info(`Daily Naukri Applications Counter (IST: ${todayIst}): ${appliedToday} / ${MAX_APPLICATIONS_PER_DAY}`);
 
     if (appliedToday >= MAX_APPLICATIONS_PER_DAY && !isDryRun) {
         logger.warn("⚠️ Daily Naukri application limit reached. Skipping further submissions today.");
@@ -108,6 +108,10 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
         context = await browser.newContext({
             userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport: { width: 1440, height: 900 },
+            extraHTTPHeaders: {
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.naukri.com/mnjuser/homepage"
+            },
             storageState: storageStatePath
         });
 
@@ -140,26 +144,63 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
         const discoveredJobs = [];
         const seenIds = new Set();
 
-        for (const searchUrl of TARGET_SEARCH_URLS) {
-            logger.info(`Searching: ${searchUrl}`);
-            await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
-            await page.waitForTimeout(3500);
+        for (let sIdx = 0; sIdx < TARGET_SEARCH_URLS.length; sIdx++) {
+            const searchUrl = TARGET_SEARCH_URLS[sIdx];
+            logger.info(`Searching (${sIdx + 1}/${TARGET_SEARCH_URLS.length}): ${searchUrl}`);
 
-            const jobSelector = "article.jobTuple, div.srp-jobtuple, article.srp-jobtuple, [data-job-id], .cust-job-tuple";
+            // Delay between search requests to respect rate limits & avoid Akamai 403
+            if (sIdx > 0) {
+                const searchDelay = Math.floor(Math.random() * 3000) + 4000;
+                await page.waitForTimeout(searchDelay);
+            }
+
+            let res;
+            try {
+                res = await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+                await page.waitForTimeout(4000);
+            } catch (navErr) {
+                logger.warn(`Navigation error for ${searchUrl}: ${navErr.message}`);
+                continue;
+            }
+
+            const title = await page.title().catch(() => "");
+            const status = res ? res.status() : 0;
+            if (status === 403 || title.toLowerCase().includes("access denied")) {
+                logger.warn(`⚠️ Akamai 403 Access Denied encountered on ${searchUrl}. Waiting 8s before next request...`);
+                await page.waitForTimeout(8000);
+                continue;
+            }
+
+            // Resilient Selector Matrix
+            const jobSelector = ".cust-job-tuple, article.jobTuple, div.srp-jobtuple, article.srp-jobtuple, [data-job-id]";
+            await page.waitForSelector(jobSelector + ", a.title", { timeout: 15000 }).catch(() => {});
+
             const cards = page.locator(jobSelector);
-            const count = await cards.count().catch(() => 0);
+            let count = await cards.count().catch(() => 0);
+
+            // Fallback if cards count is 0
+            if (count === 0) {
+                const titleLinks = page.locator("a.title, a[href*='job-listings']");
+                count = await titleLinks.count().catch(() => 0);
+            }
+
             logger.info(`Found ${count} job cards on ${searchUrl}`);
 
             for (let i = 0; i < count; i++) {
                 try {
                     const item = cards.nth(i);
-                    const titleLoc = item.locator("a.title, .title, [class*='title']").first();
-                    const title = (await titleLoc.textContent().catch(() => "")).trim();
+                    const titleLoc = (await item.count().catch(() => 0) > 0)
+                        ? item.locator("a.title, .title, [class*='title']").first()
+                        : page.locator("a.title, a[href*='job-listings']").nth(i);
+
+                    const titleText = (await titleLoc.textContent().catch(() => "")).trim();
                     const url = await titleLoc.getAttribute("href").catch(() => "");
-                    if (!title || !url) continue;
+                    if (!titleText || !url) continue;
 
                     const companyLoc = item.locator(".companyName, .company, a.comp-name, [class*='company']").first();
-                    const company = (await companyLoc.textContent().catch(() => "Naukri Employer")).trim();
+                    const company = (await companyLoc.count().catch(() => 0) > 0)
+                        ? (await companyLoc.textContent().catch(() => "Naukri Employer")).trim()
+                        : "Naukri Employer";
 
                     // Extract Job ID
                     let jobId = await item.getAttribute("data-job-id").catch(() => null);
@@ -175,7 +216,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
                     telemetry.Discovered++;
 
                     // Role Filtering
-                    const titleLower = title.toLowerCase();
+                    const titleLower = titleText.toLowerCase();
                     const isArchitectOrManager = titleLower.includes("architect") || titleLower.includes("manager") || titleLower.includes("director") || titleLower.includes("designer") || titleLower.includes("full stack");
                     const isDevOpsTarget = titleLower.includes("devops") || titleLower.includes("cloud") || titleLower.includes("platform") || titleLower.includes("infrastructure") || titleLower.includes("sre") || titleLower.includes("kubernetes") || titleLower.includes("aws") || titleLower.includes("site reliability") || titleLower.includes("ci/cd");
 
@@ -194,12 +235,12 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
                     const locLoc = item.locator(".locWd, .location, span.loc, span.loc-wrap, [class*='location']").first();
                     const location = (await locLoc.count() > 0) ? (await locLoc.textContent().catch(() => "Bangalore")).trim() : "Bangalore";
 
-                    const locCheck = checkLocationEligibility(location, title);
+                    const locCheck = checkLocationEligibility(location, titleText);
                     if (!locCheck.eligible) continue;
                     telemetry.LocationEligible++;
 
                     // Database Duplicates Check
-                    const dbRecord = await db.get("SELECT * FROM jobs WHERE portal = 'naukri' AND (job_id = ? OR url = ?)", [jobId, url]);
+                    const dbRecord = await db.get("SELECT * FROM jobs WHERE LOWER(portal) = 'naukri' AND (job_id = ? OR url = ?)", [jobId, url]);
                     if (dbRecord) {
                         telemetry.Duplicates++;
                         if (dbRecord.applied === 1 || ["APPLIED", "EMPLOYER_PENDING", "APPLICATION_SUBMITTED", "INTERVIEW_REQUESTED"].includes(dbRecord.status)) {
@@ -210,7 +251,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
 
                     discoveredJobs.push({
                         jobId,
-                        title,
+                        title: titleText,
                         company,
                         location,
                         experience,
@@ -220,7 +261,24 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
 
                 } catch (cardErr) {}
             }
-            await page.waitForTimeout(2000);
+        }
+
+        // PHASE 4 — ZERO-DISCOVERY ANOMALY SAFEGUARD
+        if (telemetry.Discovered === 0) {
+            logger.error("❌ DISCOVERY_ANOMALY: All configured search URLs returned 0 job cards!");
+            telemetry.zeroApplicationReason = "DISCOVERY_ANOMALY";
+            saveTelemetry();
+
+            const telegramService = require("../apps/telegram");
+            await telegramService.sendMessage(
+                "<b>⚠️ Naukri Discovery Anomaly Alert</b>\n\n" +
+                "• <b>Portal</b>: <code>Naukri</code>\n" +
+                "• <b>Status</b>: <code>DISCOVERY_ANOMALY</code>\n" +
+                "• <b>Details</b>: All configured search URLs returned 0 job cards on Oracle VM.\n" +
+                "• <b>Action</b>: Application run halted safely. Preserving existing job states."
+            ).catch(() => {});
+
+            process.exit(0);
         }
 
         telemetry.FinalCandidates = discoveredJobs.length;
@@ -263,7 +321,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             logger.info(`\n[Application ${applicationsRun + 1}/${MAX_APPLICATIONS_PER_RUN}] Processing: "${target.title}" at "${target.company}" (${target.experience})`);
 
             // Re-verify duplicate immediately prior to opening
-            const preCheck = await db.get("SELECT id FROM jobs WHERE portal = 'naukri' AND job_id = ? AND applied = 1", [target.jobId]);
+            const preCheck = await db.get("SELECT id FROM jobs WHERE LOWER(portal) = 'naukri' AND job_id = ? AND applied = 1", [target.jobId]);
             if (preCheck) {
                 logger.info(`   Skipping duplicate ${target.jobId} (already applied in DB).`);
                 continue;
@@ -336,7 +394,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
                     question: "Naukri pop-up questionnaire requires candidate input.",
                     url: target.url
                 });
-                await db.run("UPDATE jobs SET status = 'WAITING_FOR_INPUT' WHERE portal = 'naukri' AND job_id = ?", [target.jobId]);
+                await db.run("UPDATE jobs SET status = 'WAITING_FOR_INPUT' WHERE LOWER(portal) = 'naukri' AND job_id = ?", [target.jobId]);
                 telemetry.WaitingForInput++;
                 continue;
             }
@@ -360,7 +418,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             await fresh.close().catch(() => {});
 
             if (isVerified) {
-                await db.run("UPDATE jobs SET status = 'EMPLOYER_PENDING', applied = 1, updated_at = CURRENT_TIMESTAMP WHERE portal = 'naukri' AND job_id = ?", [target.jobId]);
+                await db.run("UPDATE jobs SET status = 'EMPLOYER_PENDING', applied = 1, updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [target.jobId]);
 
                 eventBus.publish(eventBus.EVENTS.APPLICATION_SUBMITTED, {
                     portal: "Naukri",
@@ -376,7 +434,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
                 logger.info(`✓ Verified Application Submitted for "${target.title}" at "${target.company}".`);
             } else {
                 logger.warn(`⚠️ Submission unverified for job ${target.jobId}. Setting CLICKED_UNVERIFIED.`);
-                await db.run("UPDATE jobs SET status = 'CLICKED_UNVERIFIED' WHERE portal = 'naukri' AND job_id = ?", [target.jobId]);
+                await db.run("UPDATE jobs SET status = 'CLICKED_UNVERIFIED' WHERE LOWER(portal) = 'naukri' AND job_id = ?", [target.jobId]);
                 telemetry.Failed++;
             }
 
