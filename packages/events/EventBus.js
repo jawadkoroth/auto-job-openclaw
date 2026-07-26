@@ -88,37 +88,86 @@ class EventBus extends EventEmitter {
             }
         });
 
-        // Subscriber: Telegram High-Priority Notifications
+        // Subscriber: Telegram High-Priority Notifications (Isolated from application state)
+        this.on(EVENTS.APPLICATION_STARTED, async (data) => {
+            try {
+                const telegramService = require("../../apps/telegram");
+                await telegramService.sendApplicationSubmittedNotification({
+                    portal: data.portal,
+                    company: data.company,
+                    role: data.title || data.role,
+                    status: data.status || "EMPLOYER_PENDING",
+                    url: data.url,
+                    jobId: data.jobId
+                });
+            } catch (err) {
+                logger.error(`[EventBus] TELEGRAM_DELIVERY_FAILED for APPLICATION_STARTED: ${err.message}`);
+            }
+        });
+
+        this.on(EVENTS.WAITING_FOR_INPUT, async (data) => {
+            try {
+                const telegramService = require("../../apps/telegram");
+                await telegramService.sendQuestionInputNotification({
+                    portal: data.portal,
+                    company: data.company,
+                    role: data.title || data.role,
+                    question: data.question,
+                    suggestedAnswer: data.suggestedAnswer,
+                    url: data.url,
+                    jobId: data.jobId
+                });
+            } catch (err) {
+                logger.error(`[EventBus] TELEGRAM_DELIVERY_FAILED for WAITING_FOR_INPUT: ${err.message}`);
+            }
+        });
+
         this.on(EVENTS.INTERVIEW_REQUESTED, async (data) => {
-            const telegramService = require("../../apps/telegram");
-            await telegramService.sendNotification({
-                title: `🎯 Interview Request Received (${data.portal})`,
-                message: `Company: ${data.company || 'Employer'}\nMessage: "${String(data.message || '').slice(0, 300)}"`
-            }).catch(() => {});
+            try {
+                const telegramService = require("../../apps/telegram");
+                await telegramService.sendInterviewNotification({
+                    portal: data.portal,
+                    company: data.company,
+                    role: data.title || data.role,
+                    details: data.message || "Interview request received.",
+                    url: data.url,
+                    jobId: data.jobId
+                });
+            } catch (err) {
+                logger.error(`[EventBus] TELEGRAM_DELIVERY_FAILED for INTERVIEW_REQUESTED: ${err.message}`);
+            }
         });
 
         this.on(EVENTS.CODING_TEST_RECEIVED, async (data) => {
-            const telegramService = require("../../apps/telegram");
-            await telegramService.sendNotification({
-                title: `💻 Coding Test Received (${data.portal})`,
-                message: `Company: ${data.company || 'Employer'}\nMessage: "${String(data.message || '').slice(0, 300)}"`
-            }).catch(() => {});
+            try {
+                const telegramService = require("../../apps/telegram");
+                await telegramService.sendCodingTestNotification({
+                    portal: data.portal,
+                    company: data.company,
+                    role: data.title || data.role,
+                    details: data.message || "Coding test challenge received.",
+                    url: data.url,
+                    jobId: data.jobId
+                });
+            } catch (err) {
+                logger.error(`[EventBus] TELEGRAM_DELIVERY_FAILED for CODING_TEST_RECEIVED: ${err.message}`);
+            }
         });
 
         this.on(EVENTS.OFFER_RECEIVED, async (data) => {
-            const telegramService = require("../../apps/telegram");
-            await telegramService.sendNotification({
-                title: `🎉 Job Offer Received (${data.portal})`,
-                message: `Company: ${data.company || 'Employer'}\nCongratulations!`
-            }).catch(() => {});
-        });
-
-        this.on(EVENTS.APPLICATION_REJECTED, async (data) => {
-            const telegramService = require("../../apps/telegram");
-            await telegramService.sendNotification({
-                title: `❌ Application Status Update (${data.portal})`,
-                message: `Company: ${data.company || 'Employer'}\nStatus: REJECTED/CLOSED`
-            }).catch(() => {});
+            try {
+                const telegramService = require("../../apps/telegram");
+                await telegramService.sendOfferNotification({
+                    portal: data.portal,
+                    company: data.company,
+                    role: data.title || data.role,
+                    details: data.message || "Job offer received.",
+                    url: data.url,
+                    jobId: data.jobId
+                });
+            } catch (err) {
+                logger.error(`[EventBus] TELEGRAM_DELIVERY_FAILED for OFFER_RECEIVED: ${err.message}`);
+            }
         });
     }
 }

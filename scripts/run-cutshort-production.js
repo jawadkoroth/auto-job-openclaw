@@ -341,6 +341,18 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.MAX_APPLICATIONS_PER_DAY |
 
         saveTelemetry();
 
+        const telegramService = require("../apps/telegram");
+        await telegramService.sendRunSummaryNotification({
+            portal: "Cutshort",
+            discovered: telemetry.Discovered,
+            eligible: telemetry.FinalCandidates,
+            attempted: telemetry.Attempted,
+            applied: telemetry.Applied,
+            waitingForInput: telemetry.WaitingForInput,
+            failed: telemetry.Failed,
+            skippedDuplicates: telemetry.Duplicates + telemetry.AlreadyApplied
+        }).catch(err => console.error("Failed to send Cutshort Telegram run summary:", err.message));
+
     } catch (err) {
         console.error("❌ Production Runner Error:", err);
         telemetry.zeroApplicationReason = "APPLICATION_FAILURE";

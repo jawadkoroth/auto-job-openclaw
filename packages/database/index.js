@@ -139,6 +139,18 @@ class Database {
                 )
             `);
 
+            // Notification Deliveries tracking table
+            await rawRun(`
+                CREATE TABLE IF NOT EXISTS notification_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    notification_key TEXT UNIQUE NOT NULL,
+                    portal TEXT,
+                    job_id TEXT,
+                    notification_type TEXT,
+                    sent_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
+
             // Application Answer Bank
             await rawRun(`
                 CREATE TABLE IF NOT EXISTS answer_bank (

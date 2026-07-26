@@ -248,28 +248,49 @@ module.exports = async function apply(plugin, page, job) {
             await page.waitForTimeout(4000);
         }
 
-        // Verify successful application
-        const successConfirmSelector = ".already-applied, button:has-text('Applied'), span:has-text('Applied'), :has-text('You have applied'), :has-text('Applied successfully'), :has-text('Application Submitted')";
-        const isConfirmed = await page.locator(successConfirmSelector).count() > 0;
-        if (isConfirmed) {
-            logger.info(`Successfully applied and verified for job_id: ${job.job_id}`);
+        // Layered Verification of successful application
+        await page.waitForTimeout(2000);
+
+        // 1. Toast / popup message verification
+        const toastSelector = ".toast, .toastr, .toast-success, .toast-message, div[class*='toast'], div:has-text('Applied successfully'), div:has-text('Application sent'), div:has-text('Your application has been sent'), div:has-text('already applied')";
+        const toastFound = await page.locator(toastSelector).count().catch(() => 0) > 0;
+
+        // 2. Button state change verification
+        const successConfirmSelector = ".already-applied, button:has-text('Applied'), span:has-text('Applied'), button:has-text('Application Sent'), span:has-text('Application Sent'), :has-text('You have applied'), :has-text('Applied successfully'), :has-text('Application Submitted')";
+        const isConfirmed = await page.locator(successConfirmSelector).count().catch(() => 0) > 0;
+
+        // 3. Fallback: Re-inspect active card/page buttons
+        const buttonText = await applyBtn.innerText().catch(() => "");
+        const isButtonApplied = buttonText.toLowerCase().includes("applied") || buttonText.toLowerCase().includes("sent");
+
+        if (toastFound || isConfirmed || isButtonApplied) {
+            logger.info(`Successfully applied and verified for Hirist job_id: ${job.job_id}`);
             job.statusReason = "applied";
+
+            const telegramService = require("../../../apps/telegram");
+            await telegramService.sendApplicationSubmittedNotification({
+                portal: "Hirist",
+                company: job.company,
+                role: job.title,
+                status: "APPLIED",
+                url: job.url,
+                jobId: job.job_id || job.id
+            }).catch(e => logger.error(`[hirist] Telegram alert error: ${e.message}`));
+
             return true;
         } else {
             logger.warn(`Click action performed but application confirmation not detected on Hirist. Marking as CLICKED_UNVERIFIED.`);
             job.statusReason = "clicked_unverified";
             
-            // Trigger Telegram alert for unverified submission!
             const telegramService = require("../../../apps/telegram");
-            await telegramService.sendMessage(
-                `⚠️ *Unverified Application Alert*\n\n` +
-                `• *Portal*: \`Hirist\`\n` +
-                `• *Company*: *${job.company}*\n` +
-                `• *Role*: *${job.title}*\n` +
-                `• *Status*: \`CLICKED_UNVERIFIED\`\n\n` +
-                `The apply button was clicked, but we could not verify submission confirmation. Please check manually.\n` +
-                `🔗 *Job URL*: ${job.url}`
-            ).catch(e => logger.error(`[hirist] Failed to send Telegram alert for unverified submission: ${e.message}`));
+            await telegramService.sendApplicationFailedNotification({
+                portal: "Hirist",
+                company: job.company,
+                role: job.title,
+                reason: "CLICKED_UNVERIFIED: Clicked apply but confirmation toast/button unobserved",
+                url: job.url,
+                jobId: job.job_id || job.id
+            }).catch(e => logger.error(`[hirist] Telegram alert error: ${e.message}`));
             
             return true;
         }

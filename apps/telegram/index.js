@@ -3,19 +3,18 @@ const fs = require("fs");
 const path = require("path");
 const config = require("../../packages/config");
 const logger = require("../../packages/logger");
+const db = require("../../packages/database");
 
 function redactSecrets(text) {
     if (!text) return "";
     let result = String(text);
     if (config.telegram.botToken) {
-        // Escape regex special chars in token
         const tokenPattern = config.telegram.botToken.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
         result = result.replace(new RegExp(tokenPattern, 'g'), "[REDACTED_BOT_TOKEN]");
     }
     if (config.telegram.chatId) {
         result = result.replace(new RegExp(config.telegram.chatId, 'g'), "[REDACTED_CHAT_ID]");
     }
-    // Match potential raw Telegram bot tokens in URLs (e.g., bot123456:ABC-DEF...)
     result = result.replace(/bot[0-9a-zA-Z_-]+/g, "bot[REDACTED_BOT_TOKEN]");
     return result;
 }
@@ -40,22 +39,22 @@ function escapeHTML(str) {
 function markdownToHTML(text) {
     if (!text) return "";
     
-    // 1. Preserve existing valid Telegram HTML tags by replacing them with placeholders
+    // 1. Preserve existing valid Telegram HTML tags by replacing them with non-underscore placeholders
     const placeholders = [];
     const htmlTagRegex = /<\/?(b|i|code|pre|a|u|s|tg-spoiler)(\s+[^>]*>|>)/gi;
     let textWithPlaceholders = text.replace(htmlTagRegex, (tag) => {
         placeholders.push(tag);
-        return `___TELEGRAM_HTML_TAG_${placeholders.length - 1}___`;
+        return `:::HTMLTAG${placeholders.length - 1}:::`;
     });
         
-    // 2. Escape HTML special chars in the remaining text (avoiding double-escaping existing entities)
+    // 2. Escape HTML special chars in remaining text (avoiding double-escaping existing entities)
     let escaped = textWithPlaceholders
         .replace(/&(?!amp;|lt;|gt;|quot;|#39;)/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
         
     // 3. Restore valid HTML tags
-    escaped = escaped.replace(/___TELEGRAM_HTML_TAG_(\d+)___/g, (match, index) => {
+    escaped = escaped.replace(/:::HTMLTAG(\d+):::/g, (match, index) => {
         return placeholders[parseInt(index, 10)];
     });
         
@@ -70,11 +69,11 @@ function markdownToHTML(text) {
         return `<code>${p1}</code>`;
     });
     
-    // Protect <code>...</code> and <pre>...</pre> content from italic _ text _ conversion
+    // Protect <code>...</code> and <pre>...</pre> content using non-underscore placeholders
     const codeBlocks = [];
     escaped = escaped.replace(/<(code|pre)[\s\S]*?<\/\1>/gi, (match) => {
         codeBlocks.push(match);
-        return `___CODE_BLOCK_${codeBlocks.length - 1}___`;
+        return `:::CODEBLOCKTAG${codeBlocks.length - 1}:::`;
     });
 
     // Bold: **text** or *text* -> <b>text</b>
@@ -85,7 +84,7 @@ function markdownToHTML(text) {
     escaped = escaped.replace(/_([^_]+)_/g, '<i>$1</i>');
 
     // Restore protected code blocks
-    escaped = escaped.replace(/___CODE_BLOCK_(\d+)___/g, (match, index) => {
+    escaped = escaped.replace(/:::CODEBLOCKTAG(\d+):::/g, (match, index) => {
         return codeBlocks[parseInt(index, 10)];
     });
     
@@ -101,9 +100,183 @@ class TelegramService {
         this.lastUpdateId = 0;
     }
 
+    async isNotificationDelivered(key) {
+        if (!key) return false;
+        try {
+            await db.init();
+            const row = await db.get("SELECT id FROM notification_deliveries WHERE notification_key = ?", [key]);
+            return !!row;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    async recordNotificationDelivery(key, portal = "", jobId = "", type = "") {
+        if (!key) return;
+        try {
+            await db.init();
+            await db.run(
+                "INSERT OR IGNORE INTO notification_deliveries (notification_key, portal, job_id, notification_type) VALUES (?, ?, ?, ?)",
+                [key, portal, jobId, type]
+            );
+        } catch (e) {}
+    }
+
+    /**
+     * Centralized Application Submitted Telegram Alert
+     */
+    async sendApplicationSubmittedNotification({ portal, company, role, status, url, jobId }) {
+        const key = `${portal || 'generic'}_${jobId || 'job'}_SUBMITTED`;
+        if (await this.isNotificationDelivered(key)) return;
+
+        const safePortal = escapeHTML(portal || "Job Portal");
+        const safeCompany = escapeHTML(company || "Company");
+        const safeRole = escapeHTML(role || "Target Role");
+        const safeStatus = escapeHTML(status || "EMPLOYER_PENDING");
+        const safeUrl = url || "#";
+
+        const text = `<b>✅ Application Submitted</b>\n\n` +
+            `• <b>Portal</b>: <code>${safePortal}</code>\n` +
+            `• <b>Company</b>: <b>${safeCompany}</b>\n` +
+            `• <b>Role</b>: <b>${safeRole}</b>\n` +
+            `• <b>Status</b>: <code>${safeStatus}</code>\n` +
+            `• <b>Job URL</b>: ${safeUrl}`;
+
+        const res = await this.sendMessage(text);
+        await this.recordNotificationDelivery(key, portal, jobId, "SUBMITTED");
+        return res;
+    }
+
+    /**
+     * Centralized Question Needs Input Telegram Alert
+     */
+    async sendQuestionInputNotification({ portal, company, role, question, suggestedAnswer, url, jobId }) {
+        const key = `${portal || 'generic'}_${jobId || 'job'}_QUESTION_INPUT`;
+        if (await this.isNotificationDelivered(key)) return;
+
+        const safePortal = escapeHTML(portal || "Job Portal");
+        const safeCompany = escapeHTML(company || "Company");
+        const safeRole = escapeHTML(role || "Target Role");
+        const safeQuestion = escapeHTML(question || "No details provided");
+        const safeAnswer = escapeHTML(suggestedAnswer || "Yes");
+        const safeUrl = url || "#";
+
+        const text = `<b>❓ Application Needs Input</b>\n\n` +
+            `• <b>Portal</b>: <code>${safePortal}</code>\n` +
+            `• <b>Company</b>: <b>${safeCompany}</b>\n` +
+            `• <b>Role</b>: <b>${safeRole}</b>\n\n` +
+            `❓ <b>Question</b>:\n<i>"${safeQuestion}"</i>\n\n` +
+            `💡 <b>Suggested Answer</b>:\n<i>"${safeAnswer}"</i>\n\n` +
+            `🔗 <b>Job URL</b>: ${safeUrl}`;
+
+        const res = await this.sendMessage(text);
+        await this.recordNotificationDelivery(key, portal, jobId, "QUESTION_INPUT");
+        return res;
+    }
+
+    /**
+     * Centralized Application Failure Telegram Alert
+     */
+    async sendApplicationFailedNotification({ portal, company, role, reason, url, jobId }) {
+        const key = `${portal || 'generic'}_${jobId || 'job'}_FAILED`;
+        if (await this.isNotificationDelivered(key)) return;
+
+        const safePortal = escapeHTML(portal || "Job Portal");
+        const safeCompany = escapeHTML(company || "Company");
+        const safeRole = escapeHTML(role || "Target Role");
+        const safeReason = escapeHTML(reason || "Application execution error");
+        const safeUrl = url || "#";
+
+        const text = `<b>⚠️ Application Failed</b>\n\n` +
+            `• <b>Portal</b>: <code>${safePortal}</code>\n` +
+            `• <b>Company</b>: <b>${safeCompany}</b>\n` +
+            `• <b>Role</b>: <b>${safeRole}</b>\n` +
+            `• <b>Reason</b>: <code>${safeReason}</code>\n` +
+            `• <b>Job URL</b>: ${safeUrl}`;
+
+        const res = await this.sendMessage(text);
+        await this.recordNotificationDelivery(key, portal, jobId, "FAILED");
+        return res;
+    }
+
+    /**
+     * Centralized Run Summary Completion Alert
+     */
+    async sendRunSummaryNotification({ portal, discovered, eligible, attempted, applied, waitingForInput, failed, skippedDuplicates }) {
+        const safePortal = escapeHTML(portal || "Portal");
+        const text = `<b>📊 ${safePortal.toUpperCase()} RUN COMPLETE</b>\n\n` +
+            `• <b>Discovered</b>: ${discovered || 0}\n` +
+            `• <b>Eligible</b>: ${eligible || 0}\n` +
+            `• <b>Attempted</b>: ${attempted || 0}\n` +
+            `• <b>Applied</b>: ${applied || 0}\n` +
+            `• <b>Waiting For Input</b>: ${waitingForInput || 0}\n` +
+            `• <b>Failed</b>: ${failed || 0}\n` +
+            `• <b>Skipped/Duplicates</b>: ${skippedDuplicates || 0}`;
+
+        return await this.sendMessage(text);
+    }
+
+    async sendInterviewNotification({ portal, company, role, details, url, jobId }) {
+        const key = `${portal || 'generic'}_${jobId || 'job'}_INTERVIEW`;
+        if (await this.isNotificationDelivered(key)) return;
+
+        const safePortal = escapeHTML(portal || "Job Portal");
+        const safeCompany = escapeHTML(company || "Company");
+        const safeRole = escapeHTML(role || "Target Role");
+        const safeDetails = escapeHTML(details || "Interview request received.");
+
+        const text = `<b>🎯 Interview Request</b>\n\n` +
+            `• <b>Portal</b>: <code>${safePortal}</code>\n` +
+            `• <b>Company</b>: <b>${safeCompany}</b>\n` +
+            `• <b>Role</b>: <b>${safeRole}</b>\n\n` +
+            `<i>${safeDetails}</i>`;
+
+        const res = await this.sendMessage(text);
+        await this.recordNotificationDelivery(key, portal, jobId, "INTERVIEW");
+        return res;
+    }
+
+    async sendCodingTestNotification({ portal, company, role, details, url, jobId }) {
+        const key = `${portal || 'generic'}_${jobId || 'job'}_CODING_TEST`;
+        if (await this.isNotificationDelivered(key)) return;
+
+        const safePortal = escapeHTML(portal || "Job Portal");
+        const safeCompany = escapeHTML(company || "Company");
+        const safeRole = escapeHTML(role || "Target Role");
+        const safeDetails = escapeHTML(details || "Coding test challenge received.");
+
+        const text = `<b>🧪 Coding Test Received</b>\n\n` +
+            `• <b>Portal</b>: <code>${safePortal}</code>\n` +
+            `• <b>Company</b>: <b>${safeCompany}</b>\n` +
+            `• <b>Role</b>: <b>${safeRole}</b>\n\n` +
+            `<i>${safeDetails}</i>`;
+
+        const res = await this.sendMessage(text);
+        await this.recordNotificationDelivery(key, portal, jobId, "CODING_TEST");
+        return res;
+    }
+
+    async sendOfferNotification({ portal, company, role, details, url, jobId }) {
+        const key = `${portal || 'generic'}_${jobId || 'job'}_OFFER`;
+        if (await this.isNotificationDelivered(key)) return;
+
+        const safePortal = escapeHTML(portal || "Job Portal");
+        const safeCompany = escapeHTML(company || "Company");
+        const safeRole = escapeHTML(role || "Target Role");
+
+        const text = `<b>🎉 Offer Received</b>\n\n` +
+            `• <b>Portal</b>: <code>${safePortal}</code>\n` +
+            `• <b>Company</b>: <b>${safeCompany}</b>\n` +
+            `• <b>Role</b>: <b>${safeRole}</b>\n\n` +
+            `Congratulations!`;
+
+        const res = await this.sendMessage(text);
+        await this.recordNotificationDelivery(key, portal, jobId, "OFFER");
+        return res;
+    }
+
     /**
      * Send structured notification object via Telegram
-     * @param {Object} params 
      */
     async sendNotification({ title, message }) {
         const text = `<b>${title || "OpenClaw Notification"}</b>\n${message || ""}`;
@@ -112,20 +285,25 @@ class TelegramService {
 
     /**
      * Send question prompt requiring user approval/answer
-     * @param {Object} params 
      */
     async sendQuestionPrompt({ jobId, company, title, question, portal, approvalId }) {
-        const text = `<b>❓ ${title || "Question Required"}</b>\n` +
-            `Company: <b>${company || "N/A"}</b> (${portal || "Job Portal"})\n` +
-            `Job ID: <code>${jobId || "N/A"}</code>\n\n` +
-            `Question:\n<i>"${question}"</i>\n\n` +
-            `To answer, reply to this message or update the Candidate Dashboard. (Approval ID: <code>${approvalId || "N/A"}</code>)`;
+        const safePortal = escapeHTML(portal || "Job Portal");
+        const safeCompany = escapeHTML(company || "N/A");
+        const safeTitle = escapeHTML(title || "Question Required");
+        const safeJobId = escapeHTML(jobId || "N/A");
+        const safeQuestion = escapeHTML(question || "");
+        const safeApprovalId = escapeHTML(approvalId || "N/A");
+
+        const text = `<b>❓ ${safeTitle}</b>\n` +
+            `Company: <b>${safeCompany}</b> (${safePortal})\n` +
+            `Job ID: <code>${safeJobId}</code>\n\n` +
+            `Question:\n<i>"${safeQuestion}"</i>\n\n` +
+            `To answer, reply to this message or update the Candidate Dashboard. (Approval ID: <code>${safeApprovalId}</code>)`;
         return await this.sendMessage(text);
     }
 
     /**
      * Send HTML message to target Telegram Chat
-     * @param {string} text 
      */
     async sendMessage(text) {
         if (!this.token || !this.chatId) {
@@ -154,8 +332,6 @@ class TelegramService {
 
     /**
      * Send a local image/screenshot to target Telegram Chat
-     * @param {string} photoPath 
-     * @param {string} caption 
      */
     async sendPhoto(photoPath, caption) {
         if (!this.token || !this.chatId) {
@@ -168,12 +344,6 @@ class TelegramService {
         }
         const endpoint = `${this.baseUrl}/sendPhoto`;
         const htmlCaption = markdownToHTML(caption);
-        const payload = {
-            chat_id: this.chatId,
-            caption: htmlCaption,
-            photoPath: photoPath
-        };
-        localLogger.info(`Telegram send photo payload: ${JSON.stringify(payload)}`);
         try {
             const boundary = "----WebKitFormBoundary" + Math.random().toString(36).substring(2);
             const fileBuffer = fs.readFileSync(photoPath);
@@ -207,10 +377,6 @@ class TelegramService {
         }
     }
 
-    /**
-     * Poll update logs from Telegram servers
-     * @returns {Promise<any[]>}
-     */
     async getUpdates() {
         try {
             const response = await axios.get(`${this.baseUrl}/getUpdates`, {
@@ -227,10 +393,6 @@ class TelegramService {
         }
     }
 
-    /**
-     * Launch polling thread for interactive operations
-     * @param {Function} onMessageCallback 
-     */
     startPolling(onMessageCallback) {
         if (!this.token) {
             localLogger.warn("Telegram Bot token missing. Interactive commands listener is disabled.");
@@ -247,8 +409,6 @@ class TelegramService {
                 this.lastUpdateId = update.update_id;
                 if (update.message && update.message.text) {
                     const fromId = update.message.chat.id;
-                    
-                    // Strict chat validation for server security
                     if (String(fromId) !== String(this.chatId)) {
                         localLogger.warn(`Refused message from unauthorized Chat ID: ${fromId}`);
                         continue;
@@ -265,9 +425,6 @@ class TelegramService {
         poll();
     }
 
-    /**
-     * Stop active polling session
-     */
     stopPolling() {
         this.isPolling = false;
         localLogger.info("Telegram Bot listener stopped.");
