@@ -6,6 +6,7 @@ const logger = require("../logger").automation;
 const EVENTS = {
     JOB_DISCOVERED: "JOB_DISCOVERED",
     APPLICATION_STARTED: "APPLICATION_STARTED",
+    APPLICATION_SUBMITTED: "APPLICATION_SUBMITTED",
     CONVERSATION_CREATED: "CONVERSATION_CREATED",
     QUESTIONNAIRE_FOUND: "QUESTIONNAIRE_FOUND",
     QUESTION_ANSWERED: "QUESTION_ANSWERED",
@@ -22,6 +23,7 @@ class EventBus extends EventEmitter {
     constructor() {
         super();
         this.EVENTS = EVENTS;
+        this.emittedEvents = new Set();
         this.registerDefaultListeners();
     }
 
@@ -31,6 +33,16 @@ class EventBus extends EventEmitter {
      * @param {Object} payload Metadata payload (jobId, conversationId, portal, etc.)
      */
     publish(eventType, payload = {}) {
+        const portalKey = payload.portal ? payload.portal.toLowerCase() : "generic";
+        const jobIdKey = payload.jobId ? String(payload.jobId) : "N/A";
+        const dedupeKey = `${portalKey}_${jobIdKey}_${eventType}`;
+
+        if (this.emittedEvents.has(dedupeKey)) {
+            logger.warn(`[EventBus] Skipping duplicate lifecycle event ${eventType} for job ${jobIdKey} (${portalKey})`);
+            return null;
+        }
+
+        this.emittedEvents.add(dedupeKey);
         const timestamp = new Date().toISOString();
         const eventId = `evt_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
         const eventData = { eventId, eventType, timestamp, ...payload };
@@ -57,15 +69,28 @@ class EventBus extends EventEmitter {
         await db.init();
         const { eventId, eventType, jobId, conversationId, portal, ...rest } = eventData;
         
+        const portalStr = String(portal || "generic").toLowerCase();
+        const jobIdStr = String(jobId || "N/A");
+
+        if (["APPLICATION_STARTED", "APPLICATION_SUBMITTED", "QUESTIONNAIRE_FOUND", "QUESTIONNAIRE_SUBMITTED"].includes(eventType)) {
+            const existing = await db.get(
+                `SELECT id FROM application_events WHERE LOWER(portal) = ? AND job_id = ? AND event_type = ?`,
+                [portalStr, jobIdStr, eventType]
+            );
+            if (existing) {
+                return;
+            }
+        }
+
         await db.run(
             `INSERT INTO application_events (
                 event_id, job_id, conversation_id, portal, event_type, payload
             ) VALUES (?, ?, ?, ?, ?, ?)`,
             [
                 eventId,
-                String(jobId || "N/A"),
+                jobIdStr,
                 conversationId ? String(conversationId) : null,
-                String(portal || "generic"),
+                portalStr,
                 eventType,
                 JSON.stringify(rest)
             ]
@@ -89,7 +114,7 @@ class EventBus extends EventEmitter {
         });
 
         // Subscriber: Telegram High-Priority Notifications (Isolated from application state)
-        this.on(EVENTS.APPLICATION_STARTED, async (data) => {
+        this.on(EVENTS.APPLICATION_SUBMITTED, async (data) => {
             try {
                 const telegramService = require("../../apps/telegram");
                 await telegramService.sendApplicationSubmittedNotification({
@@ -101,7 +126,7 @@ class EventBus extends EventEmitter {
                     jobId: data.jobId
                 });
             } catch (err) {
-                logger.error(`[EventBus] TELEGRAM_DELIVERY_FAILED for APPLICATION_STARTED: ${err.message}`);
+                logger.error(`[EventBus] TELEGRAM_DELIVERY_FAILED for APPLICATION_SUBMITTED: ${err.message}`);
             }
         });
 

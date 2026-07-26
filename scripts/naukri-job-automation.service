@@ -1,0 +1,11 @@
+[Unit]
+Description=Naukri Production Job Application Automation Service
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/automation
+ExecStart=/usr/bin/node /home/ubuntu/automation/scripts/run-naukri-production.js
+StandardOutput=journal
+StandardError=journal
