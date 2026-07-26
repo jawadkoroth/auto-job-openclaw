@@ -1,3 +1,5 @@
+const { checkExperienceEligibility } = require("../../router/ExperienceEligibilityFilter");
+
 module.exports = async function search(plugin, page, queryOptions = {}) {
     const { logger, config } = plugin;
     
@@ -72,6 +74,13 @@ module.exports = async function search(plugin, page, queryOptions = {}) {
 
             jobId = jobId.trim();
             if (seenJobIds.has(jobId)) continue;
+
+            const expCheck = checkExperienceEligibility(experience);
+            if (!expCheck.eligible) {
+                logger.info(`Skipping Instahyre job ${jobId} due to experience: ${expCheck.reason}`);
+                continue;
+            }
+
             seenJobIds.add(jobId);
 
             allDiscoveredJobs.push({

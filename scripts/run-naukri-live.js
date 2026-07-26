@@ -7,21 +7,7 @@ const config = require("../packages/config");
 
 /**
  * Parse experience string (e.g. "2 - 5 Yrs", "3 - 8 Yrs", "0 - 1 Yrs")
- * @param {string} expStr 
- * @returns {{min: number, max: number}}
- */
-function parseExperience(expStr) {
-    if (!expStr) return { min: 0, max: 0 };
-    const match = expStr.match(/(\d+)\s*-\s*(\d+)/);
-    if (match) {
-        return { min: parseInt(match[1], 10), max: parseInt(match[2], 10) };
-    }
-    const single = expStr.match(/(\d+)/);
-    if (single) {
-        return { min: parseInt(single[1], 10), max: parseInt(single[1], 10) };
-    }
-    return { min: 0, max: 0 };
-}
+const { checkExperienceEligibility } = require("../packages/router/ExperienceEligibilityFilter");
 
 (async () => {
     logger.automation.info("=== Starting Live Naukri Verification Run ===");
@@ -113,10 +99,9 @@ function parseExperience(expStr) {
             }
             
             // Validate Experience Match
-            const jobExp = parseExperience(job.experience);
-            const matchesExp = (config.search.minExperience <= jobExp.max) && (config.search.maxExperience >= jobExp.min);
-            if (!matchesExp) {
-                logger.automation.info(`[SKIP] Experience mismatch: Job requires ${job.experience}, but config range is ${config.search.minExperience}-${config.search.maxExperience} yrs.`);
+            const expCheck = checkExperienceEligibility(job.experience);
+            if (!expCheck.eligible) {
+                logger.automation.info(`[SKIP] Experience mismatch: ${expCheck.reason}`);
                 continue;
             }
 

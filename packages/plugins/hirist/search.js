@@ -1,3 +1,5 @@
+const { checkExperienceEligibility } = require("../../router/ExperienceEligibilityFilter");
+
 module.exports = async function search(plugin, page, queryOptions = {}) {
     const { logger, config } = plugin;
     
@@ -67,6 +69,12 @@ module.exports = async function search(plugin, page, queryOptions = {}) {
                         } else if (line.toLowerCase().includes("bangalore") || line.toLowerCase().includes("hyderabad") || line.toLowerCase().includes("remote") || line.toLowerCase().includes("chennai") || line.toLowerCase().includes("kochi") || line.toLowerCase().includes("trivandrum")) {
                             jobLocation = line;
                         }
+                    }
+
+                    const expCheck = checkExperienceEligibility(experience);
+                    if (!expCheck.eligible) {
+                        logger.info(`Skipping Hirist job ${jobId} due to experience: ${expCheck.reason}`);
+                        continue;
                     }
 
                     allDiscoveredJobs.push({

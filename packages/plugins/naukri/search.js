@@ -4,6 +4,8 @@
  * @param {import("playwright").Page} page 
  * @param {Object} queryOptions 
  */
+const { checkExperienceEligibility } = require("../../router/ExperienceEligibilityFilter");
+
 module.exports = async function search(plugin, page, queryOptions = {}) {
     const { logger, config } = plugin;
     
@@ -71,7 +73,13 @@ module.exports = async function search(plugin, page, queryOptions = {}) {
 
                     // Extract Experience
                     const expLoc = item.locator(".expwdde, .experience, span.exp, span.exp-wrap, [class*='experience']").first();
-                    const experience = (await expLoc.count() > 0) ? (await expLoc.textContent()) : "0-0 Yrs";
+                    const experience = (await expLoc.count() > 0) ? (await expLoc.textContent()) : "0-3 Yrs";
+                    
+                    const expCheck = checkExperienceEligibility(experience);
+                    if (!expCheck.eligible) {
+                        logger.info(`Skipping Naukri job ${jobId} due to experience: ${expCheck.reason}`);
+                        continue;
+                    }
                     
                     // Extract Location (could be list of multiple cities)
                     const locLoc = item.locator(".locWd, .location, span.loc, span.loc-wrap, [class*='location']").first();

@@ -7,18 +7,7 @@ const config = require("../packages/config");
 const fs = require("fs");
 const path = require("path");
 
-function parseExperience(expStr) {
-    if (!expStr) return { min: 0, max: 0 };
-    const match = expStr.match(/(\d+)\s*-\s*(\d+)/);
-    if (match) {
-        return { min: parseInt(match[1], 10), max: parseInt(match[2], 10) };
-    }
-    const single = expStr.match(/(\d+)/);
-    if (single) {
-        return { min: parseInt(single[1], 10), max: parseInt(single[1], 10) };
-    }
-    return { min: 0, max: 0 };
-}
+const { checkExperienceEligibility } = require("../packages/router/ExperienceEligibilityFilter");
 
 function sanitizeFilename(str) {
     return str.replace(/[^a-zA-Z0-9_-]/g, "_").toLowerCase().substring(0, 30);
@@ -190,9 +179,8 @@ function sanitizeFilename(str) {
                 }
 
                 // Experience Match
-                const jobExp = parseExperience(job.experience);
-                const matchesExp = (config.search.minExperience <= jobExp.max) && (config.search.maxExperience >= jobExp.min);
-                if (!matchesExp) {
+                const expEval = checkExperienceEligibility(job.experience);
+                if (!expEval.eligible) {
                     portalStats[portal].skipped++;
                     portalStats[portal].experienceMismatch++;
                     if (isDebug) {

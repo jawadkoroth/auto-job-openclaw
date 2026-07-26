@@ -1,3 +1,5 @@
+const { checkExperienceEligibility } = require("../../router/ExperienceEligibilityFilter");
+
 module.exports = async function search(plugin, page, queryOptions = {}) {
     const { logger, config } = plugin;
     
@@ -52,6 +54,12 @@ module.exports = async function search(plugin, page, queryOptions = {}) {
 
                     const expLoc = card.locator(".styles_experience__3h2pG, [class*='experience']").first();
                     const experience = (await expLoc.count() > 0) ? (await expLoc.textContent()) : "2-5 Yrs";
+
+                    const expCheck = checkExperienceEligibility(experience);
+                    if (!expCheck.eligible) {
+                        logger.info(`Skipping Wellfound job ${jobId} due to experience: ${expCheck.reason}`);
+                        continue;
+                    }
 
                     const locLoc = card.locator(".styles_location__1Uj5T, [class*='location']").first();
                     const jobLocation = (await locLoc.count() > 0) ? (await locLoc.textContent()) : location;

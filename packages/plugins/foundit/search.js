@@ -1,3 +1,5 @@
+const { checkExperienceEligibility } = require("../../router/ExperienceEligibilityFilter");
+
 module.exports = async function search(plugin, page, queryOptions = {}) {
     const { logger, config } = plugin;
     
@@ -113,6 +115,12 @@ module.exports = async function search(plugin, page, queryOptions = {}) {
 
                         const expLoc = card.locator(".experienceSalary, .details, [class*='exp']").first();
                         const experience = (await expLoc.count() > 0) ? (await expLoc.textContent()) : "2-5 Yrs";
+
+                        const expCheck = checkExperienceEligibility(experience);
+                        if (!expCheck.eligible) {
+                            logger.info(`Skipping Foundit job ${jobId} due to experience: ${expCheck.reason}`);
+                            continue;
+                        }
 
                         const locLoc = card.locator(".location, [class*='location']").first();
                         const jobLocation = (await locLoc.count() > 0) ? (await locLoc.textContent()) : location;

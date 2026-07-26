@@ -216,6 +216,25 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, { success: true, portals: enriched });
         }
 
+        if (pathname === "/api/cutshort/last-run" && method === "GET") {
+            const telemetryFile = path.join(process.cwd(), "sessions", "cutshort", "last_run_telemetry.json");
+            let telemetry = null;
+            if (fs.existsSync(telemetryFile)) {
+                try {
+                    telemetry = JSON.parse(fs.readFileSync(telemetryFile, "utf8"));
+                } catch (e) {}
+            }
+            if (!telemetry) {
+                const count24h = await db.get("SELECT COUNT(*) as c FROM jobs WHERE portal = 'cutshort' AND applied = 1 AND timestamp >= datetime('now', '-24 hours')").catch(() => ({ c: 0 }));
+                telemetry = {
+                    portal: "cutshort",
+                    Applied: count24h ? count24h.c : 0,
+                    zeroApplicationReason: (count24h && count24h.c > 0) ? null : "UNKNOWN"
+                };
+            }
+            return sendJson(res, 200, { success: true, telemetry });
+        }
+
         // --- 4. Candidate Profile Routes ---
         if (pathname === "/api/profile" && method === "GET") {
             const profile = await candidateKnowledgeService.getProfile();

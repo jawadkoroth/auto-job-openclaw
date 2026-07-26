@@ -1,4 +1,5 @@
 const { checkLocationEligibility } = require("../../router/LocationEligibilityFilter");
+const { checkExperienceEligibility } = require("../../router/ExperienceEligibilityFilter");
 const db = require("../../database");
 
 const TARGET_ROLE_KEYWORDS = [
@@ -92,6 +93,13 @@ module.exports = async function search(plugin, page, queryOptions = {}) {
                     const locCheck = checkLocationEligibility(locationStr, title);
                     if (!locCheck.eligible) {
                         logger.info(`Skipping job ${jobId} due to location eligibility: ${locCheck.reason}`);
+                        continue;
+                    }
+
+                    // Enforce ExperienceEligibilityFilter (1-6 yr overlap)
+                    const expCheck = checkExperienceEligibility(experienceStr);
+                    if (!expCheck.eligible) {
+                        logger.info(`Skipping job ${jobId} due to experience eligibility: ${expCheck.reason}`);
                         continue;
                     }
 
