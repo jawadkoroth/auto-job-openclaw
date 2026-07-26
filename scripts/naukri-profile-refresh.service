@@ -1,0 +1,11 @@
+[Unit]
+Description=Naukri Profile Refresh Service (Preserves Data, Updates Timestamp)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/automation
+ExecStart=/usr/bin/node /home/ubuntu/automation/scripts/run-naukri-profile-refresh.js
+StandardOutput=journal
+StandardError=journal

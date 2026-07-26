@@ -1,0 +1,10 @@
+[Unit]
+Description=Naukri Profile Refresh 09:30 & 14:00 IST Timer
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 UTC
+OnCalendar=*-*-* 08:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
