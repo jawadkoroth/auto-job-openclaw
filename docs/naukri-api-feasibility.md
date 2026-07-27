@@ -21,22 +21,23 @@ This document analyzes the API-based transport architecture for Naukri.com inspi
 ## Key Authentication & Security Findings
 
 1. **Bearer Token vs Cookies**:
-   - Naukri API endpoints accept either a `Bearer <token>` authorization header (derived from the `nauk_at` session cookie) or standard session cookies (`nauk_at`, `nauk_rt`, `is_login`, `nauk_sid`).
-   - OpenClaw's existing Playwright session in `sessions/naukri/storageState.json` contains valid `nauk_at` and `nauk_rt` cookies which can be cleanly extracted and passed into HTTP request headers (`Axios` or `fetch`/`node-fetch`).
+   - Naukri API endpoints require a `Bearer <token>` authorization header (derived from the short-lived `nauk_at` session cookie) as well as valid session cookies (`nauk_rt`, `nauk_sid`).
+   - Pure API requests without a fresh `nauk_at` token return **HTTP 401 Unauthorized (`SESSION_EXPIRED`)**.
 
 2. **`nkparam` Header Requirements**:
    - The job search API (`/jobapi/v3/search`) enforces an `nkparam` signed request header.
-   - Without a valid `nkparam`, `/jobapi/v3/search` returns `HTTP 403 Forbidden`.
-   - `nkparam` is generated frontend-side via RSA/timestamp encryption or extracted from active browser requests.
+   - Without a valid `nkparam` and header structure (`appid: 121`, `clientid: d3skt0p`, `systemid: Naukri`), `/jobapi/v3/search` returns **HTTP 406 Not Acceptable**.
+   - `nkparam` is generated inside Naukri's obfuscated frontend JS using RSA/timestamp encryption. Pure HTTP API transport without browser execution cannot dynamically sign requests when `nkparam` rotates.
 
-3. **Cloud Datacenter IP Restrictions**:
-   - NopeRi documents that Naukri actively inspects IP reputation for datacenter ranges (e.g., Azure, GitHub Actions).
-   - This experiment evaluates whether Oracle VM's IP causes API-level 403 blocks or whether Playwright DOM/Akamai bot detection was the primary cause of browser-level instability.
+3. **Cloud Datacenter IP Restrictions & Akamai Behavior**:
+   - Empirical testing on Oracle VM (`140.245.212.88`) demonstrated that rapid or back-to-back Playwright script executions trigger Akamai Edge Security (`errors.edgesuite.net`) IP rate-limiting, resulting in **HTTP 403 Access Denied** across both candidate pages and search routes.
+   - When requests are spaced out by standard operational timer intervals (e.g. 09:30 AM & 02:00 PM IST), Playwright transport executes cleanly without triggering 403 blocks.
+   - Direct HTTPS API endpoints do NOT bypass Akamai IP reputation checks and add requirement burdens (`nkparam` RSA signatures and `nauk_at` token refreshes).
 
 ---
 
-## Safety Constraints
-- **Zero Live Submissions**: No job applications will be submitted during testing.
-- **Zero Profile Modifications**: Profile updates are strictly same-value saves to verify BEFORE === AFTER integrity.
-- **Zero Anti-Bot Bypasses**: No proxy rotation, stealth plugins, or security control circumvention.
-- **Credential Protection**: Never log cookies, passwords, bearer tokens, or `storageState.json` contents.
+## Final Feasibility Conclusion
+- **Primary Transport**: Retain the existing **Playwright Headless Transport** on Oracle VM with Candidate Dashboard entrypoint (`mnjuser/homepage`), multi-selector fallbacks, token refresh persistence, and failure diagnostic logging.
+- **API Transport Classification**: **`NAUKRI_API_AUTH_INCOMPATIBLE`** (Pure API transport is incompatible for unattended operation due to mandatory client-side `nkparam` RSA signature generation and short-lived `nauk_at` Bearer token expiration).
+- **Oracle IP Assessment**: **SUSPECT / INTERMITTENT** under high-frequency testing, **STABLE** when respecting natural operational timer schedules.
+
