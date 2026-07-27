@@ -11,8 +11,8 @@ const NaukriApiProbe = require("../packages/plugins/naukri/api/NaukriApiProbe");
 
     const storageStatePath = path.join(process.cwd(), "sessions", "naukri", "storageState.json");
 
-    // Pre-Warm Session & Intercept Active nkparam Token via Playwright
-    console.log("[1/2] Pre-Warming Session & Capturing Fresh Tokens...");
+    // 1. Session Pre-Warm & Dynamic Token Extraction
+    console.log("[1/2] Pre-Warming Session & Extracting Dynamic Tokens...");
     const browser = await chromium.launch({
         headless: true,
         args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
@@ -32,7 +32,7 @@ const NaukriApiProbe = require("../packages/plugins/naukri/api/NaukriApiProbe");
         if (u.includes("/jobapi/v3/search") && headers["nkparam"]) {
             capturedNkparam = headers["nkparam"];
         }
-        if (headers["authorization"] && headers["authorization"].includes("Bearer ")) {
+        if (headers["authorization"] && headers["authorization"].startsWith("Bearer ")) {
             capturedBearer = headers["authorization"];
         }
     });
@@ -44,12 +44,22 @@ const NaukriApiProbe = require("../packages/plugins/naukri/api/NaukriApiProbe");
     await new Promise(r => setTimeout(r, 3000));
 
     await context.storageState({ path: storageStatePath });
+
+    // Fallback: extract nauk_at from storageState if request interception missed it
+    if (!capturedBearer && fs.existsSync(storageStatePath)) {
+        const rawState = fs.readJsonSync(storageStatePath);
+        const naukAt = (rawState.cookies || []).find(c => c.name === "nauk_at");
+        if (naukAt && naukAt.value) {
+            capturedBearer = naukAt.value.startsWith("Bearer ") ? naukAt.value : `Bearer ${naukAt.value}`;
+        }
+    }
+
     console.log(`✓ Pre-Warm Complete. Captured Bearer Token: ${Boolean(capturedBearer)} | Captured nkparam: ${Boolean(capturedNkparam)}`);
 
     await context.close().catch(() => {});
     await browser.close().catch(() => {});
 
-    // [2/2] Initialize API Probe with Fresh Tokens
+    // 2. Direct HTTPS API Probe Execution
     console.log("\n[2/2] Running Direct HTTPS API Probes on Oracle VM...");
     const probe = new NaukriApiProbe(storageStatePath);
     await probe.loadSession();
@@ -61,6 +71,7 @@ const NaukriApiProbe = require("../packages/plugins/naukri/api/NaukriApiProbe");
         testA_profileRead: null,
         testB_jobSearches: [],
         testC_jobDetailsRead: null,
+        testD_profileUpdate: null,
         nkparamRequired: true,
         nkparamWorking: Boolean(capturedNkparam)
     };
@@ -73,8 +84,10 @@ const NaukriApiProbe = require("../packages/plugins/naukri/api/NaukriApiProbe");
     console.log(`Latency:        ${profileRes.latency} ms`);
     console.log(`Classification: ${profileRes.classification}`);
 
+    let currentHeadline = null;
     if (profileRes.data && profileRes.data.userProfile) {
         const p = profileRes.data.userProfile;
+        currentHeadline = p.resumeHeadline || null;
         console.log(`Candidate Name: ${p.fullName || "Found"}`);
         console.log(`Resume Headline:${p.resumeHeadline ? p.resumeHeadline.slice(0, 60) + "..." : "Found"}`);
     }
@@ -93,7 +106,7 @@ const NaukriApiProbe = require("../packages/plugins/naukri/api/NaukriApiProbe");
     let firstDiscoveredJobId = null;
 
     for (const keyword of targetKeywords) {
-        const searchRes = await probe.searchJobs(keyword, "Bangalore", 2);
+        const searchRes = await probe.searchJobs(keyword, "Bangalore", 2, capturedNkparam);
         let jobCount = 0;
         if (searchRes.data && searchRes.data.jobDetails) {
             jobCount = searchRes.data.jobDetails.length;
@@ -133,6 +146,30 @@ const NaukriApiProbe = require("../packages/plugins/naukri/api/NaukriApiProbe");
             classification: detailsRes.classification,
             hasData: Boolean(detailsRes.data)
         };
+    }
+
+    // TEST D: Profile Same-Value Save Feasibility Test (Phase 10)
+    console.log("\n--- TEST D: Same-Value Profile Headline Update Test ---");
+    if (currentHeadline) {
+        const updateRes = await probe.updateProfileHeadline(currentHeadline);
+        console.log(`HTTP Status:    ${updateRes.status}`);
+        console.log(`Latency:        ${updateRes.latency} ms`);
+        console.log(`Classification: ${updateRes.classification}`);
+
+        // Re-read profile independently to verify BEFORE === AFTER
+        const verifyRes = await probe.getProfileDashboard();
+        const afterHeadline = verifyRes.data?.userProfile?.resumeHeadline || null;
+        const integrityVerified = (currentHeadline === afterHeadline);
+        console.log(`Integrity Check (BEFORE === AFTER): ${integrityVerified ? "PASS" : "FAIL"}`);
+
+        results.testD_profileUpdate = {
+            status: updateRes.status,
+            latency: updateRes.latency,
+            classification: updateRes.classification,
+            integrityVerified
+        };
+    } else {
+        console.log("Current headline unreadable, skipping Same-Value update test.");
     }
 
     console.log("\n==================================================");
