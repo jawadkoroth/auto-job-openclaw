@@ -8,6 +8,7 @@ class NaukriApiProbe {
         this.sessionData = null;
         this.cookiesHeader = "";
         this.bearerToken = null;
+        this.lastNkparam = null;
     }
 
     async loadSession() {
@@ -39,16 +40,17 @@ class NaukriApiProbe {
     _buildHeaders(extra = {}, requireAuth = true) {
         const headers = {
             "accept": "application/json",
-            "appid": "105",
+            "appid": extra.appid || (requireAuth ? "105" : "121"),
             "clientid": "d3skt0p",
-            "systemid": requireAuth ? "Naukri" : "jobseeker",
-            "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "systemid": "Naukri",
+            "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+            "sec-ch-ua-platform": "\"Linux\"",
             "x-requested-with": "XMLHttpRequest",
             "cookie": this.cookiesHeader
         };
 
-        if (requireAuth && this.bearerToken) {
-            headers["authorization"] = `Bearer ${this.bearerToken}`;
+        if (this.bearerToken) {
+            headers["authorization"] = this.bearerToken.startsWith("Bearer ") ? this.bearerToken : `Bearer ${this.bearerToken}`;
         }
 
         return { ...headers, ...extra };
@@ -96,30 +98,57 @@ class NaukriApiProbe {
 
     // TEST A: Read Candidate Profile / Dashboard
     async getProfileDashboard() {
-        const url = `${this.baseUrl}/cloudgateway-mynaukri/resman-aggregator-services/v0/users/self/dashboard`;
-        const headers = this._buildHeaders({}, true);
+        const url = `${this.baseUrl}/cloudgateway-mynaukri/resman-aggregator-services/v0/users/self/dashboard?systemId=Naukri`;
+        const headers = this._buildHeaders({ appid: "105" }, true);
         return await this._fetchJson(url, { method: "GET", headers });
     }
 
     // TEST B: Job Search READ
     async searchJobs(keyword, location = "Bangalore", experience = 2, nkparam = null) {
-        const searchPath = encodeURIComponent(`${keyword.toLowerCase().replace(/\s+/g, "-")}-jobs-in-${location.toLowerCase()}`);
+        const searchPath = `${keyword.toLowerCase().replace(/\s+/g, "-")}-jobs-in-${location.toLowerCase()}`;
         const url = `${this.baseUrl}/jobapi/v3/search?noOfResults=20&urlType=search_by_keyword&searchType=cloudSearch&keyword=${encodeURIComponent(keyword)}&location=${encodeURIComponent(location)}&experience=${experience}&seoKey=${searchPath}&pageNo=1`;
 
-        const extraHeaders = {};
-        if (nkparam) {
-            extraHeaders["nkparam"] = nkparam;
+        const extraHeaders = {
+            appid: "121",
+            referer: `https://www.naukri.com/${searchPath}`
+        };
+
+        if (nkparam || this.lastNkparam) {
+            extraHeaders["nkparam"] = nkparam || this.lastNkparam;
         }
 
-        const headers = this._buildHeaders(extraHeaders, false);
+        const headers = this._buildHeaders(extraHeaders, true);
         return await this._fetchJson(url, { method: "GET", headers });
     }
 
     // TEST C: Job Details READ
     async getJobDetails(jobId) {
         const url = `${this.baseUrl}/jobapi/v1/job/${jobId}`;
-        const headers = this._buildHeaders({}, false);
+        const headers = this._buildHeaders({ appid: "105" }, true);
         return await this._fetchJson(url, { method: "GET", headers });
+    }
+
+    // TEST D: Same-Value Profile Headline Update Test
+    async updateProfileHeadline(headlineText) {
+        const url = `${this.baseUrl}/cloudgateway-mynaukri/resman-aggregator-services/v1/users/self/fullprofiles`;
+        const headers = this._buildHeaders({
+            appid: "105",
+            "content-type": "application/json"
+        }, true);
+
+        const payload = {
+            profile: {
+                resumeHeadline: {
+                    headline: headlineText
+                }
+            }
+        };
+
+        return await this._fetchJson(url, {
+            method: "PUT",
+            headers,
+            body: JSON.stringify(payload)
+        });
     }
 }
 

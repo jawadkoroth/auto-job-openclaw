@@ -1,5 +1,6 @@
 const path = require("path");
 const fs = require("fs-extra");
+const { chromium } = require("playwright");
 const NaukriApiProbe = require("../packages/plugins/naukri/api/NaukriApiProbe");
 
 (async () => {
@@ -8,19 +9,64 @@ const NaukriApiProbe = require("../packages/plugins/naukri/api/NaukriApiProbe");
     console.log("Execution Time:", new Date().toISOString());
     console.log("==================================================\n");
 
-    const probe = new NaukriApiProbe();
-    const sessionInfo = await probe.loadSession();
-    console.log(`[Session Setup] Cookies Loaded: ${sessionInfo.validCookies}/${sessionInfo.totalCookies} | Bearer Token Extracted: ${sessionInfo.hasBearerToken}\n`);
+    const storageStatePath = path.join(process.cwd(), "sessions", "naukri", "storageState.json");
+
+    // Pre-Warm Session & Intercept Active nkparam Token via Playwright
+    console.log("[1/2] Pre-Warming Session & Capturing Fresh Tokens...");
+    const browser = await chromium.launch({
+        headless: true,
+        args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
+    });
+    const context = await browser.newContext({
+        viewport: { width: 1440, height: 900 },
+        storageState: storageStatePath
+    });
+    const page = await context.newPage();
+
+    let capturedNkparam = null;
+    let capturedBearer = null;
+
+    page.on("request", req => {
+        const u = req.url();
+        const headers = req.headers();
+        if (u.includes("/jobapi/v3/search") && headers["nkparam"]) {
+            capturedNkparam = headers["nkparam"];
+        }
+        if (headers["authorization"] && headers["authorization"].includes("Bearer ")) {
+            capturedBearer = headers["authorization"];
+        }
+    });
+
+    await page.goto("https://www.naukri.com/mnjuser/homepage", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+    await new Promise(r => setTimeout(r, 3000));
+
+    await page.goto("https://www.naukri.com/devops-jobs-in-bangalore", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+    await new Promise(r => setTimeout(r, 3000));
+
+    await context.storageState({ path: storageStatePath });
+    console.log(`✓ Pre-Warm Complete. Captured Bearer Token: ${Boolean(capturedBearer)} | Captured nkparam: ${Boolean(capturedNkparam)}`);
+
+    await context.close().catch(() => {});
+    await browser.close().catch(() => {});
+
+    // [2/2] Initialize API Probe with Fresh Tokens
+    console.log("\n[2/2] Running Direct HTTPS API Probes on Oracle VM...");
+    const probe = new NaukriApiProbe(storageStatePath);
+    await probe.loadSession();
+    if (capturedBearer) probe.bearerToken = capturedBearer;
+    if (capturedNkparam) probe.lastNkparam = capturedNkparam;
 
     const results = {
         timestamp: new Date().toISOString(),
         testA_profileRead: null,
         testB_jobSearches: [],
-        testC_jobDetailsRead: null
+        testC_jobDetailsRead: null,
+        nkparamRequired: true,
+        nkparamWorking: Boolean(capturedNkparam)
     };
 
-    // TEST A: Profile READ
-    console.log("--- TEST A: Authenticated Candidate Profile READ ---");
+    // TEST A: Authenticated Profile READ
+    console.log("\n--- TEST A: Authenticated Candidate Profile READ ---");
     const profileRes = await probe.getProfileDashboard();
     console.log(`URL:            ${profileRes.url}`);
     console.log(`HTTP Status:    ${profileRes.status}`);
@@ -29,19 +75,20 @@ const NaukriApiProbe = require("../packages/plugins/naukri/api/NaukriApiProbe");
 
     if (profileRes.data && profileRes.data.userProfile) {
         const p = profileRes.data.userProfile;
-        console.log(`Profile Name:   ${p.fullName || "Found"}`);
+        console.log(`Candidate Name: ${p.fullName || "Found"}`);
         console.log(`Resume Headline:${p.resumeHeadline ? p.resumeHeadline.slice(0, 60) + "..." : "Found"}`);
     }
+
     results.testA_profileRead = {
         url: profileRes.url,
         status: profileRes.status,
         latency: profileRes.latency,
         classification: profileRes.classification,
-        hasData: Boolean(profileRes.data)
+        hasData: Boolean(profileRes.data && profileRes.data.userProfile)
     };
 
-    // TEST B: Job Search READ
-    console.log("\n--- TEST B: Job Search READ Across Targets ---");
+    // TEST B: Job Search READ Across 6 Target Searches
+    console.log("\n--- TEST B: Job Search READ Across 6 Target Searches ---");
     const targetKeywords = ["DevOps", "Cloud Engineer", "Platform Engineer", "Infrastructure Engineer", "AWS", "Site Reliability Engineer"];
     let firstDiscoveredJobId = null;
 
@@ -66,7 +113,7 @@ const NaukriApiProbe = require("../packages/plugins/naukri/api/NaukriApiProbe");
         });
     }
 
-    // TEST C: Job Details READ for ONE discovered job
+    // TEST C: Job Details READ
     console.log("\n--- TEST C: Job Details READ for Discovered Job ---");
     if (firstDiscoveredJobId) {
         const detailsRes = await probe.getJobDetails(firstDiscoveredJobId);
@@ -86,12 +133,10 @@ const NaukriApiProbe = require("../packages/plugins/naukri/api/NaukriApiProbe");
             classification: detailsRes.classification,
             hasData: Boolean(detailsRes.data)
         };
-    } else {
-        console.log("No job ID available for Test C.");
     }
 
     console.log("\n==================================================");
-    console.log("SUMMARY OF PROBE EXECUTION");
+    console.log("SUMMARY OF API PROBE EXECUTION ON ORACLE VM");
     console.log(JSON.stringify(results, null, 2));
     console.log("==================================================");
 })();
