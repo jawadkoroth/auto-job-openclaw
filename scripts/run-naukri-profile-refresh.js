@@ -117,7 +117,6 @@ ${bodyText.replace(/\r\n|\r/g, "\n")}
         });
 
         context = await browser.newContext({
-            userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport: { width: 1440, height: 900 },
             storageState: storageStatePath
         });
@@ -341,7 +340,6 @@ ${bodyText.replace(/\r\n|\r/g, "\n")}
             args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
         });
         const freshCtx = await freshBrowser.newContext({
-            userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport: { width: 1440, height: 900 },
             storageState: storageStatePath
         });
