@@ -123,20 +123,20 @@ ${bodyText.replace(/\r\n|\r/g, "\n")}
 
         page = await context.newPage();
 
-        // 1. Establish session & refresh access tokens safely
-        logger.info("[1/4] Navigating to Naukri Root to establish/refresh session tokens...");
-        let rootRes = await page.goto("https://www.naukri.com/", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => null);
+        // 1. Establish candidate dashboard session context
+        logger.info("[1/4] Navigating to Candidate Dashboard (mnjuser/homepage)...");
+        let homeRes = await page.goto("https://www.naukri.com/mnjuser/homepage", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => null);
         await delay(3000);
 
-        const rootTitle = await page.title().catch(() => "");
-        if (rootRes && rootRes.status() === 403 || rootTitle.toLowerCase().includes("access denied")) {
-            logger.warn("⚠️ Akamai 403 Access Denied on Naukri root. Backing off 10s...");
+        const homeTitle = await page.title().catch(() => "");
+        if ((homeRes && homeRes.status() === 403) || homeTitle.toLowerCase().includes("access denied")) {
+            logger.warn("⚠️ Akamai 403 Access Denied on Dashboard. Retrying after 10s cooldown...");
             await delay(10000);
-            rootRes = await page.goto("https://www.naukri.com/", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => null);
+            homeRes = await page.goto("https://www.naukri.com/mnjuser/homepage", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => null);
             await delay(3000);
         }
 
-        logger.info("Navigating to Naukri Candidate Profile Page...");
+        logger.info("Navigating to Candidate Profile Page...");
         let profileRes = await page.goto("https://www.naukri.com/mnjuser/profile", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => null);
         await delay(4000);
 
@@ -344,7 +344,7 @@ ${bodyText.replace(/\r\n|\r/g, "\n")}
             storageState: storageStatePath
         });
         const freshPage = await freshCtx.newPage();
-        await freshPage.goto("https://www.naukri.com/", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+        await freshPage.goto("https://www.naukri.com/mnjuser/homepage", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
         await delay(3000);
 
         await freshPage.goto("https://www.naukri.com/mnjuser/profile", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
@@ -352,7 +352,6 @@ ${bodyText.replace(/\r\n|\r/g, "\n")}
 
         let afterHeadline = "";
         for (const loc of headlineContentLocators) {
-            const locPage = freshPage.locator(loc._selector || loc);
             if (await freshPage.locator(loc).count().catch(() => 0) > 0) {
                 const txt = (await freshPage.locator(loc).first().textContent().catch(() => "")).trim();
                 if (txt.length > 5) {
