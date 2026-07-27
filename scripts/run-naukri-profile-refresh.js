@@ -32,7 +32,11 @@ const eventBus = require("../packages/events/EventBus");
 
         page = await context.newPage();
 
-        logger.info("[1/4] Navigating to Naukri Candidate Profile Page...");
+        logger.info("[1/4] Navigating to Naukri Homepage to establish SPA session context...");
+        await page.goto("https://www.naukri.com/mnjuser/homepage", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+        await page.waitForTimeout(3000);
+
+        logger.info("Navigating to Candidate Profile Page...");
         await page.goto("https://www.naukri.com/mnjuser/profile", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
         await page.waitForTimeout(4000);
 

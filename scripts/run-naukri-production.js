@@ -199,9 +199,9 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             }
 
             if (isAccessDenied) {
-                logger.warn(`⚠️ Retry failed for ${searchUrl}. Skipping to next search...`);
-                blockedSearchCount++;
-                continue;
+                logger.warn(`⚠️ Akamai 403 confirmed on ${searchUrl}. Stopping further search navigation cleanly...`);
+                blockedSearchCount = TARGET_SEARCH_URLS.length;
+                break;
             }
 
             successfulSearchCount++;

@@ -260,7 +260,7 @@ module.exports = async function apply(plugin, page, job) {
         const isConfirmed = await page.locator(successConfirmSelector).count().catch(() => 0) > 0;
 
         // 3. Fallback: Re-inspect active card/page buttons
-        const buttonText = await applyBtn.innerText().catch(() => "");
+        const buttonText = await page.locator(applyBtnSelector).first().innerText().catch(() => "");
         const isButtonApplied = buttonText.toLowerCase().includes("applied") || buttonText.toLowerCase().includes("sent");
 
         if (toastFound || isConfirmed || isButtonApplied) {
