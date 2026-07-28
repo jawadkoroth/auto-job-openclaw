@@ -295,29 +295,41 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
         // 3. Eligibility Filtering & Intelligent Ranking
         logger.info("\n[3/4] Filtering & Ranking Eligible Jobs...");
         const eligibleJobs = [];
+        let expEligibleCount = 0;
+        let expIneligibleCount = 0;
+        let locEligibleCount = 0;
+        let duplicatesCount = 0;
+        let alreadyAppliedCount = 0;
+
+        telemetry.RawDiscovered = rawDiscoveredJobs.length;
+        telemetry.UniqueJobs = seenIds.size;
+        telemetry.RoleEligible = rawDiscoveredJobs.length;
 
         for (const job of rawDiscoveredJobs) {
             // Check experience overlap (1-6 YOE policy: jobMin <= 6 AND jobMax >= 1)
             const expResult = checkExperienceEligibility(job.experience, candidateProfile.minYearsExperience || 1, candidateProfile.maxYearsExperience || 6);
-            if (!expResult.isEligible) {
+            if (!expResult.eligible) {
+                expIneligibleCount++;
+                logger.info(`[Exp Filter] REJECTED: Job ID ${job.id} | Title: "${job.title}" | Exp: "${job.experience}" | Reason: ${expResult.reason}`);
                 continue;
             }
-            telemetry.ExperienceEligible++;
+            expEligibleCount++;
 
             const locResult = checkLocationEligibility(job.location, candidateProfile.preferredLocations || ["Bangalore", "Bengaluru", "Remote", "Hybrid"]);
-            if (!locResult.isEligible) {
+            if (!locResult.eligible) {
+                logger.info(`[Loc Filter] REJECTED: Job ID ${job.id} | Title: "${job.title}" | Loc: "${job.location}" | Reason: ${locResult.reason}`);
                 continue;
             }
-            telemetry.LocationEligible++;
+            locEligibleCount++;
 
             // Duplicate Check in SQLite DB
             const existingJob = await db.get("SELECT id, job_id, applied FROM jobs WHERE LOWER(portal) = 'naukri' AND (job_id = ? OR url = ?)", [job.id, job.url]);
             if (existingJob) {
                 if (existingJob.applied) {
-                    telemetry.AlreadyApplied++;
+                    alreadyAppliedCount++;
                     continue;
                 }
-                telemetry.Duplicates++;
+                duplicatesCount++;
             }
 
             // Save new job record into DB
@@ -331,8 +343,26 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             eligibleJobs.push(job);
         }
 
-        telemetry.RoleEligible = eligibleJobs.length;
-        logger.info(`✓ Eligible Jobs Pool: ${eligibleJobs.length} jobs`);
+        telemetry.ExperienceEligible = expEligibleCount;
+        telemetry.ExperienceIneligible = expIneligibleCount;
+        telemetry.LocationEligible = locEligibleCount;
+        telemetry.Duplicates = duplicatesCount;
+        telemetry.AlreadyApplied = alreadyAppliedCount;
+        telemetry.FinalEligible = eligibleJobs.length;
+
+        logger.info(`\n==================================================`);
+        logger.info(`NAUKRI FILTERING & SELECTION TELEMETRY REPORT`);
+        logger.info(`==================================================`);
+        logger.info(`Raw Discovered:                  ${telemetry.RawDiscovered}`);
+        logger.info(`Unique Jobs:                     ${telemetry.UniqueJobs}`);
+        logger.info(`Role Eligible:                   ${telemetry.RoleEligible}`);
+        logger.info(`Experience Eligible (1-6 Overlap): ${telemetry.ExperienceEligible}`);
+        logger.info(`Experience Ineligible (>6 YOE):  ${telemetry.ExperienceIneligible}`);
+        logger.info(`Location Eligible:               ${telemetry.LocationEligible}`);
+        logger.info(`Duplicates Removed:              ${telemetry.Duplicates}`);
+        logger.info(`Already Applied Removed:         ${telemetry.AlreadyApplied}`);
+        logger.info(`Final Eligible Pool:             ${telemetry.FinalEligible}`);
+        logger.info(`==================================================\n`);
 
         if (eligibleJobs.length === 0) {
             logger.info("No new eligible jobs found for application in this run.");
@@ -353,10 +383,21 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
         logger.info(`Targeting Top ${finalCandidates.length} Ranked Candidates for Application.`);
 
         if (isDryRun) {
-            logger.info("\n--- DRY RUN SUMMARY (No Submissions Executed) ---");
+            logger.info("\n==================================================");
+            logger.info("TOP CANDIDATES SELECTED FOR APPLICATION (DRY RUN)");
+            logger.info("==================================================");
             for (let i = 0; i < finalCandidates.length; i++) {
                 const j = finalCandidates[i];
-                logger.info(`[Dry-Run Job #${i + 1}] ID: ${j.id} | Title: ${j.title} | Company: ${j.company} | Experience: ${j.experience} | Match Score: ${j.matchScore || "N/A"}`);
+                const expCheck = checkExperienceEligibility(j.experience, 1, 6);
+                logger.info(`[Dry-Run Job #${i + 1}] ID: ${j.id}`);
+                logger.info(`  Title:              ${j.title}`);
+                logger.info(`  Company:            ${j.company}`);
+                logger.info(`  Experience:         ${j.experience}`);
+                logger.info(`  Location:           ${j.location}`);
+                logger.info(`  Match Score:        ${j.matchScore || "N/A"}`);
+                logger.info(`  1-6 YOE Overlap:    ${expCheck.eligible ? "ELIGIBLE" : "INELIGIBLE"}`);
+                logger.info(`  Previously Applied: NO`);
+                logger.info(`--------------------------------------------------`);
             }
             telemetry.zeroApplicationReason = "DRY_RUN_ONLY";
             saveTelemetry();
