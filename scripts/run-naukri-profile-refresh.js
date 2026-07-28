@@ -5,138 +5,53 @@ const telegramService = require("../apps/telegram");
 const logger = require("../packages/logger").plugin("naukri");
 const eventBus = require("../packages/events/EventBus");
 
+const NaukriSessionBootstrap = require("../packages/plugins/naukri/NaukriSessionBootstrap");
+const NaukriConcurrencyLock = require("../packages/plugins/naukri/NaukriConcurrencyLock");
+const NaukriDiagnostics = require("../packages/plugins/naukri/NaukriDiagnostics");
+
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function persistDiagnostics(page, res, label = "FAILURE") {
-    try {
-        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-        const diagDir = path.join(process.cwd(), "logs", "naukri", "profile-refresh", `${timestamp}_${label}`);
-        fs.mkdirpSync(diagDir);
-
-        const finalUrl = page ? page.url() : "N/A";
-        const title = page ? await page.title().catch(() => "N/A") : "N/A";
-        const httpStatus = (res && typeof res.status === "function") ? res.status() : "N/A";
-        const readyState = page ? await page.evaluate(() => document.readyState).catch(() => "N/A") : "N/A";
-        const bodyText = page ? await page.evaluate(() => document.body ? document.body.innerText.slice(0, 1000) : "").catch(() => "") : "";
-        const fullHtml = page ? await page.content().catch(() => "") : "";
-
-        const isLoginPage = finalUrl.includes("/nlogin/") || finalUrl.includes("/login") || bodyText.toLowerCase().includes("login to your account");
-        const isAuthenticated = finalUrl.includes("/mnjuser/") || bodyText.toLowerCase().includes("my naukri") || bodyText.toLowerCase().includes("user dashboard") || bodyText.toLowerCase().includes("resume headline");
-        const isAkamaiBlocked = httpStatus === 403 || title.toLowerCase().includes("access denied") || bodyText.toLowerCase().includes("access denied");
-        const hasHeadlineText = /resume\s*headline/i.test(bodyText);
-
-        let classification = "UNKNOWN";
-        if (isAkamaiBlocked) classification = "PORTAL_ACCESS_DENIED";
-        else if (isLoginPage) classification = "AUTH_EXPIRED";
-        else if (!isAuthenticated && !finalUrl.includes("/mnjuser/profile")) classification = "WRONG_PAGE";
-        else if (isAuthenticated && !hasHeadlineText) classification = "SELECTOR_CHANGED";
-        else if (readyState !== "complete") classification = "PAGE_LOAD_INCOMPLETE";
-
-        if (page) {
-            await page.screenshot({ path: path.join(diagDir, "screenshot.png"), fullPage: true }).catch(() => {});
-        }
-        if (fullHtml) {
-            fs.writeFileSync(path.join(diagDir, "snapshot.html"), fullHtml);
-        }
-
-        const summaryText = `
-==================================================
-NAUKRI PROFILE REFRESH DIAGNOSTIC REPORT
-Timestamp:      ${timestamp}
-Label:          ${label}
-Classification: ${classification}
-==================================================
-Final URL:             ${finalUrl}
-Page Title:            ${title}
-HTTP Response Status:  ${httpStatus}
-document.readyState:   ${readyState}
-Is Login Page:         ${isLoginPage}
-Is Authenticated UI:   ${isAuthenticated}
-Is Akamai Blocked:     ${isAkamaiBlocked}
-Has Headline Text:     ${hasHeadlineText}
-
-First 1000 chars of Body Text:
---------------------------------------------------
-${bodyText.replace(/\r\n|\r/g, "\n")}
-`;
-        fs.writeFileSync(path.join(diagDir, "summary.txt"), summaryText.trim());
-
-        const domAnalysis = page ? await page.evaluate(() => {
-            const headlineMatches = [];
-            const editControls = [];
-            const textareas = [];
-
-            const allEls = Array.from(document.querySelectorAll("*"));
-            for (const el of allEls) {
-                const txt = (el.innerText || el.textContent || "").trim();
-                if (/resume\s*headline/i.test(txt) && el.children.length === 0) {
-                    headlineMatches.push({ tagName: el.tagName, className: el.className, id: el.id, text: txt.slice(0, 100) });
-                }
-            }
-
-            const edits = Array.from(document.querySelectorAll("span.edit, .editOne, [class*='edit' i], i.icon, button"));
-            for (const e of edits) {
-                editControls.push({ tagName: e.tagName, className: e.className, id: e.id, text: (e.innerText || "").trim() });
-            }
-
-            const tas = Array.from(document.querySelectorAll("textarea, #resumeHeadlineTxt"));
-            for (const t of tas) {
-                textareas.push({ tagName: t.tagName, id: t.id, name: t.name, className: t.className, value: (t.value || "").slice(0, 100) });
-            }
-
-            return { headlineMatches, editControls: editControls.slice(0, 10), textareas };
-        }).catch(() => ({})) : {};
-
-        fs.writeFileSync(path.join(diagDir, "dom_analysis.json"), JSON.stringify(domAnalysis, null, 2));
-
-        logger.info(`Diagnostics persisted under: logs/naukri/profile-refresh/${timestamp}_${label} (Classification: ${classification})`);
-        return classification;
-    } catch (err) {
-        logger.error(`Failed to persist diagnostics: ${err.message}`);
-        return "UNKNOWN";
-    }
-}
 
 (async () => {
     logger.info("==================================================");
-    logger.info("NAUKRI PRODUCTION PROFILE REFRESH RUNNER");
+    logger.info("NAUKRI HARDENED PROFILE REFRESH RUNNER");
     logger.info("Execution Time: " + new Date().toISOString());
     logger.info("==================================================\n");
 
+    const lock = new NaukriConcurrencyLock("naukri_profile_refresh.lock");
+    if (!lock.acquire()) {
+        logger.warn("⚠️ naukri_profile_refresh runner is already executing. Exiting as SKIPPED_ALREADY_RUNNING.");
+        process.exit(0);
+    }
+
     const storageStatePath = path.join(process.cwd(), "sessions", "naukri", "storageState.json");
-    if (!fs.existsSync(storageStatePath)) {
-        logger.error("❌ storageState.json not found at:", storageStatePath);
+    const bootstrapHelper = new NaukriSessionBootstrap(storageStatePath);
+    const boot = await bootstrapHelper.bootstrap();
+
+    if (boot.status === "SESSION_EXPIRED") {
+        logger.error("❌ Profile Refresh halted: Session expired. Re-authentication required.");
+        lock.release();
         process.exit(1);
     }
 
-    let browser, context, page;
+    if (boot.status === "AKAMAI_BLOCKED") {
+        logger.error("❌ Profile Refresh halted: Akamai 403 Access Denied during bootstrap.");
+        await NaukriDiagnostics.persist(boot.page, null, "BOOTSTRAP_AKAMAI_BLOCKED", "AKAMAI_TEMPORARY_BLOCK");
+        if (boot.browser) await boot.browser.close().catch(() => {});
+        lock.release();
+        process.exit(1);
+    }
+
+    if (boot.status !== "AUTHENTICATED" || !boot.page) {
+        logger.error(`❌ Profile Refresh halted: Bootstrap failed with status ${boot.status}`);
+        if (boot.browser) await boot.browser.close().catch(() => {});
+        lock.release();
+        process.exit(1);
+    }
+
+    const { browser, context, page } = boot;
+
     try {
-        browser = await chromium.launch({
-            headless: true,
-            args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
-        });
-
-        context = await browser.newContext({
-            viewport: { width: 1440, height: 900 },
-            storageState: storageStatePath
-        });
-
-        page = await context.newPage();
-
-        // 1. Establish candidate dashboard session context
-        logger.info("[1/4] Navigating to Candidate Dashboard (mnjuser/homepage)...");
-        let homeRes = await page.goto("https://www.naukri.com/mnjuser/homepage", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => null);
-        await delay(3000);
-
-        const homeTitle = await page.title().catch(() => "");
-        if ((homeRes && homeRes.status() === 403) || homeTitle.toLowerCase().includes("access denied")) {
-            logger.warn("⚠️ Akamai 403 Access Denied on Dashboard. Retrying after 10s cooldown...");
-            await delay(10000);
-            homeRes = await page.goto("https://www.naukri.com/mnjuser/homepage", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => null);
-            await delay(3000);
-        }
-
-        logger.info("Navigating to Candidate Profile Page...");
+        logger.info("[1/4] Navigating to Candidate Profile Page...");
         let profileRes = await page.goto("https://www.naukri.com/mnjuser/profile", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => null);
         await delay(4000);
 
@@ -144,40 +59,33 @@ ${bodyText.replace(/\r\n|\r/g, "\n")}
         let pageTitle = await page.title().catch(() => "");
 
         if (currentUrl.includes("/nlogin/") || currentUrl.includes("/login")) {
-            logger.error("❌ Naukri session redirect detected during profile refresh. Re-authentication required.");
-            const classification = await persistDiagnostics(page, profileRes, "AUTH_EXPIRED");
+            logger.error("❌ Session redirect detected during profile navigation.");
+            await NaukriDiagnostics.persist(page, profileRes, "PROFILE_AUTH_EXPIRED", "SESSION_EXPIRED");
             const tgMsg = `<b>⚠️ Naukri Profile Refresh Failed</b>\n\n` +
                 `• <b>Portal</b>: <code>Naukri</code>\n` +
-                `• <b>Classification</b>: <code>${classification}</code>\n` +
-                `• <b>Executed From</b>: <code>Oracle VM</code>\n` +
-                `• <b>Time (IST)</b>: <code>${new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" })}</code>`;
+                `• <b>Classification</b>: <code>SESSION_EXPIRED</code>\n` +
+                `• <b>Executed From</b>: <code>Oracle VM</code>`;
             await telegramService.sendMessage(tgMsg).catch(() => {});
             process.exit(1);
         }
 
         if ((profileRes && profileRes.status() === 403) || pageTitle.toLowerCase().includes("access denied")) {
-            logger.warn("⚠️ Akamai 403 Access Denied on Profile URL. Reloading once after 10s...");
-            await delay(10000);
-            profileRes = await page.goto("https://www.naukri.com/mnjuser/profile", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => null);
-            await delay(4000);
-            currentUrl = page.url();
-            pageTitle = await page.title().catch(() => "");
-        }
-
-        if ((profileRes && profileRes.status() === 403) || pageTitle.toLowerCase().includes("access denied")) {
-            logger.error("❌ Access Denied / Akamai Block on Naukri Profile page.");
-            const classification = await persistDiagnostics(page, profileRes, "PORTAL_ACCESS_DENIED");
+            logger.error("❌ Akamai 403 Access Denied on Naukri Profile page.");
+            await NaukriDiagnostics.persist(page, profileRes, "PROFILE_AKAMAI_BLOCKED", "AKAMAI_TEMPORARY_BLOCK");
+            const tgMsg = `<b>⚠️ Naukri Profile Refresh Failed</b>\n\n` +
+                `• <b>Portal</b>: <code>Naukri</code>\n` +
+                `• <b>Classification</b>: <code>AKAMAI_TEMPORARY_BLOCK</code>\n` +
+                `• <b>Executed From</b>: <code>Oracle VM</code>`;
+            await telegramService.sendMessage(tgMsg).catch(() => {});
             process.exit(1);
         }
 
-        // Multi-Selector Fallback Matrix for Resume Headline Heading & Container
+        // Heading Fallback Matrix
         const headlineHeadingLocators = [
             page.locator("div.widgetHead:has-text('Resume headline')"),
             page.locator(".resumeHeadline"),
             page.locator("span:has-text('Resume headline')"),
-            page.locator("div:has-text('Resume headline')"),
-            page.locator("h2:has-text('Resume headline'), h3:has-text('Resume headline'), h4:has-text('Resume headline')"),
-            page.locator("[class*='resumeHeadline' i]")
+            page.locator("div:has-text('Resume headline')")
         ];
 
         let foundHeading = null;
@@ -192,7 +100,6 @@ ${bodyText.replace(/\r\n|\r/g, "\n")}
             logger.warn("⚠️ Resume headline heading delay. Scrolling & waiting 5s...");
             await page.evaluate(() => window.scrollBy(0, 300));
             await delay(5000);
-
             for (const loc of headlineHeadingLocators) {
                 if (await loc.count().catch(() => 0) > 0) {
                     foundHeading = loc.first();
@@ -203,18 +110,16 @@ ${bodyText.replace(/\r\n|\r/g, "\n")}
 
         if (!foundHeading) {
             logger.error("❌ Resume Headline container heading not found across all fallbacks.");
-            const classification = await persistDiagnostics(page, profileRes, "SELECTOR_CHANGED");
+            await NaukriDiagnostics.persist(page, profileRes, "HEADING_NOT_FOUND", "SELECTOR_CHANGED");
             process.exit(1);
         }
 
-        // Extract BEFORE Headline Content with Multi-Locator Matrix
+        // Read BEFORE Headline
         const headlineContentLocators = [
             page.locator("div.widgetHead:has-text('Resume headline') + div"),
             page.locator(".resumeHeadline .widgetCont"),
             page.locator("div:has-text('Resume headline') + div"),
-            page.locator("span:has-text('Resume headline') + div"),
-            page.locator(".resumeHeadline p, .resumeHeadline span.text"),
-            page.locator("div.resumeHeadline div.text")
+            page.locator(".resumeHeadline p, .resumeHeadline span.text")
         ];
 
         let beforeHeadline = "";
@@ -228,25 +133,21 @@ ${bodyText.replace(/\r\n|\r/g, "\n")}
             }
         }
 
-        // Safety Invariant Check — BEFORE Headline MUST be non-empty and readable
         if (!beforeHeadline || beforeHeadline.length < 5) {
-            logger.error("❌ SAFETY INVARIANT VIOLATION: BEFORE headline content could not be read with confidence. Aborting save.");
-            const classification = await persistDiagnostics(page, profileRes, "UNREADABLE_BEFORE_HEADLINE");
+            logger.error("❌ SAFETY INVARIANT VIOLATION: BEFORE headline content unreadable. Aborting.");
+            await NaukriDiagnostics.persist(page, profileRes, "UNREADABLE_BEFORE_HEADLINE", "SELECTOR_CHANGED");
             process.exit(1);
         }
 
         logger.info(`✓ Read Resume Headline BEFORE refresh (${beforeHeadline.length} chars): "${beforeHeadline.slice(0, 60)}..."`);
 
-        // Find & Click Edit Control with Multi-Locator Matrix
+        // Click Edit
         logger.info("[2/4] Opening Headline Edit Form...");
         const editControlLocators = [
             page.locator("div.widgetHead:has-text('Resume headline') span.edit"),
             page.locator(".resumeHeadline span.edit"),
             page.locator(".resumeHeadline .editOne"),
-            page.locator("span.edit:has-text('editOne')"),
-            page.locator("span:has-text('Resume headline') ~ span.edit"),
-            page.locator("i.icon-edit, span.icon-edit"),
-            page.locator("span:has-text('edit')")
+            page.locator("i.icon-edit, span.icon-edit")
         ];
 
         let editBtn = null;
@@ -258,24 +159,18 @@ ${bodyText.replace(/\r\n|\r/g, "\n")}
         }
 
         if (!editBtn) {
-            // Try clicking first edit control in headline widget area
-            editBtn = page.locator("div.widgetHead:has-text('Resume headline') span, .resumeHeadline span.edit").first();
-        }
-
-        if (await editBtn.count().catch(() => 0) === 0) {
             logger.error("❌ SAFETY INVARIANT VIOLATION: Edit button for Resume Headline not found.");
-            const classification = await persistDiagnostics(page, profileRes, "EDIT_BUTTON_NOT_FOUND");
+            await NaukriDiagnostics.persist(page, profileRes, "EDIT_BUTTON_NOT_FOUND", "SELECTOR_CHANGED");
             process.exit(1);
         }
 
         await editBtn.click().catch(() => {});
         await delay(2000);
 
-        // Find Textarea Field with Multi-Locator Matrix
+        // Find Textarea
         const textareaLocators = [
             page.locator("#resumeHeadlineTxt"),
             page.locator("textarea[name*='headline' i]"),
-            page.locator("textarea[placeholder*='headline' i]"),
             page.locator("textarea")
         ];
 
@@ -289,7 +184,7 @@ ${bodyText.replace(/\r\n|\r/g, "\n")}
 
         if (!headlineField) {
             logger.error("❌ SAFETY INVARIANT VIOLATION: Headline textarea field not visible after clicking edit.");
-            const classification = await persistDiagnostics(page, profileRes, "TEXTAREA_NOT_FOUND");
+            await NaukriDiagnostics.persist(page, profileRes, "TEXTAREA_NOT_FOUND", "SELECTOR_CHANGED");
             process.exit(1);
         }
 
@@ -305,8 +200,7 @@ ${bodyText.replace(/\r\n|\r/g, "\n")}
         const saveBtnLocators = [
             page.locator("button:has-text('Save')"),
             page.locator("button.btn-light-blue"),
-            page.locator("button[type='submit']"),
-            page.locator("a:has-text('Save')")
+            page.locator("button[type='submit']")
         ];
 
         let saveBtn = null;
@@ -318,8 +212,8 @@ ${bodyText.replace(/\r\n|\r/g, "\n")}
         }
 
         if (!saveBtn) {
-            logger.error("❌ SAFETY INVARIANT VIOLATION: Save button not found. Aborting.");
-            const classification = await persistDiagnostics(page, profileRes, "SAVE_BUTTON_NOT_FOUND");
+            logger.error("❌ SAFETY INVARIANT VIOLATION: Save button not found.");
+            await NaukriDiagnostics.persist(page, profileRes, "SAVE_BUTTON_NOT_FOUND", "SELECTOR_CHANGED");
             process.exit(1);
         }
 
@@ -335,18 +229,14 @@ ${bodyText.replace(/\r\n|\r/g, "\n")}
 
         // Step 4: Post-Save Verification in Fresh Browser Context
         logger.info("[4/4] Verifying Post-Save Headline Integrity in Fresh Context (BEFORE === AFTER)...");
-        const freshBrowser = await chromium.launch({
-            headless: true,
-            args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
-        });
-        const freshCtx = await freshBrowser.newContext({
-            viewport: { width: 1440, height: 900 },
-            storageState: storageStatePath
-        });
-        const freshPage = await freshCtx.newPage();
-        await freshPage.goto("https://www.naukri.com/mnjuser/homepage", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
-        await delay(3000);
+        const freshBoot = await bootstrapHelper.bootstrap();
+        if (freshBoot.status !== "AUTHENTICATED" || !freshBoot.page) {
+            logger.error("❌ Post-save verification context bootstrap failed.");
+            if (freshBoot.browser) await freshBoot.browser.close().catch(() => {});
+            process.exit(1);
+        }
 
+        const freshPage = freshBoot.page;
         await freshPage.goto("https://www.naukri.com/mnjuser/profile", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
         await delay(4000);
 
@@ -365,8 +255,8 @@ ${bodyText.replace(/\r\n|\r/g, "\n")}
             afterHeadline = (await freshPage.locator("#resumeHeadlineTxt, textarea").first().inputValue().catch(() => "")).trim();
         }
 
-        await freshCtx.close().catch(() => {});
-        await freshBrowser.close().catch(() => {});
+        await freshBoot.context.close().catch(() => {});
+        await freshBoot.browser.close().catch(() => {});
 
         if (beforeHeadline !== afterHeadline && afterHeadline.length > 0) {
             logger.error(`❌ PROFILE_REFRESH_INTEGRITY_FAILURE: Headline text altered during refresh! BEFORE length=${beforeHeadline.length}, AFTER length=${afterHeadline.length}`);
@@ -400,10 +290,11 @@ ${bodyText.replace(/\r\n|\r/g, "\n")}
 
     } catch (err) {
         logger.error(`❌ Naukri Profile Refresh Error: ${err.message}`);
-        await persistDiagnostics(page, null, "RUNNER_EXCEPTION");
+        await NaukriDiagnostics.persist(page, null, "RUNNER_EXCEPTION");
         process.exit(1);
     } finally {
         if (context) await context.close().catch(() => {});
         if (browser) await browser.close().catch(() => {});
+        lock.release();
     }
 })();
