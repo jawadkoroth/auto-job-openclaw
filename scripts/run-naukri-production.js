@@ -311,7 +311,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             telemetry.LocationEligible++;
 
             // Duplicate Check in SQLite DB
-            const existingJob = await db.get("SELECT id, applied FROM jobs WHERE portal = 'naukri' AND (id = ? OR url = ?)", [job.id, job.url]);
+            const existingJob = await db.get("SELECT id, job_id, applied FROM jobs WHERE LOWER(portal) = 'naukri' AND (job_id = ? OR url = ?)", [job.id, job.url]);
             if (existingJob) {
                 if (existingJob.applied) {
                     telemetry.AlreadyApplied++;
@@ -323,7 +323,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             // Save new job record into DB
             if (!existingJob) {
                 await db.run(
-                    "INSERT INTO jobs (id, portal, title, company, location, url, experience, status, timestamp) VALUES (?, 'naukri', ?, ?, ?, ?, ?, 'DISCOVERED', CURRENT_TIMESTAMP)",
+                    "INSERT INTO jobs (portal, job_id, title, company, location, url, experience, status, timestamp) VALUES ('naukri', ?, ?, ?, ?, ?, ?, 'DISCOVERED', CURRENT_TIMESTAMP)",
                     [job.id, job.title, job.company, job.location, job.url, job.experience]
                 );
             }
@@ -377,7 +377,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             logger.info(`Experience: ${targetJob.experience}`);
 
             telemetry.Attempted++;
-            await db.run("UPDATE jobs SET status = 'APPLICATION_STARTED', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [targetJob.id]);
+            await db.run("UPDATE jobs SET status = 'APPLICATION_STARTED', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]);
             eventBus.publish("APPLICATION_STARTED", { portal: "Naukri", jobId: targetJob.id, title: targetJob.title, company: targetJob.company });
 
             const jobPage = await context.newPage();
@@ -423,7 +423,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
                 const pageText = await jobPage.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
                 if (pageText.toLowerCase().includes("applied") || pageText.toLowerCase().includes("already applied")) {
                     logger.info(`✓ Job ID ${targetJob.id} already applied on portal.`);
-                    await db.run("UPDATE jobs SET applied = 1, status = 'EMPLOYER_PENDING', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [targetJob.id]);
+                    await db.run("UPDATE jobs SET applied = 1, status = 'EMPLOYER_PENDING', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]);
                     telemetry.Applied++;
                 } else {
                     telemetry.Failed++;
@@ -435,7 +435,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             const btnText = (await applyBtn.textContent().catch(() => "")).trim();
             if (btnText.toLowerCase().includes("company site")) {
                 logger.info(`Job ID ${targetJob.id} requires external company site application. Skipping.`);
-                await db.run("UPDATE jobs SET status = 'EXTERNAL_REQUIRED', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [targetJob.id]);
+                await db.run("UPDATE jobs SET status = 'EXTERNAL_REQUIRED', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]);
                 telemetry.ExternalRequired++;
                 await jobPage.close().catch(() => {});
                 continue;
@@ -452,7 +452,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
 
             if (hasQuestionnaire) {
                 logger.info(`Job ID ${targetJob.id} opened a questionnaire modal. Flagging as WAITING_FOR_INPUT.`);
-                await db.run("UPDATE jobs SET status = 'WAITING_FOR_INPUT', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [targetJob.id]);
+                await db.run("UPDATE jobs SET status = 'WAITING_FOR_INPUT', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]);
                 telemetry.WaitingForInput++;
                 await jobPage.close().catch(() => {});
                 continue;
@@ -465,7 +465,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
 
             if (isConfirmedApplied) {
                 logger.info(`✓ CONFIRMED PORTAL APPLICATION SUBMITTED for Job ID ${targetJob.id}`);
-                await db.run("UPDATE jobs SET applied = 1, status = 'EMPLOYER_PENDING', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [targetJob.id]);
+                await db.run("UPDATE jobs SET applied = 1, status = 'EMPLOYER_PENDING', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]);
                 eventBus.publish("APPLICATION_SUBMITTED", { portal: "Naukri", jobId: targetJob.id, title: targetJob.title, company: targetJob.company });
                 telemetry.Applied++;
 
