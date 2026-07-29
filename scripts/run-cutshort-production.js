@@ -599,16 +599,6 @@ function resolveQuestionAnswer(questionText, options = []) {
                 await db.run("UPDATE jobs SET applied = 0, status = 'CLICKED_UNVERIFIED', updated_at = CURRENT_TIMESTAMP WHERE portal = 'cutshort' AND job_id = ?", [job.jobId]);
                 telemetry.Failed++;
             }
-                await conversationEngine.updateConversation(convId, { conversation_status: "EMPLOYER_PENDING" });
-
-                applicationsRun++;
-                telemetry.Applied++;
-                console.log(`✓ VERIFIED PORTAL SUBMISSION for ${job.title} (${job.company})`);
-            } else {
-                console.warn(`⚠️ Unverified application state on portal for ${job.title}. Marking CLICKED_UNVERIFIED.`);
-                await db.run("UPDATE jobs SET status = 'CLICKED_UNVERIFIED', updated_at = CURRENT_TIMESTAMP WHERE portal = 'cutshort' AND job_id = ?", [job.jobId]);
-                telemetry.Failed++;
-            }
 
             // Delay between applications
             if (applicationsRun < MAX_APPLICATIONS_PER_RUN) {
