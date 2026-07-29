@@ -189,13 +189,13 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.MAX_APPLICATIONS_PER_DAY |
                     for (const l of lines) {
                         if (l.toLowerCase().includes("bangalore") || l.toLowerCase().includes("bengaluru") || l.toLowerCase().includes("hyderabad") || l.toLowerCase().includes("pune") || l.toLowerCase().includes("chennai") || l.toLowerCase().includes("mumbai") || l.toLowerCase().includes("remote") || l.toLowerCase().includes("gurugram")) {
                             locationStr = l;
-                        } else if (l.includes("yrs") || l.includes("years") || l.includes("Yr") || l.includes("Experience")) {
+                        } else if (l.match(/\b(\d+)\s*(?:-|to)\s*(\d+)\s*(?:yrs|years|yr)?\b/i) || l.match(/\b(\d+)\+\s*(?:yrs|years|yr)?\b/i) || l.toLowerCase().includes("exp")) {
                             experienceStr = l;
                         }
                     }
 
-                    // Experience Eligibility Check (1-6 yr overlap)
-                    const expCheck = checkExperienceEligibility(experienceStr);
+                    // Experience Eligibility Check (1-6 yr overlap, NO synthetic UNKNOWN)
+                    const expCheck = checkExperienceEligibility(experienceStr, { allowUnknown: false });
                     if (!expCheck.eligible) continue;
                     telemetry.ExperienceEligible++;
 
@@ -204,14 +204,26 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.MAX_APPLICATIONS_PER_DAY |
                     if (!locCheck.eligible) continue;
                     telemetry.LocationEligible++;
 
-                    // Database Duplicates & Already Applied Check
+                    // Database Duplicates & Already Applied Check with 24-Hour Cooldown for CLICKED_UNVERIFIED
                     const dbRecord = await db.get("SELECT * FROM jobs WHERE portal = 'cutshort' AND job_id = ?", [jobId]);
                     const dbConv = await db.get("SELECT * FROM conversations WHERE portal = 'cutshort' AND (job_id = ? OR conversation_id LIKE ?)", [jobId, `%${jobId}%`]);
 
                     if (dbRecord) {
-                        telemetry.Duplicates++;
                         if (dbRecord.applied === 1 || dbRecord.status === "WAITING_FOR_INPUT" || dbRecord.status === "EMPLOYER_PENDING") {
+                            telemetry.Duplicates++;
                             telemetry.AlreadyApplied++;
+                            continue;
+                        }
+                        if (dbRecord.status === "CLICKED_UNVERIFIED") {
+                            const updatedAt = new Date(dbRecord.updated_at || dbRecord.timestamp || Date.now()).getTime();
+                            const hoursDiff = (Date.now() - updatedAt) / (1000 * 60 * 60);
+                            if (hoursDiff < 24) {
+                                telemetry.Duplicates++;
+                                continue;
+                            }
+                            console.log(`   [Deduplication Cooldown Expired] Re-evaluating CLICKED_UNVERIFIED candidate ${jobId}`);
+                        } else {
+                            telemetry.Duplicates++;
                             continue;
                         }
                     }
@@ -262,10 +274,10 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.MAX_APPLICATIONS_PER_DAY |
             console.log("TOP 10 ELIGIBLE CANDIDATE JOBS:");
             console.log("--------------------------------------------------");
             discovered.slice(0, 10).forEach((j, idx) => {
-                const expReason = checkExperienceEligibility(j.experience).reason;
+                const expReason = checkExperienceEligibility(j.experience, { allowUnknown: false }).reason;
                 console.log(`[${idx + 1}] ${j.title}`);
                 console.log(`    Company:  ${j.company}`);
-                console.log(`    Exp:      ${j.experience || "Classified UNKNOWN (0-99 yrs)"}`);
+                console.log(`    Exp:      ${j.experience || "Classified UNKNOWN"}`);
                 console.log(`    Location: ${j.location}`);
                 console.log(`    Match:    95% (DevOps/Cloud Role Match)`);
                 console.log(`    Eligible: ${expReason}`);
@@ -287,6 +299,21 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.MAX_APPLICATIONS_PER_DAY |
             await page.goto(job.url, { waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {});
             await page.waitForTimeout(2500);
 
+            // Job Page Experience Inspection if discovery card experience was empty
+            const pageExp = await page.evaluate(() => {
+                const text = document.body ? document.body.innerText : "";
+                const m = text.match(/\b(\d+)\s*(?:-|to)\s*(\d+)\s*(?:yrs|years|yr)\b/i) || text.match(/\b(\d+)\+\s*(?:yrs|years|yr)\b/i);
+                return m ? m[0] : "";
+            }).catch(() => "");
+
+            const effectiveExp = job.experience || pageExp;
+            const pageExpCheck = checkExperienceEligibility(effectiveExp, { allowUnknown: false });
+            if (!pageExpCheck.eligible) {
+                console.log(`   Job page experience not eligible or UNKNOWN ("${effectiveExp || "Missing"}"). Skipping.`);
+                telemetry.Failed++;
+                continue;
+            }
+
             const applyBtnLoc = page.locator("button:has-text('Apply to this job'), button:has-text('Apply'), button:has-text('Interested')").first();
 
             if (!(await applyBtnLoc.isVisible().catch(() => false))) {
@@ -300,7 +327,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.MAX_APPLICATIONS_PER_DAY |
                 `INSERT OR IGNORE INTO jobs (
                     portal, job_id, company, title, location, experience, url, status, applied, timestamp
                 ) VALUES ('cutshort', ?, ?, ?, ?, ?, ?, 'APPLY_STARTED', 0, CURRENT_TIMESTAMP)`,
-                [job.jobId, job.company, job.title, job.location, job.experience, job.url]
+                [job.jobId, job.company, job.title, job.location, effectiveExp, job.url]
             );
 
             eventBus.publish(eventBus.EVENTS.APPLICATION_STARTED, {
@@ -310,18 +337,36 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.MAX_APPLICATIONS_PER_DAY |
                 title: job.title
             });
 
-            await applyBtnLoc.scrollIntoViewIfNeeded().catch(() => {});
-            await applyBtnLoc.evaluate(b => b.click()).catch(() => {});
+            await applyBtnLoc.evaluate(b => b.scrollIntoView({ block: "center" })).catch(() => {});
+            await page.waitForTimeout(1000);
+
+            try {
+                await applyBtnLoc.click();
+                console.log("   ✓ Clicked Apply button via Playwright locator click.");
+            } catch (e) {
+                console.log("   Applying fallback click dispatch...");
+                await applyBtnLoc.dispatchEvent("click").catch(() => {});
+            }
             await page.waitForTimeout(4000);
+
+            // Secondary Submission Button check inside SPA drawer/modal
+            const secondarySubmitBtn = page.locator("button:has-text('Send application'), button:has-text('Submit'), button:has-text('Send'), button:has-text('Confirm')").first();
+            if (await secondarySubmitBtn.isVisible().catch(() => false)) {
+                console.log("   Secondary submission button detected in SPA drawer/modal. Clicking...");
+                await secondarySubmitBtn.scrollIntoViewIfNeeded().catch(() => {});
+                await secondarySubmitBtn.click().catch(() => {});
+                await page.waitForTimeout(4000);
+            }
 
             // Independent Portal-Side Application Verification
             const pageText = await page.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
+            const currentUrlAfter = page.url();
             const isPortalVerified = pageText.toLowerCase().includes("applied") ||
                                      pageText.toLowerCase().includes("application submitted") ||
                                      pageText.toLowerCase().includes("message sent") ||
                                      pageText.toLowerCase().includes("already applied") ||
-                                     page.url().includes("/messages") ||
-                                     page.url().includes("/inbox");
+                                     currentUrlAfter.includes("/messages") ||
+                                     currentUrlAfter.includes("/inbox");
 
             if (isPortalVerified) {
                 const convId = `cutshort_${job.jobId}`;

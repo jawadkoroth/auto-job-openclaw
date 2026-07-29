@@ -74,16 +74,26 @@ function parseExperience(expStr = "") {
     return { min: 0, max: 99, isUnknown: true };
 }
 
-function checkExperienceEligibility(expStr = "") {
+function checkExperienceEligibility(expStr = "", options = {}) {
+    const allowUnknown = typeof options === "boolean" ? options : (options && options.allowUnknown !== undefined ? Boolean(options.allowUnknown) : true);
     const parsed = parseExperience(expStr);
 
     if (parsed.isUnknown) {
+        if (allowUnknown) {
+            return {
+                eligible: true,
+                min: parsed.min,
+                max: parsed.max,
+                category: "EXPERIENCE_UNKNOWN",
+                reason: `ELIGIBLE (UNKNOWN): Experience string "${expStr}" is missing or unparsable. Allowed for downstream matching.`
+            };
+        }
         return {
-            eligible: true,
+            eligible: false,
             min: parsed.min,
             max: parsed.max,
             category: "EXPERIENCE_UNKNOWN",
-            reason: `ELIGIBLE (UNKNOWN): Experience string "${expStr}" is missing or unparsable. Allowed for downstream matching.`
+            reason: `EXPERIENCE_UNKNOWN: Experience string "${expStr}" is missing or unparsable.`
         };
     }
 
