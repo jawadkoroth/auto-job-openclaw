@@ -46,14 +46,15 @@ class NaukriSessionBootstrap {
 
             context = await browser.newContext({
                 viewport: { width: 1440, height: 900 },
+                userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 storageState: this.storageStatePath
             });
 
             page = await context.newPage();
 
-            logger.info("[SessionBootstrap] Navigating to Candidate Dashboard (mnjuser/homepage)...");
-            let res = await page.goto("https://www.naukri.com/mnjuser/homepage", {
-                waitUntil: "domcontentloaded",
+            logger.info("[SessionBootstrap] Navigating to Candidate Profile (mnjuser/profile)...");
+            let res = await page.goto("https://www.naukri.com/mnjuser/profile", {
+                waitUntil: "networkidle",
                 timeout: 30000
             }).catch(e => {
                 logger.warn(`[SessionBootstrap] Navigation warning: ${e.message}`);
