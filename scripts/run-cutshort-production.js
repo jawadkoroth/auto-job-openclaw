@@ -194,8 +194,8 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.MAX_APPLICATIONS_PER_DAY |
                         }
                     }
 
-                    // Experience Eligibility Check (1-6 yr overlap, NO synthetic UNKNOWN)
-                    const expCheck = checkExperienceEligibility(experienceStr, { allowUnknown: false });
+                    // Experience Eligibility Check (1-6 yr overlap; allow card empty for downstream job-page DOM inspection)
+                    const expCheck = checkExperienceEligibility(experienceStr, { allowUnknown: true });
                     if (!expCheck.eligible) continue;
                     telemetry.ExperienceEligible++;
 
