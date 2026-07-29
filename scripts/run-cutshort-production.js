@@ -24,6 +24,8 @@ const TARGET_ROLES = [
     "Kubernetes Engineer",
     "Site Reliability Engineer"
 ];
+const MAX_APPLICATIONS_PER_RUN = parseInt(process.env.MAX_APPLICATIONS_PER_RUN || "3", 10);
+const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.MAX_APPLICATIONS_PER_DAY || "6", 10);
 
 function resolveQuestionAnswer(questionText, options = []) {
     if (!questionText) return { resolved: false, answer: null, category: "NEEDS_USER_INPUT" };
