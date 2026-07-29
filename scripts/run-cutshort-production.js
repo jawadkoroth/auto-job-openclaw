@@ -10,6 +10,7 @@ const candidateKnowledgeService = require("../packages/knowledge/CandidateKnowle
 const conversationEngine = require("../packages/automation/ConversationEngine");
 const { checkLocationEligibility } = require("../packages/router/LocationEligibilityFilter");
 const { checkExperienceEligibility } = require("../packages/router/ExperienceEligibilityFilter");
+const telegramService = require("../apps/telegram");
 
 const TARGET_ROLES = [
     "DevOps Engineer",
@@ -117,13 +118,22 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.MAX_APPLICATIONS_PER_DAY |
         const loginBtns = await page.locator("a:has-text('Login'), button:has-text('Login'), input[type='email']").count().catch(() => 0);
 
         if (loginBtns > 0 || (!currentUrl.includes("/profile") && !currentUrl.includes("/dashboard"))) {
-            console.error("❌ Cutshort authenticated session invalid or expired.");
-            eventBus.publish("CUTSHORT_SESSION_EXPIRED", { portal: "cutshort", url: currentUrl });
+            console.error("❌ Cutshort authentication required: Session invalid, expired, or guest mode detected.");
+            eventBus.publish("CUTSHORT_AUTH_REQUIRED", { portal: "cutshort", url: currentUrl });
             telemetry.zeroApplicationReason = "AUTH_EXPIRED";
             saveTelemetry();
+
+            await telegramService.sendMessage(
+                "<b>⚠️ Cutshort Authentication Required</b>\n\n" +
+                "• <b>Portal</b>: <code>Cutshort</code>\n" +
+                "• <b>Status</b>: <code>CUTSHORT_AUTH_REQUIRED</code>\n" +
+                "• <b>Details</b>: The stored Cutshort session is no longer authenticated.\n" +
+                "• <b>Action</b>: No applications were attempted."
+            ).catch(() => {});
+
             process.exit(1);
         }
-        console.log("✓ Authenticated Cutshort Session Verified.");
+        console.log("✓ Authenticated Cutshort Candidate Session Verified.");
 
         // 2. Discovery Across Target Roles
         console.log("\n[2/4] Executing Target Role Discovery...");
@@ -302,24 +312,38 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.MAX_APPLICATIONS_PER_DAY |
 
             await applyBtnLoc.scrollIntoViewIfNeeded().catch(() => {});
             await applyBtnLoc.evaluate(b => b.click()).catch(() => {});
-            await page.waitForTimeout(3000);
+            await page.waitForTimeout(4000);
 
-            // Create conversation
-            const convId = `cutshort_${job.jobId}`;
-            await conversationEngine.getOrCreateConversation({
-                conversationId: convId,
-                portal: "cutshort",
-                jobId: job.jobId,
-                company: job.company,
-                recruiterName: `${job.company} Recruiter`
-            });
+            // Independent Portal-Side Application Verification
+            const pageText = await page.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
+            const isPortalVerified = pageText.toLowerCase().includes("applied") ||
+                                     pageText.toLowerCase().includes("application submitted") ||
+                                     pageText.toLowerCase().includes("message sent") ||
+                                     pageText.toLowerCase().includes("already applied") ||
+                                     page.url().includes("/messages") ||
+                                     page.url().includes("/inbox");
 
-            await db.run("UPDATE jobs SET applied = 1, status = 'EMPLOYER_PENDING', updated_at = CURRENT_TIMESTAMP WHERE portal = 'cutshort' AND job_id = ?", [job.jobId]);
-            await conversationEngine.updateConversation(convId, { conversation_status: "EMPLOYER_PENDING" });
+            if (isPortalVerified) {
+                const convId = `cutshort_${job.jobId}`;
+                await conversationEngine.getOrCreateConversation({
+                    conversationId: convId,
+                    portal: "cutshort",
+                    jobId: job.jobId,
+                    company: job.company,
+                    recruiterName: `${job.company} Recruiter`
+                });
 
-            applicationsRun++;
-            telemetry.Applied++;
-            console.log(`✓ Application ${applicationsRun} submitted for ${job.title} (${job.company})`);
+                await db.run("UPDATE jobs SET applied = 1, status = 'EMPLOYER_PENDING', updated_at = CURRENT_TIMESTAMP WHERE portal = 'cutshort' AND job_id = ?", [job.jobId]);
+                await conversationEngine.updateConversation(convId, { conversation_status: "EMPLOYER_PENDING" });
+
+                applicationsRun++;
+                telemetry.Applied++;
+                console.log(`✓ VERIFIED PORTAL SUBMISSION for ${job.title} (${job.company})`);
+            } else {
+                console.warn(`⚠️ Unverified application state on portal for ${job.title}. Marking CLICKED_UNVERIFIED.`);
+                await db.run("UPDATE jobs SET status = 'CLICKED_UNVERIFIED', updated_at = CURRENT_TIMESTAMP WHERE portal = 'cutshort' AND job_id = ?", [job.jobId]);
+                telemetry.Failed++;
+            }
 
             // Delay between applications
             if (applicationsRun < MAX_APPLICATIONS_PER_RUN) {
@@ -341,7 +365,6 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.MAX_APPLICATIONS_PER_DAY |
 
         saveTelemetry();
 
-        const telegramService = require("../apps/telegram");
         await telegramService.sendRunSummaryNotification({
             portal: "Cutshort",
             discovered: telemetry.Discovered,
