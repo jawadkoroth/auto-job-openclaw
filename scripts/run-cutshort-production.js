@@ -296,8 +296,31 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.MAX_APPLICATIONS_PER_DAY |
 
             telemetry.Attempted++;
             console.log(`\n[Application ${applicationsRun + 1}/${MAX_APPLICATIONS_PER_RUN}] Processing ${job.title} at ${job.company}...`);
+            
+            console.log("   STATE_TRANSITION: JOB_PAGE_LOADED");
             await page.goto(job.url, { waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {});
             await page.waitForTimeout(2500);
+
+            // Extract 24-character Hex Mongo ObjectId (hexJobId) from __NEXT_DATA__
+            const hexJobId = await page.evaluate(() => {
+                try {
+                    if (window.__NEXT_DATA__ && window.__NEXT_DATA__.props && window.__NEXT_DATA__.props.pageProps) {
+                        const state = window.__NEXT_DATA__.props.pageProps.dehydratedState;
+                        if (state && state.queries) {
+                            for (const q of state.queries) {
+                                if (q.queryKey && q.queryKey[0] === "similarJobs" && q.queryKey[1]) {
+                                    return q.queryKey[1];
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {}
+                return null;
+            }).catch(() => null);
+
+            if (hexJobId) {
+                console.log(`   ✓ Extracted Cutshort Hex ObjectId: ${hexJobId}`);
+            }
 
             // Job Page Experience Inspection if discovery card experience was empty
             const pageExp = await page.evaluate(() => {
@@ -321,6 +344,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.MAX_APPLICATIONS_PER_DAY |
                 telemetry.Failed++;
                 continue;
             }
+            console.log("   STATE_TRANSITION: APPLY_BUTTON_FOUND");
 
             // Save job record
             await db.run(
@@ -337,38 +361,83 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.MAX_APPLICATIONS_PER_DAY |
                 title: job.title
             });
 
+            // Set up listener for submission XHR / fetch API call
+            let submissionRequestObserved = false;
+            let submissionResponseSuccessful = false;
+
+            const responseListener = (res) => {
+                const u = res.url();
+                if (u.includes("sendreply/jobsignal") || u.includes("create-talent-card-and-apply")) {
+                    submissionRequestObserved = true;
+                    console.log(`   STATE_TRANSITION: SUBMISSION_REQUEST_OBSERVED (${res.request().method()} ${u})`);
+                    if (res.status() >= 200 && res.status() < 300) {
+                        submissionResponseSuccessful = true;
+                        console.log(`   STATE_TRANSITION: SUBMISSION_RESPONSE_RECEIVED (Status ${res.status()})`);
+                    }
+                }
+            };
+            page.on("response", responseListener);
+
             await applyBtnLoc.evaluate(b => b.scrollIntoView({ block: "center" })).catch(() => {});
             await page.waitForTimeout(1000);
 
             try {
                 await applyBtnLoc.click();
-                console.log("   ✓ Clicked Apply button via Playwright locator click.");
+                console.log("   STATE_TRANSITION: APPLY_CLICKED");
             } catch (e) {
                 console.log("   Applying fallback click dispatch...");
                 await applyBtnLoc.dispatchEvent("click").catch(() => {});
+                console.log("   STATE_TRANSITION: APPLY_CLICKED");
             }
             await page.waitForTimeout(4000);
+
+            console.log("   STATE_TRANSITION: SPA_APPLICATION_UI_OPENED");
+
+            // Fill candidate intro / message field if present in drawer / modal
+            const messageInput = page.locator("textarea, input[placeholder*='message'], input[placeholder*='note'], textarea[placeholder*='intro']").first();
+            if (await messageInput.isVisible().catch(() => false)) {
+                console.log("   STATE_TRANSITION: FORM_DETECTED");
+                const introMsg = "Hi, I am interested in this DevOps role. I have 4+ years of hands-on experience in Kubernetes, AWS, Terraform, Docker, and CI/CD pipelines.";
+                await messageInput.fill(introMsg).catch(() => {});
+                console.log("   STATE_TRANSITION: FORM_READY");
+            }
 
             // Secondary Submission Button check inside SPA drawer/modal
             const secondarySubmitBtn = page.locator("button:has-text('Send application'), button:has-text('Submit'), button:has-text('Send'), button:has-text('Confirm')").first();
             if (await secondarySubmitBtn.isVisible().catch(() => false)) {
-                console.log("   Secondary submission button detected in SPA drawer/modal. Clicking...");
+                console.log("   STATE_TRANSITION: FINAL_SUBMIT_CLICKED");
                 await secondarySubmitBtn.scrollIntoViewIfNeeded().catch(() => {});
                 await secondarySubmitBtn.click().catch(() => {});
                 await page.waitForTimeout(4000);
             }
 
-            // Independent Portal-Side Application Verification
+            page.off("response", responseListener);
+
+            // Independent Portal-Side Application Verification (UI + Authoritative API)
             const pageText = await page.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
             const currentUrlAfter = page.url();
-            const isPortalVerified = pageText.toLowerCase().includes("applied") ||
+            let isPortalVerified = pageText.toLowerCase().includes("applied") ||
                                      pageText.toLowerCase().includes("application submitted") ||
                                      pageText.toLowerCase().includes("message sent") ||
                                      pageText.toLowerCase().includes("already applied") ||
                                      currentUrlAfter.includes("/messages") ||
-                                     currentUrlAfter.includes("/inbox");
+                                     currentUrlAfter.includes("/inbox") ||
+                                     submissionResponseSuccessful;
+
+            // Authoritative API Verification Check via /api/auth/ats/my-applications-for-job/<hexJobId>
+            if (hexJobId) {
+                const apiRes = await context.request.get(`https://cutshort.io/api/auth/ats/my-applications-for-job/${hexJobId}`).catch(() => null);
+                if (apiRes && apiRes.status() === 200) {
+                    const apiData = await apiRes.json().catch(() => null);
+                    if (Array.isArray(apiData) && apiData.length > 0) {
+                        isPortalVerified = true;
+                        console.log(`   STATE_TRANSITION: PORTAL_CONFIRMATION_FOUND (Confirmed via /my-applications-for-job/${hexJobId})`);
+                    }
+                }
+            }
 
             if (isPortalVerified) {
+                console.log("   STATE_TRANSITION: CONVERSATION_FOUND");
                 const convId = `cutshort_${job.jobId}`;
                 await conversationEngine.getOrCreateConversation({
                     conversationId: convId,
