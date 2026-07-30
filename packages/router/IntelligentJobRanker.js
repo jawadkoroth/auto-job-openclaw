@@ -73,7 +73,7 @@ class IntelligentJobRanker {
             roleScore = 20;
         }
 
-        // --- B. EXPERIENCE FIT SCORE (Max 25 Pts) ---
+        // --- B. EXPERIENCE FIT SCORE (Max 25 Pts) & UPPER RANGE PENALTY ---
         const minMatch = experienceStr.match(/^(\d+)/);
         const maxMatch = experienceStr.match(/(\d+)\s*Yr/i) || experienceStr.match(/(\d+)$/);
         const minExp = minMatch ? parseInt(minMatch[1], 10) : 0;
@@ -90,6 +90,12 @@ class IntelligentJobRanker {
             experienceScore = 12; // Very broad range (e.g. 0-10, 1-10)
         } else {
             experienceScore = 15;
+        }
+
+        // Apply penalty for upper YOE ranges exceeding 6 years
+        let yoePenalty = 0;
+        if (maxExp > 6) {
+            yoePenalty = (maxExp - 6) * 10;
         }
 
         // --- C. SKILL ALIGNMENT SCORE (Max 25 Pts) ---
@@ -123,10 +129,20 @@ class IntelligentJobRanker {
             locationScore = 5;
         }
 
-        const totalScore = Math.min(100, roleScore + experienceScore + skillScore + locationScore);
+        // --- E. NATIVE VS EXTERNAL PREFERENCE BONUS ---
+        let nativeBonus = 0;
+        const isExternal = job.isExternal === true || job.applyType === 'EXTERNAL';
+        if (!isExternal) {
+            nativeBonus = 50; // Heavily prioritize native Naukri applications
+        } else {
+            nativeBonus = -30;
+        }
+
+        const rawScore = roleScore + experienceScore + skillScore + locationScore + nativeBonus - yoePenalty;
+        const totalScore = Math.max(0, Math.min(150, rawScore));
 
         const skillsMatchedStr = matchedSkillsList.length > 0 ? matchedSkillsList.join(", ") : "DevOps/Cloud Skills";
-        const selectionReason = `Score: ${totalScore}/100 | Direct Role Match (${roleScore}/40) + Experience Fit ${experienceStr} (${experienceScore}/25) + Skill Alignment: [${skillsMatchedStr}] (${Math.round(skillScore)}/25)`;
+        const selectionReason = `Score: ${totalScore} | ${!isExternal ? 'NATIVE NAUKRI (+50)' : 'EXTERNAL (-30)'} | Role (${roleScore}/40) + Exp ${experienceStr} (${experienceScore}/25 - ${yoePenalty} yoePenalty) + Skills [${skillsMatchedStr}] (${Math.round(skillScore)}/25)`;
 
         return {
             rankScore: totalScore,
@@ -135,7 +151,9 @@ class IntelligentJobRanker {
                 role: roleScore,
                 experience: experienceScore,
                 skill: Math.round(skillScore),
-                location: locationScore
+                location: locationScore,
+                nativeBonus,
+                yoePenalty
             },
             skillsMatched: matchedSkillsList,
             selectionReason

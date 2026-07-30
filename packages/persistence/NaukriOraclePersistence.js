@@ -140,14 +140,12 @@ class NaukriOraclePersistence {
             const apiPath = `/api/naukri/job-status?jobId=${encodeURIComponent(jobId)}&url=${encodeURIComponent(url || "")}`;
             const res = await this._makeRequest("GET", apiPath);
             if (res && res.success && res.exists && res.job) {
-                const activeStatuses = [
-                    "DISCOVERED", "APPLY_STARTED", "CONVERSATION_CREATED", 
-                    "QUESTIONNAIRE_PENDING", "QUESTIONNAIRE_IN_PROGRESS", "QUESTIONNAIRE_SUBMITTED", 
-                    "APPLICATION_SUBMITTED", "EMPLOYER_PENDING", "SHORTLISTED",
-                    "EXTERNAL_PENDING", "EXTERNAL_IN_PROGRESS", "WAITING_FOR_INPUT", 
-                    "READY_TO_RESUME", "CLICKED_UNVERIFIED", "APPLIED", "ALREADY_APPLIED"
+                const appliedStatuses = [
+                    "EMPLOYER_PENDING", "APPLICATION_SUBMITTED", "SHORTLISTED",
+                    "WAITING_FOR_INPUT", "QUESTIONNAIRE_PENDING", "QUESTIONNAIRE_IN_PROGRESS", 
+                    "QUESTIONNAIRE_SUBMITTED", "APPLIED", "ALREADY_APPLIED"
                 ];
-                if (res.job.applied === 1 || activeStatuses.includes(res.job.status)) {
+                if (res.job.applied === 1 || appliedStatuses.includes(res.job.status)) {
                     return true;
                 }
             }

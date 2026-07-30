@@ -230,6 +230,9 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
                     seenIds.add(jobId);
                     telemetry.Discovered++;
 
+                    const cardText = (await item.textContent().catch(() => "")).toLowerCase();
+                    const isExternalCard = cardText.includes("company site") || cardText.includes("external");
+
                     const expLoc = item.locator(".exp, .experience, [class*='exp']").first();
                     const expText = (await expLoc.count().catch(() => 0) > 0)
                         ? (await expLoc.textContent().catch(() => "")).trim()
@@ -250,7 +253,9 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
                         apply_link: url,
                         experience: expText,
                         location: locText,
-                        portal: "naukri"
+                        portal: "naukri",
+                        isExternal: isExternalCard,
+                        applyType: isExternalCard ? "EXTERNAL" : "NATIVE"
                     });
                 } catch (cardErr) {}
             }
@@ -372,31 +377,32 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             process.exit(0);
         }
 
-        // Rank Eligible Jobs using Intelligent Job Ranker
+        // Rank Eligible Jobs using Intelligent Job Ranker (NATIVE prioritized + YOE upper range penalty)
         const rankedJobs = intelligentJobRanker.rankJobs(eligibleJobs, candidateProfile);
         telemetry.Ranked = rankedJobs.length;
 
-        const runLimit = Math.min(MAX_APPLICATIONS_PER_RUN, telemetry.dailyRemainingCapacity);
-        const finalCandidates = rankedJobs.slice(0, runLimit);
-        telemetry.FinalCandidates = finalCandidates.length;
+        const targetVerified = Math.min(MAX_APPLICATIONS_PER_RUN, telemetry.dailyRemainingCapacity);
+        const MAX_INSPECTIONS_PER_RUN = parseInt(process.env.NAUKRI_MAX_INSPECTIONS_PER_RUN || "25", 10);
 
-        logger.info(`Targeting Top ${finalCandidates.length} Ranked Candidates for Application.`);
+        logger.info(`Targeting up to ${targetVerified} VERIFIED Application(s) from Ranked Pool of ${rankedJobs.length} Candidates (Max Inspections: ${MAX_INSPECTIONS_PER_RUN}).`);
 
         if (isDryRun) {
             logger.info("\n==================================================");
-            logger.info("TOP CANDIDATES SELECTED FOR APPLICATION (DRY RUN)");
+            logger.info("TOP CANDIDATES RANKED FOR APPLICATION (DRY RUN)");
             logger.info("==================================================");
-            for (let i = 0; i < finalCandidates.length; i++) {
-                const j = finalCandidates[i];
+            const previewCount = Math.min(10, rankedJobs.length);
+            for (let i = 0; i < previewCount; i++) {
+                const j = rankedJobs[i];
                 const expCheck = checkExperienceEligibility(j.experience, 1, 6);
+                const isExt = j.isExternal === true || j.applyType === 'EXTERNAL';
                 logger.info(`[Dry-Run Job #${i + 1}] ID: ${j.id}`);
                 logger.info(`  Title:              ${j.title}`);
                 logger.info(`  Company:            ${j.company}`);
                 logger.info(`  Experience:         ${j.experience}`);
                 logger.info(`  Location:           ${j.location}`);
-                logger.info(`  Match Score:        ${j.matchScore || "N/A"}`);
-                logger.info(`  1-6 YOE Overlap:    ${expCheck.eligible ? "ELIGIBLE" : "INELIGIBLE"}`);
-                logger.info(`  Previously Applied: NO`);
+                logger.info(`  Type:               ${!isExt ? "NATIVE NAUKRI" : "EXTERNAL COMPANY SITE"}`);
+                logger.info(`  Rank Score:         ${j.rankScore}`);
+                logger.info(`  Reason:             ${j.selectionReason}`);
                 logger.info(`--------------------------------------------------`);
             }
             telemetry.zeroApplicationReason = "DRY_RUN_ONLY";
@@ -405,17 +411,33 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             process.exit(0);
         }
 
-        // 4. Live Job Application Execution with Independent Verification
+        // 4. Live Job Application Execution with Layered Verification & Verification Loop
         logger.info("\n[4/4] Executing Controlled Live Job Applications...");
         await discoveryPage.close().catch(() => {}); // Close discovery page safely
 
-        for (let aIdx = 0; aIdx < finalCandidates.length; aIdx++) {
-            const targetJob = finalCandidates[aIdx];
-            logger.info(`\n--- Application (${aIdx + 1}/${finalCandidates.length}) for Job ID: ${targetJob.id} ---`);
+        let verifiedAppliedCount = 0;
+        let candidateIdx = 0;
+        let inspectionsCount = 0;
+
+        while (verifiedAppliedCount < targetVerified && candidateIdx < rankedJobs.length && inspectionsCount < MAX_INSPECTIONS_PER_RUN) {
+            const targetJob = rankedJobs[candidateIdx++];
+            inspectionsCount++;
+
+            logger.info(`\n--- Inspection (${inspectionsCount}) | Target Verified (${verifiedAppliedCount + 1}/${targetVerified}) for Job ID: ${targetJob.id} ---`);
             logger.info(`Title:      ${targetJob.title}`);
             logger.info(`Company:    ${targetJob.company}`);
             logger.info(`URL:        ${targetJob.url}`);
             logger.info(`Experience: ${targetJob.experience}`);
+            logger.info(`Type:       ${targetJob.isExternal ? 'EXTERNAL COMPANY SITE' : 'NATIVE NAUKRI'}`);
+
+            // Pre-check if card was already flagged external during discovery
+            if (targetJob.isExternal || targetJob.applyType === 'EXTERNAL') {
+                logger.info(`Job ID ${targetJob.id} flagged as EXTERNAL during discovery. Skipping without consuming verified slot.`);
+                await oraclePersistence.updateJobStatus(targetJob.id, 'EXTERNAL_REQUIRED');
+                await db.run("UPDATE jobs SET status = 'EXTERNAL_REQUIRED', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]).catch(() => {});
+                telemetry.ExternalRequired++;
+                continue;
+            }
 
             telemetry.Attempted++;
             await oraclePersistence.updateJobStatus(targetJob.id, 'APPLICATION_STARTED');
@@ -447,6 +469,17 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
                 break;
             }
 
+            // Check if page indicates external company site or already applied
+            const pageText = await jobPage.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
+
+            if (pageText.toLowerCase().includes("applied") || pageText.toLowerCase().includes("already applied")) {
+                logger.info(`✓ Job ID ${targetJob.id} already applied on portal.`);
+                await oraclePersistence.updateJobStatus(targetJob.id, 'EMPLOYER_PENDING', 1);
+                await db.run("UPDATE jobs SET applied = 1, status = 'EMPLOYER_PENDING', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]).catch(() => {});
+                await jobPage.close().catch(() => {});
+                continue;
+            }
+
             // Locate Apply Button
             const applyBtnLocators = [
                 jobPage.locator("button:has-text('Apply')"),
@@ -464,24 +497,16 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             }
 
             if (!applyBtn) {
-                logger.warn(`Apply button not visible for job ID ${targetJob.id}. Checking if already applied...`);
-                const pageText = await jobPage.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
-                if (pageText.toLowerCase().includes("applied") || pageText.toLowerCase().includes("already applied")) {
-                    logger.info(`✓ Job ID ${targetJob.id} already applied on portal.`);
-                    await oraclePersistence.updateJobStatus(targetJob.id, 'EMPLOYER_PENDING', 1);
-                    await db.run("UPDATE jobs SET applied = 1, status = 'EMPLOYER_PENDING', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]).catch(() => {});
-                    telemetry.Applied++;
-                } else {
-                    await oraclePersistence.updateJobStatus(targetJob.id, 'APPLY_BUTTON_NOT_FOUND');
-                    telemetry.Failed++;
-                }
+                logger.warn(`Apply button not visible for job ID ${targetJob.id}. Skipping.`);
+                await oraclePersistence.updateJobStatus(targetJob.id, 'APPLY_BUTTON_NOT_FOUND');
+                telemetry.Failed++;
                 await jobPage.close().catch(() => {});
                 continue;
             }
 
             const btnText = (await applyBtn.textContent().catch(() => "")).trim();
             if (btnText.toLowerCase().includes("company site")) {
-                logger.info(`Job ID ${targetJob.id} requires external company site application. Skipping.`);
+                logger.info(`Job ID ${targetJob.id} requires external company site application. Skipping without consuming verified slot.`);
                 await oraclePersistence.updateJobStatus(targetJob.id, 'EXTERNAL_REQUIRED');
                 await db.run("UPDATE jobs SET status = 'EXTERNAL_REQUIRED', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]).catch(() => {});
                 telemetry.ExternalRequired++;
@@ -494,9 +519,10 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             await applyBtn.click().catch(() => {});
             await delay(4000);
 
-            // Check for Questionnaire Modal
-            const modalText = await jobPage.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
-            const hasQuestionnaire = modalText.toLowerCase().includes("questionnaire") || modalText.toLowerCase().includes("answer questions") || jobPage.url().includes("questionnaire");
+            // Layered Authoritative Verification Phase
+            // Layer 1: Questionnaire Modal Check
+            const postClickText = await jobPage.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
+            const hasQuestionnaire = postClickText.toLowerCase().includes("questionnaire") || postClickText.toLowerCase().includes("answer questions") || jobPage.url().includes("questionnaire");
 
             if (hasQuestionnaire) {
                 logger.info(`Job ID ${targetJob.id} opened a questionnaire modal. Flagging as WAITING_FOR_INPUT.`);
@@ -507,17 +533,33 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
                 continue;
             }
 
-            // Independent Portal Verification
-            await delay(2000);
-            const postApplyText = await jobPage.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
-            const isConfirmedApplied = postApplyText.toLowerCase().includes("applied") || postApplyText.toLowerCase().includes("application submitted") || postApplyText.toLowerCase().includes("successfully applied");
+            // Layer 2: Immediate DOM / Button Text & Toast Check
+            let isVerified = postClickText.toLowerCase().includes("applied") || postClickText.toLowerCase().includes("application submitted") || postClickText.toLowerCase().includes("successfully applied");
 
-            if (isConfirmedApplied) {
-                logger.info(`✓ CONFIRMED PORTAL APPLICATION SUBMITTED for Job ID ${targetJob.id}`);
+            // Layer 3: Reload Verification Check
+            if (!isVerified) {
+                logger.info(`Initial post-click DOM check unconfirmed for Job ID ${targetJob.id}. Performing reload verification...`);
+                try {
+                    await jobPage.reload({ waitUntil: "domcontentloaded", timeout: 20000 });
+                    await delay(3000);
+                    const reloadedText = await jobPage.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
+                    if (reloadedText.toLowerCase().includes("applied") || reloadedText.toLowerCase().includes("already applied")) {
+                        isVerified = true;
+                        logger.info(`✓ CONFIRMED PORTAL APPLICATION SUBMITTED via Page Reload for Job ID ${targetJob.id}`);
+                    }
+                } catch (reloadErr) {
+                    logger.warn(`Reload verification failed: ${reloadErr.message}`);
+                }
+            }
+
+            if (isVerified) {
+                logger.info(`✓ AUTHORITATIVE PORTAL APPLICATION SUBMITTED for Job ID ${targetJob.id}`);
                 await oraclePersistence.updateJobStatus(targetJob.id, 'EMPLOYER_PENDING', 1);
                 await oraclePersistence.recordEvent(`evt_${Date.now()}_${targetJob.id}`, targetJob.id, 'naukri', 'APPLICATION_SUBMITTED', { company: targetJob.company, title: targetJob.title });
                 await db.run("UPDATE jobs SET applied = 1, status = 'EMPLOYER_PENDING', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]).catch(() => {});
                 eventBus.publish("APPLICATION_SUBMITTED", { portal: "Naukri", jobId: targetJob.id, title: targetJob.title, company: targetJob.company });
+
+                verifiedAppliedCount++;
                 telemetry.Applied++;
 
                 const nowIst = new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
@@ -534,7 +576,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             } else {
                 logger.warn(`⚠️ Unverified application state for Job ID ${targetJob.id}. Marking CLICKED_UNVERIFIED.`);
                 await oraclePersistence.updateJobStatus(targetJob.id, 'CLICKED_UNVERIFIED');
-                await db.run("UPDATE jobs SET status = 'CLICKED_UNVERIFIED', updated_at = CURRENT_TIMESTAMP WHERE job_id = ?", [targetJob.id]).catch(() => {});
+                await db.run("UPDATE jobs SET status = 'CLICKED_UNVERIFIED', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]).catch(() => {});
                 telemetry.Failed++;
             }
 
