@@ -98,21 +98,60 @@ class TelegramService {
         this.baseUrl = `https://api.telegram.org/bot${this.token}`;
         this.isPolling = false;
         this.lastUpdateId = 0;
+        this.localDeliveriesPath = path.join(process.cwd(), "sessions", "naukri", "telegram_deliveries.json");
+        try { fs.mkdirpSync(path.dirname(this.localDeliveriesPath)); } catch (e) {}
+    }
+
+    _readLocalDeliveries() {
+        if (fs.existsSync(this.localDeliveriesPath)) {
+            try {
+                return fs.readJsonSync(this.localDeliveriesPath) || [];
+            } catch (e) {
+                return [];
+            }
+        }
+        return [];
+    }
+
+    _writeLocalDeliveries(list) {
+        try {
+            fs.writeJsonSync(this.localDeliveriesPath, list, { spaces: 2 });
+        } catch (e) {}
     }
 
     async isNotificationDelivered(key) {
         if (!key) return false;
+
+        // 1. Check local persistent JSON store
+        const localList = this._readLocalDeliveries();
+        if (localList.includes(key)) return true;
+
+        // 2. Check SQLite database table
         try {
             await db.init();
             const row = await db.get("SELECT id FROM notification_deliveries WHERE notification_key = ?", [key]);
-            return !!row;
-        } catch (e) {
-            return false;
-        }
+            if (row) {
+                // Sync back to local store
+                localList.push(key);
+                this._writeLocalDeliveries(localList);
+                return true;
+            }
+        } catch (e) {}
+
+        return false;
     }
 
     async recordNotificationDelivery(key, portal = "", jobId = "", type = "") {
         if (!key) return;
+
+        // 1. Save to local persistent JSON store
+        const localList = this._readLocalDeliveries();
+        if (!localList.includes(key)) {
+            localList.push(key);
+            this._writeLocalDeliveries(localList);
+        }
+
+        // 2. Save to SQLite database table
         try {
             await db.init();
             await db.run(
@@ -126,8 +165,11 @@ class TelegramService {
      * Centralized Application Submitted Telegram Alert
      */
     async sendApplicationSubmittedNotification({ portal, company, role, status, url, jobId }) {
-        const key = `${portal || 'generic'}_${jobId || 'job'}_SUBMITTED`;
-        if (await this.isNotificationDelivered(key)) return;
+        const key = `${(portal || 'generic').toLowerCase()}_${jobId || 'job'}_APPLICATION_SUBMITTED`;
+        if (await this.isNotificationDelivered(key)) {
+            localLogger.info(`[Telegram Idempotency] Skipping duplicate alert for key: ${key}`);
+            return;
+        }
 
         const safePortal = escapeHTML(portal || "Job Portal");
         const safeCompany = escapeHTML(company || "Company");

@@ -562,17 +562,14 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
                 verifiedAppliedCount++;
                 telemetry.Applied++;
 
-                const nowIst = new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
-                const tgMsg = `<b>Naukri Application Submitted</b>\n\n` +
-                    `• <b>Portal</b>: <code>Naukri</code>\n` +
-                    `• <b>Role</b>: <code>${targetJob.title}</code>\n` +
-                    `• <b>Company</b>: <code>${targetJob.company}</code>\n` +
-                    `• <b>Experience</b>: <code>${targetJob.experience}</code>\n` +
-                    `• <b>Location</b>: <code>${targetJob.location}</code>\n` +
-                    `• <b>Executed From</b>: <code>${executionHost}</code>\n` +
-                    `• <b>Time (IST)</b>: <code>${nowIst}</code>`;
-
-                await telegramService.sendMessage(tgMsg).catch(e => logger.error(`Telegram send error: ${e.message}`));
+                await telegramService.sendApplicationSubmittedNotification({
+                    portal: "Naukri",
+                    company: targetJob.company,
+                    role: targetJob.title,
+                    status: "EMPLOYER_PENDING",
+                    url: targetJob.url,
+                    jobId: targetJob.id
+                }).catch(e => logger.error(`Telegram send error: ${e.message}`));
             } else {
                 logger.warn(`⚠️ Unverified application state for Job ID ${targetJob.id}. Marking CLICKED_UNVERIFIED.`);
                 await oraclePersistence.updateJobStatus(targetJob.id, 'CLICKED_UNVERIFIED');
