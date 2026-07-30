@@ -17,7 +17,7 @@ const NaukriSessionBootstrap = require("../packages/plugins/naukri/NaukriSession
 const NaukriConcurrencyLock = require("../packages/plugins/naukri/NaukriConcurrencyLock");
 const NaukriDiagnostics = require("../packages/plugins/naukri/NaukriDiagnostics");
 
-const { pullDatabase, pushDatabase } = require("./sync-naukri-database");
+const oraclePersistence = require("../packages/persistence/NaukriOraclePersistence");
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -34,6 +34,7 @@ const MAX_APPLICATIONS_PER_RUN = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
 const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PER_DAY || process.env.MAX_APPLICATIONS_PER_DAY || "20", 10);
 
 (async () => {
+    const startTime = Date.now();
     const isDryRun = process.argv.includes("--dry-run");
     const executionHost = process.platform === "win32" ? "Windows PC" : "Oracle VM";
 
@@ -51,9 +52,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
         process.exit(0);
     }
 
-    if (process.platform === "win32") {
-        await pullDatabase().catch(() => {});
-    }
+    await oraclePersistence.flushOutbox().catch(() => {});
 
     await db.init();
     const candidateProfile = await candidateProfileService.getProfile().catch(() => ({}));
@@ -90,13 +89,9 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
         } catch (e) {}
     };
 
-    // Calculate daily successful applications count from SQLite using correct IST modifier query
+    // Calculate daily successful applications count from Oracle Authoritative Persistence API
     const todayIst = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }); // YYYY-MM-DD
-    const appliedTodayRow = await db.get(
-        "SELECT COUNT(*) as count FROM jobs WHERE LOWER(portal) = 'naukri' AND applied = 1 AND DATE(datetime(COALESCE(updated_at, timestamp), '+5 hours', '+30 minutes')) = ?",
-        [todayIst]
-    );
-    const appliedToday = appliedTodayRow ? appliedTodayRow.count : 0;
+    const appliedToday = await oraclePersistence.getDailyAppliedCount(todayIst);
     telemetry.dailyAppliedCount = appliedToday;
     telemetry.dailyRemainingCapacity = Math.max(0, MAX_APPLICATIONS_PER_DAY - appliedToday);
 
@@ -330,23 +325,20 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             }
             locEligibleCount++;
 
-            // Duplicate Check in SQLite DB
-            const existingJob = await db.get("SELECT id, job_id, applied FROM jobs WHERE LOWER(portal) = 'naukri' AND (job_id = ? OR url = ?)", [job.id, job.url]);
-            if (existingJob) {
-                if (existingJob.applied) {
-                    alreadyAppliedCount++;
-                    continue;
-                }
+            // Cross-Host Duplicate Check via Oracle Persistence API & Outbox
+            const isDup = await oraclePersistence.isDuplicateJob(job.id, job.url);
+            if (isDup) {
                 duplicatesCount++;
+                logger.info(`[Duplicate Filter] REJECTED: Job ID ${job.id} | Title: "${job.title}" already applied or pending.`);
+                continue;
             }
 
-            // Save new job record into DB
-            if (!existingJob) {
-                await db.run(
-                    "INSERT INTO jobs (portal, job_id, title, company, location, url, experience, status, timestamp) VALUES ('naukri', ?, ?, ?, ?, ?, ?, 'DISCOVERED', CURRENT_TIMESTAMP)",
-                    [job.id, job.title, job.company, job.location, job.url, job.experience]
-                );
-            }
+            // Save new job record into Oracle Persistence API
+            await oraclePersistence.recordJob(job).catch(() => {});
+            await db.run(
+                "INSERT OR IGNORE INTO jobs (portal, job_id, title, company, location, url, experience, status, timestamp) VALUES ('naukri', ?, ?, ?, ?, ?, ?, 'DISCOVERED', CURRENT_TIMESTAMP)",
+                [job.id, job.title, job.company, job.location, job.url, job.experience]
+            ).catch(() => {});
 
             eligibleJobs.push(job);
         }
@@ -426,7 +418,9 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             logger.info(`Experience: ${targetJob.experience}`);
 
             telemetry.Attempted++;
-            await db.run("UPDATE jobs SET status = 'APPLICATION_STARTED', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]);
+            await oraclePersistence.updateJobStatus(targetJob.id, 'APPLICATION_STARTED');
+            await oraclePersistence.recordEvent(`evt_${Date.now()}_${targetJob.id}`, targetJob.id, 'naukri', 'APPLICATION_STARTED', { company: targetJob.company, title: targetJob.title });
+            await db.run("UPDATE jobs SET status = 'APPLICATION_STARTED', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]).catch(() => {});
             eventBus.publish("APPLICATION_STARTED", { portal: "Naukri", jobId: targetJob.id, title: targetJob.title, company: targetJob.company });
 
             const jobPage = await context.newPage();
@@ -437,6 +431,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             } catch (jobNavErr) {
                 logger.warn(`Failed navigating to job page ${targetJob.url}: ${jobNavErr.message}`);
                 telemetry.Failed++;
+                await oraclePersistence.updateJobStatus(targetJob.id, 'NAVIGATION_FAILED');
                 await jobPage.close().catch(() => {});
                 continue;
             }
@@ -446,6 +441,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             if (status === 403 || pageTitle.toLowerCase().includes("access denied")) {
                 logger.warn("⚠️ Akamai 403 encountered on job page. Stopping further application submissions.");
                 await NaukriDiagnostics.persist(jobPage, appRes, `JOB_${targetJob.id}_AKAMAI`, "AKAMAI_TEMPORARY_BLOCK");
+                await oraclePersistence.updateJobStatus(targetJob.id, 'AKAMAI_BLOCKED');
                 await jobPage.close().catch(() => {});
                 telemetry.Failed++;
                 break;
@@ -472,9 +468,11 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
                 const pageText = await jobPage.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
                 if (pageText.toLowerCase().includes("applied") || pageText.toLowerCase().includes("already applied")) {
                     logger.info(`✓ Job ID ${targetJob.id} already applied on portal.`);
-                    await db.run("UPDATE jobs SET applied = 1, status = 'EMPLOYER_PENDING', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]);
+                    await oraclePersistence.updateJobStatus(targetJob.id, 'EMPLOYER_PENDING', 1);
+                    await db.run("UPDATE jobs SET applied = 1, status = 'EMPLOYER_PENDING', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]).catch(() => {});
                     telemetry.Applied++;
                 } else {
+                    await oraclePersistence.updateJobStatus(targetJob.id, 'APPLY_BUTTON_NOT_FOUND');
                     telemetry.Failed++;
                 }
                 await jobPage.close().catch(() => {});
@@ -484,7 +482,8 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             const btnText = (await applyBtn.textContent().catch(() => "")).trim();
             if (btnText.toLowerCase().includes("company site")) {
                 logger.info(`Job ID ${targetJob.id} requires external company site application. Skipping.`);
-                await db.run("UPDATE jobs SET status = 'EXTERNAL_REQUIRED', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]);
+                await oraclePersistence.updateJobStatus(targetJob.id, 'EXTERNAL_REQUIRED');
+                await db.run("UPDATE jobs SET status = 'EXTERNAL_REQUIRED', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]).catch(() => {});
                 telemetry.ExternalRequired++;
                 await jobPage.close().catch(() => {});
                 continue;
@@ -501,7 +500,8 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
 
             if (hasQuestionnaire) {
                 logger.info(`Job ID ${targetJob.id} opened a questionnaire modal. Flagging as WAITING_FOR_INPUT.`);
-                await db.run("UPDATE jobs SET status = 'WAITING_FOR_INPUT', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]);
+                await oraclePersistence.updateJobStatus(targetJob.id, 'WAITING_FOR_INPUT');
+                await db.run("UPDATE jobs SET status = 'WAITING_FOR_INPUT', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]).catch(() => {});
                 telemetry.WaitingForInput++;
                 await jobPage.close().catch(() => {});
                 continue;
@@ -514,7 +514,9 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
 
             if (isConfirmedApplied) {
                 logger.info(`✓ CONFIRMED PORTAL APPLICATION SUBMITTED for Job ID ${targetJob.id}`);
-                await db.run("UPDATE jobs SET applied = 1, status = 'EMPLOYER_PENDING', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]);
+                await oraclePersistence.updateJobStatus(targetJob.id, 'EMPLOYER_PENDING', 1);
+                await oraclePersistence.recordEvent(`evt_${Date.now()}_${targetJob.id}`, targetJob.id, 'naukri', 'APPLICATION_SUBMITTED', { company: targetJob.company, title: targetJob.title });
+                await db.run("UPDATE jobs SET applied = 1, status = 'EMPLOYER_PENDING', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]).catch(() => {});
                 eventBus.publish("APPLICATION_SUBMITTED", { portal: "Naukri", jobId: targetJob.id, title: targetJob.title, company: targetJob.company });
                 telemetry.Applied++;
 
@@ -531,7 +533,8 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
                 await telegramService.sendMessage(tgMsg).catch(e => logger.error(`Telegram send error: ${e.message}`));
             } else {
                 logger.warn(`⚠️ Unverified application state for Job ID ${targetJob.id}. Marking CLICKED_UNVERIFIED.`);
-                await db.run("UPDATE jobs SET status = 'CLICKED_UNVERIFIED', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [targetJob.id]);
+                await oraclePersistence.updateJobStatus(targetJob.id, 'CLICKED_UNVERIFIED');
+                await db.run("UPDATE jobs SET status = 'CLICKED_UNVERIFIED', updated_at = CURRENT_TIMESTAMP WHERE job_id = ?", [targetJob.id]).catch(() => {});
                 telemetry.Failed++;
             }
 
@@ -540,16 +543,52 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
         }
 
         saveTelemetry();
+        const durationSec = Math.round((Date.now() - startTime) / 1000);
+        const dailyAfter = telemetry.dailyAppliedCount + telemetry.Applied;
+        const dailyRemainingAfter = Math.max(0, MAX_APPLICATIONS_PER_DAY - dailyAfter);
+
         logger.info("\n==================================================");
-        logger.info("NAUKRI PRODUCTION RUN SUMMARY");
-        logger.info(`Discovered:        ${telemetry.Discovered}`);
-        logger.info(`Role Eligible:     ${telemetry.RoleEligible}`);
-        logger.info(`Attempted:         ${telemetry.Attempted}`);
-        logger.info(`Applied Verified:  ${telemetry.Applied}`);
-        logger.info(`Waiting For Input: ${telemetry.WaitingForInput}`);
-        logger.info(`External Required: ${telemetry.ExternalRequired}`);
-        logger.info(`Failed/Unverified: ${telemetry.Failed}`);
+        logger.info("NAUKRI WINDOWS RUN COMPLETE SUMMARY");
+        logger.info(`Execution Host:        ${executionHost}`);
+        logger.info(`Discovered:            ${telemetry.Discovered}`);
+        logger.info(`Role Eligible:         ${telemetry.RoleEligible}`);
+        logger.info(`Experience Eligible:   ${telemetry.ExperienceEligible}`);
+        logger.info(`Location Eligible:     ${telemetry.LocationEligible}`);
+        logger.info(`Duplicates Removed:    ${telemetry.Duplicates}`);
+        logger.info(`Ranked Candidates:     ${telemetry.Ranked}`);
+        logger.info(`Attempted:             ${telemetry.Attempted}`);
+        logger.info(`Verified Applied:      ${telemetry.Applied}`);
+        logger.info(`Waiting For Input:     ${telemetry.WaitingForInput}`);
+        logger.info(`Clicked Unverified:    ${telemetry.Failed}`);
+        logger.info(`External Required:     ${telemetry.ExternalRequired}`);
+        logger.info(`Daily Applied Before:  ${telemetry.dailyAppliedCount}`);
+        logger.info(`Applied This Run:      ${telemetry.Applied}`);
+        logger.info(`Daily Applied After:   ${dailyAfter}`);
+        logger.info(`Daily Limit Remaining: ${dailyRemainingAfter}`);
+        logger.info(`Duration:              ${durationSec}s`);
         logger.info("==================================================");
+
+        // Send Telegram Run Summary
+        const runSummaryTgMsg = `<b>NAUKRI WINDOWS RUN COMPLETE</b>\n\n` +
+            `• <b>Execution Host</b>: <code>${executionHost}</code>\n\n` +
+            `• <b>Discovered</b>: <code>${telemetry.Discovered}</code>\n` +
+            `• <b>Role Eligible</b>: <code>${telemetry.RoleEligible}</code>\n` +
+            `• <b>Experience Eligible</b>: <code>${telemetry.ExperienceEligible}</code>\n` +
+            `• <b>Location Eligible</b>: <code>${telemetry.LocationEligible}</code>\n` +
+            `• <b>Duplicates</b>: <code>${telemetry.Duplicates}</code>\n` +
+            `• <b>Ranked Candidates</b>: <code>${telemetry.Ranked}</code>\n\n` +
+            `• <b>Attempted</b>: <code>${telemetry.Attempted}</code>\n` +
+            `• <b>Verified Applied</b>: <code>${telemetry.Applied}</code>\n` +
+            `• <b>Waiting For Input</b>: <code>${telemetry.WaitingForInput}</code>\n` +
+            `• <b>Clicked Unverified</b>: <code>${telemetry.Failed}</code>\n` +
+            `• <b>External Required</b>: <code>${telemetry.ExternalRequired}</code>\n\n` +
+            `• <b>Daily Applied Before</b>: <code>${telemetry.dailyAppliedCount}</code>\n` +
+            `• <b>Applied This Run</b>: <code>${telemetry.Applied}</code>\n` +
+            `• <b>Daily Applied After</b>: <code>${dailyAfter}</code>\n` +
+            `• <b>Daily Limit Remaining</b>: <code>${dailyRemainingAfter}</code>\n\n` +
+            `• <b>Duration</b>: <code>${durationSec}s</code>`;
+
+        await telegramService.sendMessage(runSummaryTgMsg).catch(e => logger.error(`Telegram summary error: ${e.message}`));
 
     } catch (err) {
         logger.error(`❌ Naukri Production Runner Exception: ${err.message}`);
@@ -559,9 +598,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
     } finally {
         if (context) await context.close().catch(() => {});
         if (browser) await browser.close().catch(() => {});
-        if (process.platform === "win32") {
-            await pushDatabase().catch(() => {});
-        }
+        await oraclePersistence.flushOutbox().catch(() => {});
         lock.release();
     }
 })();

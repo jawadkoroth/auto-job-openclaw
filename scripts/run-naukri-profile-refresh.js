@@ -8,7 +8,7 @@ const eventBus = require("../packages/events/EventBus");
 const NaukriSessionBootstrap = require("../packages/plugins/naukri/NaukriSessionBootstrap");
 const NaukriConcurrencyLock = require("../packages/plugins/naukri/NaukriConcurrencyLock");
 const NaukriDiagnostics = require("../packages/plugins/naukri/NaukriDiagnostics");
-const { pullDatabase, pushDatabase } = require("./sync-naukri-database");
+const oraclePersistence = require("../packages/persistence/NaukriOraclePersistence");
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -27,9 +27,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         process.exit(0);
     }
 
-    if (process.platform === "win32") {
-        await pullDatabase().catch(() => {});
-    }
+    await oraclePersistence.flushOutbox().catch(() => {});
 
     const storageStatePath = path.join(process.cwd(), "sessions", "naukri", "storageState.json");
     const bootstrapHelper = new NaukriSessionBootstrap(storageStatePath);
@@ -311,9 +309,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     } finally {
         if (context) await context.close().catch(() => {});
         if (browser) await browser.close().catch(() => {});
-        if (process.platform === "win32") {
-            await pushDatabase().catch(() => {});
-        }
+        await oraclePersistence.flushOutbox().catch(() => {});
         lock.release();
     }
 })();

@@ -235,6 +235,125 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, { success: true, telemetry });
         }
 
+        // --- Naukri Persistence API Endpoints ---
+        if (pathname === "/api/naukri/daily-count" && method === "GET") {
+            const dateStr = parsedUrl.query.date || new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+            const row = await db.get(
+                "SELECT COUNT(*) as count FROM jobs WHERE LOWER(portal) = 'naukri' AND applied = 1 AND DATE(datetime(COALESCE(updated_at, timestamp), '+5 hours', '+30 minutes')) = ?",
+                [dateStr]
+            ).catch(() => ({ count: 0 }));
+            return sendJson(res, 200, { success: true, count: row ? row.count : 0, date: dateStr });
+        }
+
+        if (pathname === "/api/naukri/job-status" && method === "GET") {
+            const jobId = parsedUrl.query.jobId || "";
+            const jobUrl = parsedUrl.query.url || "";
+            const row = await db.get(
+                "SELECT id, job_id, portal, company, title, status, applied, url FROM jobs WHERE LOWER(portal) = 'naukri' AND (job_id = ? OR url = ?)",
+                [String(jobId), String(jobUrl)]
+            ).catch(() => null);
+            return sendJson(res, 200, { success: true, exists: Boolean(row), job: row || null });
+        }
+
+        if (pathname === "/api/naukri/record-job" && method === "POST") {
+            const body = await parseJsonBody(req);
+            const { job_id, title, company, location, experience, url, salary } = body;
+            if (!job_id) return sendJson(res, 400, { success: false, error: "job_id required" });
+
+            const existing = await db.get("SELECT id FROM jobs WHERE LOWER(portal) = 'naukri' AND job_id = ?", [String(job_id)]);
+            if (!existing) {
+                await db.run(
+                    "INSERT INTO jobs (portal, job_id, title, company, location, url, experience, salary, status, timestamp) VALUES ('naukri', ?, ?, ?, ?, ?, ?, ?, 'DISCOVERED', CURRENT_TIMESTAMP)",
+                    [String(job_id), title || null, company || null, location || null, url || null, experience || null, salary || null]
+                );
+            }
+            return sendJson(res, 200, { success: true });
+        }
+
+        if (pathname === "/api/naukri/update-status" && method === "POST") {
+            const body = await parseJsonBody(req);
+            const { job_id, status, applied } = body;
+            if (!job_id) return sendJson(res, 400, { success: false, error: "job_id required" });
+
+            if (applied !== undefined && applied !== null) {
+                await db.run(
+                    "UPDATE jobs SET status = ?, applied = ?, updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?",
+                    [status, applied ? 1 : 0, String(job_id)]
+                );
+            } else {
+                await db.run(
+                    "UPDATE jobs SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?",
+                    [status, String(job_id)]
+                );
+            }
+            return sendJson(res, 200, { success: true });
+        }
+
+        if (pathname === "/api/naukri/record-event" && method === "POST") {
+            const body = await parseJsonBody(req);
+            const { event_id, job_id, portal, event_type, payload } = body;
+            if (!event_id || !job_id) return sendJson(res, 400, { success: false, error: "event_id and job_id required" });
+
+            const payloadStr = typeof payload === "object" ? JSON.stringify(payload) : String(payload || "");
+            await db.run(
+                "INSERT OR IGNORE INTO application_events (event_id, job_id, portal, event_type, payload, timestamp) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                [String(event_id), String(job_id), portal || "naukri", event_type, payloadStr]
+            );
+            return sendJson(res, 200, { success: true });
+        }
+
+        if (pathname === "/api/naukri/sync-outbox" && method === "POST") {
+            const body = await parseJsonBody(req);
+            const items = Array.isArray(body.items) ? body.items : [];
+            let processed = 0;
+
+            for (const item of items) {
+                try {
+                    if (item.type === "RECORD_JOB" && item.data) {
+                        const { job_id, title, company, location, experience, url, salary } = item.data;
+                        if (job_id) {
+                            const existing = await db.get("SELECT id FROM jobs WHERE LOWER(portal) = 'naukri' AND job_id = ?", [String(job_id)]);
+                            if (!existing) {
+                                await db.run(
+                                    "INSERT INTO jobs (portal, job_id, title, company, location, url, experience, salary, status, timestamp) VALUES ('naukri', ?, ?, ?, ?, ?, ?, ?, 'DISCOVERED', CURRENT_TIMESTAMP)",
+                                    [String(job_id), title || null, company || null, location || null, url || null, experience || null, salary || null]
+                                );
+                            }
+                            processed++;
+                        }
+                    } else if (item.type === "UPDATE_STATUS" && item.data) {
+                        const { job_id, status, applied } = item.data;
+                        if (job_id) {
+                            if (applied !== undefined && applied !== null) {
+                                await db.run(
+                                    "UPDATE jobs SET status = ?, applied = ?, updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?",
+                                    [status, applied ? 1 : 0, String(job_id)]
+                                );
+                            } else {
+                                await db.run(
+                                    "UPDATE jobs SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?",
+                                    [status, String(job_id)]
+                                );
+                            }
+                            processed++;
+                        }
+                    } else if (item.type === "RECORD_EVENT" && item.data) {
+                        const { event_id, job_id, portal, event_type, payload } = item.data;
+                        if (event_id && job_id) {
+                            const payloadStr = typeof payload === "object" ? JSON.stringify(payload) : String(payload || "");
+                            await db.run(
+                                "INSERT OR IGNORE INTO application_events (event_id, job_id, portal, event_type, payload, timestamp) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                                [String(event_id), String(job_id), portal || "naukri", event_type, payloadStr]
+                            );
+                            processed++;
+                        }
+                    }
+                } catch (err) {}
+            }
+
+            return sendJson(res, 200, { success: true, processedCount: processed });
+        }
+
         // --- 4. Candidate Profile Routes ---
         if (pathname === "/api/profile" && method === "GET") {
             const profile = await candidateKnowledgeService.getProfile();
