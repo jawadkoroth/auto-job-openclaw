@@ -12,13 +12,17 @@ class NaukriSessionBootstrap {
     }
 
     async bootstrap() {
+        const hostName = process.platform === "win32" ? "Windows PC" : "Oracle VM";
+
         if (!fs.existsSync(this.storageStatePath)) {
             logger.error("❌ storageState.json not found at:", this.storageStatePath);
             await telegramService.sendMessage(
-                "<b>⚠️ Naukri Re-Authentication Required</b>\n\n" +
-                "• <b>Portal</b>: <code>Naukri</code>\n" +
-                "• <b>Status</b>: <code>SESSION_EXPIRED</code>\n" +
-                "• <b>Details</b>: Saved session storageState.json missing on Oracle VM."
+                `<b>⚠️ Naukri PC Authentication Required</b>\n\n` +
+                `• <b>Portal</b>: <code>Naukri</code>\n` +
+                `• <b>Status</b>: <code>SESSION_EXPIRED</code>\n` +
+                `• <b>Execution Host</b>: <code>${hostName}</code>\n` +
+                `• <b>Details</b>: Saved session storageState.json missing.\n` +
+                `• <b>Action</b>: Please manually refresh/recreate the authenticated session.`
             ).catch(() => {});
 
             return {
@@ -35,14 +39,20 @@ class NaukriSessionBootstrap {
         let page = null;
 
         try {
-            browser = await chromium.launch({
+            const launchOptions = {
                 headless: true,
                 args: [
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
                     "--disable-blink-features=AutomationControlled"
                 ]
-            });
+            };
+
+            try {
+                browser = await chromium.launch({ ...launchOptions, channel: "chrome" });
+            } catch (chromeErr) {
+                browser = await chromium.launch(launchOptions);
+            }
 
             context = await browser.newContext({
                 viewport: { width: 1440, height: 900 },
@@ -50,11 +60,15 @@ class NaukriSessionBootstrap {
                 storageState: this.storageStatePath
             });
 
+            await context.addInitScript(() => {
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            });
+
             page = await context.newPage();
 
             logger.info("[SessionBootstrap] Navigating to Candidate Profile (mnjuser/profile)...");
             let res = await page.goto("https://www.naukri.com/mnjuser/profile", {
-                waitUntil: "networkidle",
+                waitUntil: "domcontentloaded",
                 timeout: 30000
             }).catch(e => {
                 logger.warn(`[SessionBootstrap] Navigation warning: ${e.message}`);
@@ -88,11 +102,12 @@ class NaukriSessionBootstrap {
             if (isLoginPage) {
                 logger.error("[SessionBootstrap] ❌ Session expired. Redirected to login page.");
                 await telegramService.sendMessage(
-                    "<b>⚠️ Naukri Re-Authentication Required</b>\n\n" +
-                    "• <b>Portal</b>: <code>Naukri</code>\n" +
-                    "• <b>Status</b>: <code>SESSION_EXPIRED</code>\n" +
-                    "• <b>Details</b>: Authenticated session redirected to login on Oracle VM.\n" +
-                    "• <b>Action</b>: Manual re-authentication required."
+                    `<b>⚠️ Naukri PC Authentication Required</b>\n\n` +
+                    `• <b>Portal</b>: <code>Naukri</code>\n` +
+                    `• <b>Status</b>: <code>SESSION_EXPIRED</code>\n` +
+                    `• <b>Execution Host</b>: <code>${hostName}</code>\n` +
+                    `• <b>Details</b>: Authenticated session redirected to login.\n` +
+                    `• <b>Action</b>: Please manually refresh/recreate the authenticated session.`
                 ).catch(() => {});
 
                 return {

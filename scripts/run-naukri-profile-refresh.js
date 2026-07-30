@@ -8,12 +8,16 @@ const eventBus = require("../packages/events/EventBus");
 const NaukriSessionBootstrap = require("../packages/plugins/naukri/NaukriSessionBootstrap");
 const NaukriConcurrencyLock = require("../packages/plugins/naukri/NaukriConcurrencyLock");
 const NaukriDiagnostics = require("../packages/plugins/naukri/NaukriDiagnostics");
+const { pullDatabase, pushDatabase } = require("./sync-naukri-database");
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 (async () => {
+    const executionHost = process.platform === "win32" ? "Windows PC" : "Oracle VM";
+
     logger.info("==================================================");
     logger.info("NAUKRI HARDENED PROFILE REFRESH RUNNER");
+    logger.info(`Execution Host: ${executionHost}`);
     logger.info("Execution Time: " + new Date().toISOString());
     logger.info("==================================================\n");
 
@@ -21,6 +25,10 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     if (!lock.acquire()) {
         logger.warn("⚠️ naukri_profile_refresh runner is already executing. Exiting as SKIPPED_ALREADY_RUNNING.");
         process.exit(0);
+    }
+
+    if (process.platform === "win32") {
+        await pullDatabase().catch(() => {});
     }
 
     const storageStatePath = path.join(process.cwd(), "sessions", "naukri", "storageState.json");
@@ -64,7 +72,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
             const tgMsg = `<b>⚠️ Naukri Profile Refresh Failed</b>\n\n` +
                 `• <b>Portal</b>: <code>Naukri</code>\n` +
                 `• <b>Classification</b>: <code>SESSION_EXPIRED</code>\n` +
-                `• <b>Executed From</b>: <code>Oracle VM</code>`;
+                `• <b>Executed From</b>: <code>${executionHost}</code>`;
             await telegramService.sendMessage(tgMsg).catch(() => {});
             process.exit(1);
         }
@@ -75,7 +83,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
             const tgMsg = `<b>⚠️ Naukri Profile Refresh Failed</b>\n\n` +
                 `• <b>Portal</b>: <code>Naukri</code>\n` +
                 `• <b>Classification</b>: <code>AKAMAI_TEMPORARY_BLOCK</code>\n` +
-                `• <b>Executed From</b>: <code>Oracle VM</code>`;
+                `• <b>Executed From</b>: <code>${executionHost}</code>`;
             await telegramService.sendMessage(tgMsg).catch(() => {});
             process.exit(1);
         }
@@ -198,17 +206,24 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         await delay(1000);
 
         const saveBtnLocators = [
+            page.locator("button.btn-dark-ot:has-text('Save')"),
+            page.locator("button[type='submit']:has-text('Save')"),
             page.locator("button:has-text('Save')"),
-            page.locator("button.btn-light-blue"),
-            page.locator("button[type='submit']")
+            page.locator(".action button"),
+            page.locator("button.btn-light-blue")
         ];
 
         let saveBtn = null;
         for (const loc of saveBtnLocators) {
-            if (await loc.count().catch(() => 0) > 0 && await loc.first().isVisible().catch(() => false)) {
-                saveBtn = loc.first();
-                break;
+            const count = await loc.count().catch(() => 0);
+            for (let i = 0; i < count; i++) {
+                const item = loc.nth(i);
+                if (await item.isVisible().catch(() => false)) {
+                    saveBtn = item;
+                    break;
+                }
             }
+            if (saveBtn) break;
         }
 
         if (!saveBtn) {
@@ -270,7 +285,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
                 `• <b>Portal</b>: <code>Naukri</code>\n` +
                 `• <b>Status</b>: <code>INTEGRITY_FAILURE</code>\n` +
                 `• <b>Details</b>: Profile headline content altered unexpectedly during refresh.\n` +
-                `• <b>Executed From</b>: <code>Oracle VM</code>`;
+                `• <b>Executed From</b>: <code>${executionHost}</code>`;
             await telegramService.sendMessage(tgAlert).catch(() => {});
             process.exit(1);
         }
@@ -280,9 +295,10 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         const nowIst = new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
         const tgMsg = `<b>Naukri Profile Refresh</b>\n\n` +
             `• <b>Portal</b>: <code>Naukri</code>\n` +
+            `• <b>Action</b>: <code>Profile Refresh</code>\n` +
             `• <b>Status</b>: <code>SUCCESS</code>\n` +
             `• <b>Profile Data Changed</b>: <code>NO</code>\n` +
-            `• <b>Executed From</b>: <code>Oracle VM</code>\n` +
+            `• <b>Executed From</b>: <code>${executionHost}</code>\n` +
             `• <b>Time (IST)</b>: <code>${nowIst}</code>`;
 
         await telegramService.sendMessage(tgMsg).catch(e => logger.error(`Telegram send error: ${e.message}`));
@@ -295,6 +311,9 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     } finally {
         if (context) await context.close().catch(() => {});
         if (browser) await browser.close().catch(() => {});
+        if (process.platform === "win32") {
+            await pushDatabase().catch(() => {});
+        }
         lock.release();
     }
 })();

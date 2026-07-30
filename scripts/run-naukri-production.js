@@ -17,6 +17,8 @@ const NaukriSessionBootstrap = require("../packages/plugins/naukri/NaukriSession
 const NaukriConcurrencyLock = require("../packages/plugins/naukri/NaukriConcurrencyLock");
 const NaukriDiagnostics = require("../packages/plugins/naukri/NaukriDiagnostics");
 
+const { pullDatabase, pushDatabase } = require("./sync-naukri-database");
+
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const TARGET_SEARCH_URLS = [
@@ -33,9 +35,11 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
 
 (async () => {
     const isDryRun = process.argv.includes("--dry-run");
+    const executionHost = process.platform === "win32" ? "Windows PC" : "Oracle VM";
 
     logger.info("==================================================");
     logger.info("NAUKRI HARDENED PRODUCTION AUTOMATION RUNNER");
+    logger.info(`Execution Host: ${executionHost}`);
     logger.info(`Mode: ${isDryRun ? "DRY RUN (No Applications Submitted)" : "ACTIVE PRODUCTION (Live Submissions)"}`);
     logger.info(`Execution Time: ${new Date().toISOString()}`);
     logger.info(`Limits: Max ${MAX_APPLICATIONS_PER_RUN} per run, Max ${MAX_APPLICATIONS_PER_DAY} per day`);
@@ -45,6 +49,10 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
     if (!lock.acquire()) {
         logger.warn("⚠️ naukri_job_automation runner is already executing. Exiting as SKIPPED_ALREADY_RUNNING.");
         process.exit(0);
+    }
+
+    if (process.platform === "win32") {
+        await pullDatabase().catch(() => {});
     }
 
     await db.init();
@@ -517,7 +525,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
                     `• <b>Company</b>: <code>${targetJob.company}</code>\n` +
                     `• <b>Experience</b>: <code>${targetJob.experience}</code>\n` +
                     `• <b>Location</b>: <code>${targetJob.location}</code>\n` +
-                    `• <b>Executed From</b>: <code>Oracle VM</code>\n` +
+                    `• <b>Executed From</b>: <code>${executionHost}</code>\n` +
                     `• <b>Time (IST)</b>: <code>${nowIst}</code>`;
 
                 await telegramService.sendMessage(tgMsg).catch(e => logger.error(`Telegram send error: ${e.message}`));
@@ -551,6 +559,9 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
     } finally {
         if (context) await context.close().catch(() => {});
         if (browser) await browser.close().catch(() => {});
+        if (process.platform === "win32") {
+            await pushDatabase().catch(() => {});
+        }
         lock.release();
     }
 })();

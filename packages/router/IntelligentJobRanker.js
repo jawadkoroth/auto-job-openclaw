@@ -169,6 +169,10 @@ class IntelligentJobRanker {
 
         return ranked;
     }
+
+    rankJobs(jobs, candidateProfile = {}) {
+        return this.rankAndSortJobs(jobs, candidateProfile);
+    }
 }
 
 module.exports = new IntelligentJobRanker();
