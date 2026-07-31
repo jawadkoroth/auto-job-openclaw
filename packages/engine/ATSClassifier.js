@@ -17,6 +17,11 @@ class ATSClassifier {
             domain = urlStr;
         }
 
+        // HARD DOMAIN INVARIANT: Reject any URL on naukri.com domain
+        if (domain.endsWith("naukri.com") || domain.endsWith("naukrigulf.com") || domain === "naukri.com") {
+            return { ats: "NAUKRI_INTERNAL", confidence: 1.0, isExternalDomain: false, url: urlStr, domain };
+        }
+
         // 1. Direct URL Pattern Matching
         if (domain.includes("greenhouse.io") || urlStr.includes("boards.greenhouse.io") || urlStr.includes("gh_src=")) {
             return { ats: "GREENHOUSE", confidence: 0.95, url: urlStr, domain };

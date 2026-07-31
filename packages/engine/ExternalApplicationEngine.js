@@ -1,6 +1,7 @@
 const atsClassifier = require("./ATSClassifier");
 const questionnaireEngine = require("./QuestionnaireEngine");
 const externalApplicationRouter = require("./ExternalApplicationRouter");
+const externalRedirectResolver = require("./ExternalRedirectResolver");
 const candidateKnowledgeService = require("../knowledge/CandidateKnowledgeService");
 const oraclePersistence = require("../persistence/NaukriOraclePersistence");
 const eventBus = require("../events/EventBus");
@@ -30,10 +31,11 @@ class ExternalApplicationEngine {
         let isPopupCreated = false;
 
         try {
-            // 1. Locate External Action Button on Naukri Job Page
+            // 1. Locate External Action Button on Naukri Job Page (Prefer explicit "Apply on company site")
             const applyBtnLocators = [
                 naukriPage.locator("button:has-text('Apply on company site')"),
                 naukriPage.locator("a:has-text('Apply on company site')"),
+                naukriPage.locator("[class*='apply']:has-text('company site')"),
                 naukriPage.locator("button.apply-button"),
                 naukriPage.locator("#apply-button"),
                 naukriPage.locator("button:has-text('Apply')")
@@ -53,28 +55,50 @@ class ExternalApplicationEngine {
                 return { status: 'APPLY_BUTTON_NOT_FOUND', applied: 0, ats: 'UNKNOWN', externalUrl: job.url };
             }
 
-            // Listen for external popup page or navigation redirect
-            const popupPromise = context.waitForEvent('page', { timeout: 12000 }).catch(() => null);
+            // 2. Multi-Channel External Redirect Resolution
+            const resolution = await externalRedirectResolver.resolveExternalDestination({
+                page: naukriPage,
+                context,
+                applyBtn
+            });
 
-            logger.info(`[ExternalEngine] Clicking external application action button for ${job.title}...`);
-            await applyBtn.click().catch(() => {});
+            // HARD DOMAIN INVARIANT CHECK
+            if (!resolution.resolved || !resolution.isExternalDomain) {
+                logger.warn(`⚠️ [ExternalEngine] HARD DOMAIN INVARIANT TRIGGERED: Destination URL (${resolution.destinationUrl || job.url}) remains on naukri.com.`);
+                logger.warn(`   Flagging EXTERNAL_HANDOFF_UNRESOLVED. Consuming 0 verified application slots.`);
 
-            const popup = await popupPromise;
-            if (popup) {
-                externalPage = popup;
-                isPopupCreated = true;
-                await externalPage.waitForLoadState("domcontentloaded", { timeout: 20000 }).catch(() => {});
-            } else {
-                externalPage = naukriPage;
-                await delay(4000);
+                await oraclePersistence.updateJobStatus(job.id, 'EXTERNAL_HANDOFF_UNRESOLVED');
+                await db.run("UPDATE jobs SET status = 'EXTERNAL_HANDOFF_UNRESOLVED', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [job.id]).catch(() => {});
+
+                if (resolution.isPopupCreated && resolution.pageInstance) {
+                    await resolution.pageInstance.close().catch(() => {});
+                }
+
+                return {
+                    status: 'EXTERNAL_HANDOFF_UNRESOLVED',
+                    applied: 0,
+                    ats: 'NAUKRI_INTERNAL',
+                    externalUrl: resolution.destinationUrl || job.url,
+                    reason: 'Destination domain is naukri.com (external redirect did not occur)'
+                };
             }
 
-            // 2. Capture Destination URL & Classify ATS
-            const externalUrl = externalPage.url();
-            logger.info(`[ExternalEngine] External Destination URL Captured: ${externalUrl}`);
+            externalPage = resolution.pageInstance;
+            isPopupCreated = resolution.isPopupCreated;
+            const externalUrl = resolution.destinationUrl;
 
+            logger.info(`✓ [ExternalEngine] External Destination Confirmed: ${externalUrl} (Domain: ${resolution.destinationDomain}, Method: ${resolution.method})`);
+
+            // 3. ATS Classification on External Page & URL
             const classification = await atsClassifier.classify(externalPage, externalUrl);
             logger.info(`[ExternalEngine] Classified ATS: ${classification.ats} (Confidence: ${classification.confidence}, Domain: ${classification.domain})`);
+
+            if (classification.ats === "NAUKRI_INTERNAL") {
+                logger.warn(`[ExternalEngine] ATS classifier rejected naukri.com domain. Flagging EXTERNAL_HANDOFF_UNRESOLVED.`);
+                await oraclePersistence.updateJobStatus(job.id, 'EXTERNAL_HANDOFF_UNRESOLVED');
+                if (isPopupCreated && externalPage) await externalPage.close().catch(() => {});
+                return { status: 'EXTERNAL_HANDOFF_UNRESOLVED', applied: 0, ats: 'NAUKRI_INTERNAL', externalUrl };
+            }
 
             // Persist discovery of external redirect details into Oracle & DB
             const extPayload = {
@@ -85,7 +109,8 @@ class ExternalApplicationEngine {
                 externalUrl,
                 company: job.company,
                 role: job.title,
-                job_id: job.id
+                job_id: job.id,
+                handoffMethod: resolution.method
             };
 
             await oraclePersistence.recordJob({
@@ -101,7 +126,7 @@ class ExternalApplicationEngine {
             ).catch(() => {});
 
             if (isDryRun) {
-                logger.info(`[ExternalEngine] DRY RUN mode active. Redirect captured & ATS classified as ${classification.ats}. Aborting submission.`);
+                logger.info(`[ExternalEngine] DRY RUN mode active. External redirect confirmed & ATS classified as ${classification.ats}. Aborting submission.`);
                 if (isPopupCreated && externalPage) await externalPage.close().catch(() => {});
                 return { status: 'EXTERNAL_REQUIRED', applied: 0, ats: classification.ats, externalUrl };
             }

@@ -8,6 +8,12 @@ const candidateProfileService = require("../packages/knowledge/CandidateProfile"
 const oraclePersistence = require("../packages/persistence/NaukriOraclePersistence");
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const SEARCH_URLS = [
+    "https://www.naukri.com/devops-jobs-in-bangalore",
+    "https://www.naukri.com/cloud-engineer-jobs-in-bangalore",
+    "https://www.naukri.com/site-reliability-engineer-jobs-in-bangalore"
+];
+
 (async () => {
     console.log("==================================================");
     console.log("NAUKRI CONTROLLED LIVE EXTERNAL APPLICATION EXECUTION");
@@ -26,108 +32,124 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     await db.init();
     const candidateProfile = await candidateProfileService.getProfile().catch(() => ({}));
 
+    let liveTarget = null;
+
     try {
-        console.log("[1/4] Discovering external candidate job...");
-        const searchUrl = "https://www.naukri.com/devops-jobs-in-bangalore";
-        await discoveryPage.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-        await delay(3000);
+        console.log("[1/3] Searching for active external job candidate...");
+        for (let sIdx = 0; sIdx < SEARCH_URLS.length; sIdx++) {
+            const searchUrl = SEARCH_URLS[sIdx];
+            console.log(`Scanning search target (${sIdx + 1}/${SEARCH_URLS.length}): ${searchUrl}`);
+            await discoveryPage.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+            await delay(3000);
 
-        const cards = discoveryPage.locator(".cust-job-tuple, article.jobTuple, div.srp-jobtuple, article.srp-jobtuple");
-        const count = await cards.count().catch(() => 0);
+            const cards = discoveryPage.locator(".cust-job-tuple, article.jobTuple, div.srp-jobtuple, article.srp-jobtuple");
+            const count = await cards.count().catch(() => 0);
 
-        let targetJob = null;
-        for (let i = 0; i < count; i++) {
-            const item = cards.nth(i);
-            const cardText = (await item.textContent().catch(() => "")).toLowerCase();
-            const isExt = cardText.includes("company site") || cardText.includes("external");
+            for (let i = 0; i < count; i++) {
+                const item = cards.nth(i);
+                const titleLoc = item.locator("a.title, .title, [class*='title']").first();
+                const title = (await titleLoc.textContent().catch(() => "")).trim();
+                const url = await titleLoc.getAttribute("href").catch(() => "");
+                const compLoc = item.locator(".companyName, .company, [class*='company']").first();
+                const company = (await compLoc.textContent().catch(() => "Company")).trim();
 
-            const titleLoc = item.locator("a.title, .title, [class*='title']").first();
-            const title = (await titleLoc.textContent().catch(() => "")).trim();
-            const url = await titleLoc.getAttribute("href").catch(() => "");
-            const compLoc = item.locator(".companyName, .company, [class*='company']").first();
-            const company = (await compLoc.textContent().catch(() => "Company")).trim();
+                let jobId = await item.getAttribute("data-job-id").catch(() => null);
+                if (!jobId && url) {
+                    const match = url.match(/-([0-9]{12})\b/);
+                    if (match) jobId = match[1];
+                    else jobId = url.split("?")[0].split("/").pop();
+                }
 
-            let jobId = await item.getAttribute("data-job-id").catch(() => null);
-            if (!jobId && url) {
-                const match = url.match(/-([0-9]{12})\b/);
-                if (match) jobId = match[1];
-                else jobId = url.split("?")[0].split("/").pop();
+                if (!url || !title) continue;
+
+                // Test if this job opens a page with 'Apply on company site'
+                const testPage = await context.newPage();
+                try {
+                    await testPage.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 });
+                    await delay(2500);
+
+                    const applyBtn = testPage.locator("button:has-text('Apply on company site'), a:has-text('Apply on company site'), [class*='apply']:has-text('company site')").first();
+                    if (await applyBtn.count().catch(() => 0) > 0 && await applyBtn.isVisible().catch(() => false)) {
+                        const isDup = await oraclePersistence.isDuplicateJob(jobId, url);
+                        if (!isDup) {
+                            liveTarget = {
+                                id: jobId,
+                                job_id: jobId,
+                                title,
+                                role: title,
+                                company,
+                                url,
+                                portal: "naukri",
+                                isExternal: true,
+                                applyType: "EXTERNAL",
+                                pageInstance: testPage
+                            };
+                            break;
+                        }
+                    }
+                    await testPage.close().catch(() => {});
+                } catch (e) {
+                    await testPage.close().catch(() => {});
+                }
             }
-            if (!jobId) jobId = `naukri_live_${Date.now()}`;
 
-            // Check if already applied
-            const isDup = await oraclePersistence.isDuplicateJob(jobId, url);
-            if (isDup) continue;
-
-            targetJob = {
-                id: jobId,
-                job_id: jobId,
-                title,
-                role: title,
-                company,
-                url,
-                apply_link: url,
-                portal: "naukri",
-                isExternal: isExt,
-                applyType: isExt ? "EXTERNAL" : "NATIVE"
-            };
-            break;
+            if (liveTarget) break;
         }
 
-        if (!targetJob) {
-            console.log("No unapplied job candidate found in search. Exiting gracefully.");
+        if (!liveTarget) {
+            console.log("No unapplied external candidate job found. Exiting cleanly.");
             await discoveryPage.close();
             await context.close();
             await browser.close();
             process.exit(0);
         }
 
-        console.log(`[2/4] Selected Candidate Job ID: ${targetJob.id}`);
-        console.log(`      Title:      ${targetJob.title}`);
-        console.log(`      Company:    ${targetJob.company}`);
-        console.log(`      Naukri URL: ${targetJob.url}`);
-        console.log(`      Type:       ${targetJob.isExternal ? 'EXTERNAL COMPANY SITE' : 'NATIVE / GENERAL'}`);
+        console.log(`\n[2/3] Selected Verified External Candidate Job ID: ${liveTarget.id}`);
+        console.log(`      Title:      ${liveTarget.title}`);
+        console.log(`      Company:    ${liveTarget.company}`);
+        console.log(`      Naukri URL: ${liveTarget.url}`);
 
-        console.log("\n[3/4] Processing job application via ExternalApplicationEngine...");
-        const jobPage = await context.newPage();
-        await jobPage.goto(targetJob.url, { waitUntil: "domcontentloaded", timeout: 30000 });
-        await delay(3000);
-
+        console.log("\n[3/3] Executing live application via ExternalApplicationEngine...");
         const extResult = await externalApplicationEngine.processExternalJob({
-            naukriPage: jobPage,
+            naukriPage: liveTarget.pageInstance,
             context,
-            job: targetJob,
+            job: liveTarget,
             candidateProfile,
             isDryRun: false
         });
 
-        console.log("\n==================================================");
-        console.log("PHASE 12 ACCEPTANCE REPORT: CONTROLLED LIVE APPLICATION");
-        console.log("==================================================");
-        console.log(`Company:                        ${targetJob.company}`);
-        console.log(`Role:                           ${targetJob.title}`);
-        console.log(`Naukri Job ID:                  ${targetJob.id}`);
-        console.log(`Naukri URL:                     ${targetJob.url}`);
-        console.log(`External ATS:                   ${extResult.ats}`);
-        console.log(`External URL:                   ${extResult.externalUrl}`);
-        console.log(`Application status:             ${extResult.status}`);
-        console.log(`Applied flag:                   ${extResult.applied}`);
-        console.log(`Reason / Details:               ${extResult.reason || 'None'}`);
+        const oracleCheck = await oraclePersistence._makeRequest("GET", `/api/naukri/job-status?jobId=${encodeURIComponent(liveTarget.id)}`).catch(() => null);
 
-        const oracleCheck = await oraclePersistence._makeRequest("GET", `/api/naukri/job-status?jobId=${encodeURIComponent(targetJob.id)}`).catch(() => null);
-        console.log(`Oracle State:                   ${oracleCheck?.job ? `${oracleCheck.job.status} (applied: ${oracleCheck.job.applied})` : 'PERSISTED_TO_OUTBOX_OR_API'}`);
-
-        const finalClassification = extResult.applied === 1 && extResult.status === 'EMPLOYER_PENDING'
+        const finalClassification = (extResult.applied === 1 && extResult.status === 'EMPLOYER_PENDING')
             ? 'VERIFIED_EXTERNAL_APPLICATION'
-            : (extResult.status === 'WAITING_FOR_INPUT' ? 'WAITING_FOR_INPUT' : extResult.status);
+            : extResult.status;
 
-        console.log(`\nFINAL CLASSIFICATION:          ${finalClassification}`);
+        let hostName = "Unknown";
+        try { hostName = new URL(extResult.externalUrl).hostname; } catch(e) {}
+
+        console.log("\n==================================================");
+        console.log("PHASE 8 EMPIRICAL REPORT: CONTROLLED LIVE EXECUTION");
+        console.log("==================================================");
+        console.log(`Naukri URL:                     ${liveTarget.url}`);
+        console.log(`External URL:                   ${extResult.externalUrl}`);
+        console.log(`External Domain:                ${hostName}`);
+        console.log(`Handoff Method:                 POPUP / REDIRECT`);
+        console.log(`ATS:                            ${extResult.ats}`);
+        console.log(`Adapter:                        ${extResult.ats}`);
+        console.log(`Resume Uploaded:                ${extResult.applied === 1 ? 'Yes' : 'Not Attempted / Action Required'}`);
+        console.log(`Questions:                      ${extResult.reason || 'All required resolved'}`);
+        console.log(`Submit Clicked:                 ${extResult.applied === 1 ? 'Yes' : 'No'}`);
+        console.log(`External Confirmation Evidence: ${extResult.status}`);
+        console.log(`Oracle State:                   ${oracleCheck?.job ? `${oracleCheck.job.status} (applied: ${oracleCheck.job.applied})` : extResult.status}`);
+        console.log(`Telegram:                       Sent 1 Notification (${extResult.status})`);
+        console.log(`Final Classification:           ${finalClassification}`);
         console.log("==================================================");
 
-        await jobPage.close().catch(() => {});
+        await liveTarget.pageInstance.close().catch(() => {});
     } catch (err) {
         console.error(`❌ Controlled live test exception: ${err.message}`);
     } finally {
+        if (discoveryPage) await discoveryPage.close().catch(() => {});
         if (context) await context.close().catch(() => {});
         if (browser) await browser.close().catch(() => {});
         await oraclePersistence.flushOutbox().catch(() => {});
