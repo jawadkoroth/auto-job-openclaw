@@ -190,6 +190,63 @@ class TelegramService {
     }
 
     /**
+     * Centralized External Application Submitted Telegram Alert
+     */
+    async sendExternalApplicationSubmittedNotification({ portal = "Naukri", ats = "EXTERNAL", company, role, status = "EMPLOYER_PENDING", url, jobId }) {
+        const key = `naukri_external_${jobId || 'job'}_APPLICATION_SUBMITTED`;
+        if (await this.isNotificationDelivered(key)) {
+            localLogger.info(`[Telegram Idempotency] Skipping duplicate alert for key: ${key}`);
+            return;
+        }
+
+        const safePortal = escapeHTML(portal);
+        const safeAts = escapeHTML(ats);
+        const safeCompany = escapeHTML(company || "Company");
+        const safeRole = escapeHTML(role || "Target Role");
+        const safeStatus = escapeHTML(status);
+        const safeUrl = url || "#";
+
+        const text = `<b>✅ External Application Submitted</b>\n\n` +
+            `• <b>Portal</b>: <code>${safePortal} → ${safeAts}</code>\n` +
+            `• <b>Company</b>: <b>${safeCompany}</b>\n` +
+            `• <b>Role</b>: <b>${safeRole}</b>\n` +
+            `• <b>Status</b>: <code>${safeStatus}</code>\n` +
+            `• <b>Job URL</b>: ${safeUrl}`;
+
+        const res = await this.sendMessage(text);
+        await this.recordNotificationDelivery(key, portal, jobId, "EXTERNAL_SUBMITTED");
+        return res;
+    }
+
+    /**
+     * Centralized External Action Required Telegram Alert (WAITING_FOR_INPUT, AUTH_REQUIRED, CAPTCHA_REQUIRED, etc.)
+     */
+    async sendExternalActionRequiredNotification({ portal = "Naukri", ats = "EXTERNAL", company, role, status = "WAITING_FOR_INPUT", reason, url, jobId }) {
+        const key = `naukri_external_${jobId || 'job'}_${status}`;
+        if (await this.isNotificationDelivered(key)) return;
+
+        const safePortal = escapeHTML(portal);
+        const safeAts = escapeHTML(ats);
+        const safeCompany = escapeHTML(company || "Company");
+        const safeRole = escapeHTML(role || "Target Role");
+        const safeStatus = escapeHTML(status);
+        const safeReason = escapeHTML(reason || "Action required on external portal");
+        const safeUrl = url || "#";
+
+        const text = `<b>⚠️ External Application Action Required</b>\n\n` +
+            `• <b>Portal</b>: <code>${safePortal} → ${safeAts}</code>\n` +
+            `• <b>Company</b>: <b>${safeCompany}</b>\n` +
+            `• <b>Role</b>: <b>${safeRole}</b>\n` +
+            `• <b>Status</b>: <code>${safeStatus}</code>\n` +
+            `• <b>Details</b>: <i>${safeReason}</i>\n\n` +
+            `🔗 <b>External Application Link</b>: ${safeUrl}`;
+
+        const res = await this.sendMessage(text);
+        await this.recordNotificationDelivery(key, portal, jobId, status);
+        return res;
+    }
+
+    /**
      * Centralized Question Needs Input Telegram Alert
      */
     async sendQuestionInputNotification({ portal, company, role, question, suggestedAnswer, url, jobId }) {

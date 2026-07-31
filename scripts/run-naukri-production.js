@@ -18,6 +18,7 @@ const NaukriConcurrencyLock = require("../packages/plugins/naukri/NaukriConcurre
 const NaukriDiagnostics = require("../packages/plugins/naukri/NaukriDiagnostics");
 
 const oraclePersistence = require("../packages/persistence/NaukriOraclePersistence");
+const externalApplicationEngine = require("../packages/engine/ExternalApplicationEngine");
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -71,6 +72,13 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
         FinalCandidates: 0,
         Attempted: 0,
         Applied: 0,
+        NativeApplied: 0,
+        ExternalApplied: 0,
+        ExternalInspected: 0,
+        ExternalWaitingForInput: 0,
+        ExternalAuthRequired: 0,
+        ExternalUnsupported: 0,
+        ClickedUnverified: 0,
         WaitingForInput: 0,
         ExternalRequired: 0,
         Failed: 0,
@@ -430,12 +438,45 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             logger.info(`Experience: ${targetJob.experience}`);
             logger.info(`Type:       ${targetJob.isExternal ? 'EXTERNAL COMPANY SITE' : 'NATIVE NAUKRI'}`);
 
-            // Pre-check if card was already flagged external during discovery
+            // Process external company site job using ExternalApplicationEngine
             if (targetJob.isExternal || targetJob.applyType === 'EXTERNAL') {
-                logger.info(`Job ID ${targetJob.id} flagged as EXTERNAL during discovery. Skipping without consuming verified slot.`);
-                await oraclePersistence.updateJobStatus(targetJob.id, 'EXTERNAL_REQUIRED');
-                await db.run("UPDATE jobs SET status = 'EXTERNAL_REQUIRED', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]).catch(() => {});
-                telemetry.ExternalRequired++;
+                logger.info(`[Naukri Runner] Job ID ${targetJob.id} is an EXTERNAL job. Processing via ExternalApplicationEngine...`);
+                telemetry.ExternalInspected++;
+                telemetry.Attempted++;
+
+                const jobPage = await context.newPage();
+                try {
+                    const navRes = await jobPage.goto(targetJob.url, { waitUntil: "domcontentloaded", timeout: 30000 });
+                    await delay(3000);
+
+                    const extResult = await externalApplicationEngine.processExternalJob({
+                        naukriPage: jobPage,
+                        context,
+                        job: targetJob,
+                        candidateProfile,
+                        isDryRun
+                    });
+
+                    if (extResult.applied === 1 && extResult.status === 'EMPLOYER_PENDING') {
+                        verifiedAppliedCount++;
+                        telemetry.Applied++;
+                        telemetry.ExternalApplied++;
+                    } else if (extResult.status === 'WAITING_FOR_INPUT') {
+                        telemetry.WaitingForInput++;
+                        telemetry.ExternalWaitingForInput++;
+                    } else if (['AUTH_REQUIRED', 'CAPTCHA_REQUIRED', 'OTP_REQUIRED'].includes(extResult.status)) {
+                        telemetry.ExternalAuthRequired++;
+                    } else if (extResult.status === 'CLICKED_UNVERIFIED') {
+                        telemetry.ClickedUnverified++;
+                    } else {
+                        telemetry.ExternalRequired++;
+                    }
+                } catch (extErr) {
+                    logger.warn(`External job processing error for Job ID ${targetJob.id}: ${extErr.message}`);
+                    telemetry.Failed++;
+                } finally {
+                    await jobPage.close().catch(() => {});
+                }
                 continue;
             }
 
@@ -506,10 +547,31 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
 
             const btnText = (await applyBtn.textContent().catch(() => "")).trim();
             if (btnText.toLowerCase().includes("company site")) {
-                logger.info(`Job ID ${targetJob.id} requires external company site application. Skipping without consuming verified slot.`);
-                await oraclePersistence.updateJobStatus(targetJob.id, 'EXTERNAL_REQUIRED');
-                await db.run("UPDATE jobs SET status = 'EXTERNAL_REQUIRED', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [targetJob.id]).catch(() => {});
-                telemetry.ExternalRequired++;
+                logger.info(`Job ID ${targetJob.id} requires external company site application. Processing via ExternalApplicationEngine...`);
+                telemetry.ExternalInspected++;
+                const extResult = await externalApplicationEngine.processExternalJob({
+                    naukriPage: jobPage,
+                    context,
+                    job: targetJob,
+                    candidateProfile,
+                    isDryRun
+                });
+
+                if (extResult.applied === 1 && extResult.status === 'EMPLOYER_PENDING') {
+                    verifiedAppliedCount++;
+                    telemetry.Applied++;
+                    telemetry.ExternalApplied++;
+                } else if (extResult.status === 'WAITING_FOR_INPUT') {
+                    telemetry.WaitingForInput++;
+                    telemetry.ExternalWaitingForInput++;
+                } else if (['AUTH_REQUIRED', 'CAPTCHA_REQUIRED', 'OTP_REQUIRED'].includes(extResult.status)) {
+                    telemetry.ExternalAuthRequired++;
+                } else if (extResult.status === 'CLICKED_UNVERIFIED') {
+                    telemetry.ClickedUnverified++;
+                } else {
+                    telemetry.ExternalRequired++;
+                }
+
                 await jobPage.close().catch(() => {});
                 continue;
             }
@@ -596,10 +658,13 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
         logger.info(`Duplicates Removed:    ${telemetry.Duplicates}`);
         logger.info(`Ranked Candidates:     ${telemetry.Ranked}`);
         logger.info(`Attempted:             ${telemetry.Attempted}`);
-        logger.info(`Verified Applied:      ${telemetry.Applied}`);
-        logger.info(`Waiting For Input:     ${telemetry.WaitingForInput}`);
-        logger.info(`Clicked Unverified:    ${telemetry.Failed}`);
-        logger.info(`External Required:     ${telemetry.ExternalRequired}`);
+        logger.info(`Total Verified Applied: ${telemetry.Applied}`);
+        logger.info(`  • Native Applied:     ${telemetry.NativeApplied || (telemetry.Applied - telemetry.ExternalApplied)}`);
+        logger.info(`  • External Applied:   ${telemetry.ExternalApplied}`);
+        logger.info(`External Inspected:    ${telemetry.ExternalInspected}`);
+        logger.info(`External Waiting Input:${telemetry.ExternalWaitingForInput}`);
+        logger.info(`External Auth Required:${telemetry.ExternalAuthRequired}`);
+        logger.info(`Clicked Unverified:    ${telemetry.ClickedUnverified}`);
         logger.info(`Daily Applied Before:  ${telemetry.dailyAppliedCount}`);
         logger.info(`Applied This Run:      ${telemetry.Applied}`);
         logger.info(`Daily Applied After:   ${dailyAfter}`);
@@ -617,10 +682,10 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.NAUKRI_MAX_APPLICATIONS_PE
             `• <b>Duplicates</b>: <code>${telemetry.Duplicates}</code>\n` +
             `• <b>Ranked Candidates</b>: <code>${telemetry.Ranked}</code>\n\n` +
             `• <b>Attempted</b>: <code>${telemetry.Attempted}</code>\n` +
-            `• <b>Verified Applied</b>: <code>${telemetry.Applied}</code>\n` +
+            `• <b>Total Verified Applied</b>: <code>${telemetry.Applied}</code> (Native: ${telemetry.NativeApplied || (telemetry.Applied - telemetry.ExternalApplied)}, External: ${telemetry.ExternalApplied})\n` +
+            `• <b>External Inspected</b>: <code>${telemetry.ExternalInspected}</code>\n` +
             `• <b>Waiting For Input</b>: <code>${telemetry.WaitingForInput}</code>\n` +
-            `• <b>Clicked Unverified</b>: <code>${telemetry.Failed}</code>\n` +
-            `• <b>External Required</b>: <code>${telemetry.ExternalRequired}</code>\n\n` +
+            `• <b>Clicked Unverified</b>: <code>${telemetry.ClickedUnverified}</code>\n\n` +
             `• <b>Daily Applied Before</b>: <code>${telemetry.dailyAppliedCount}</code>\n` +
             `• <b>Applied This Run</b>: <code>${telemetry.Applied}</code>\n` +
             `• <b>Daily Applied After</b>: <code>${dailyAfter}</code>\n` +

@@ -163,7 +163,10 @@ class NaukriOraclePersistence {
             location: job.location,
             experience: job.experience,
             url: job.url,
-            salary: job.salary
+            salary: job.salary,
+            ats: job.ats || job.applicationPortal || null,
+            applicationPortal: job.applicationPortal || job.ats || null,
+            isExternal: job.isExternal || job.applyType === 'EXTERNAL' || false
         };
 
         try {
