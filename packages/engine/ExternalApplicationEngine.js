@@ -1,43 +1,37 @@
-const atsClassifier = require("./ATSClassifier");
-const questionnaireEngine = require("./QuestionnaireEngine");
-const externalApplicationRouter = require("./ExternalApplicationRouter");
-const externalRedirectResolver = require("./ExternalRedirectResolver");
-const candidateKnowledgeService = require("../knowledge/CandidateKnowledgeService");
-const oraclePersistence = require("../persistence/NaukriOraclePersistence");
-const eventBus = require("../events/EventBus");
-const telegramService = require("../../apps/telegram");
-const db = require("../database");
 const logger = require("../logger").plugin("naukri");
-
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const eventBus = require("../events/EventBus");
+const db = require("../database");
+const oraclePersistence = require("../persistence/NaukriOraclePersistence");
+const candidateKnowledgeService = require("../knowledge/CandidateKnowledgeService");
+const externalRedirectResolver = require("./ExternalRedirectResolver");
+const atsClassifier = require("./ATSClassifier");
+const externalApplicationRouter = require("./ExternalApplicationRouter");
+const questionnaireEngine = require("./QuestionnaireEngine");
+const telegramService = require("../../apps/telegram");
 
 class ExternalApplicationEngine {
     /**
-     * Process an EXTERNAL_REQUIRED Naukri job through redirect capture, ATS classification, questionnaire engine, form execution, and verification.
+     * Process an external job application with full multi-channel handoff resolution & hard domain safety.
      * @param {Object} params
-     * @param {import('playwright').Page} params.naukriPage Open Naukri job page
-     * @param {import('playwright').BrowserContext} params.context Playwright context for popup handling
-     * @param {Object} params.job Job metadata object
-     * @param {Object} params.candidateProfile CandidateProfile object
-     * @param {boolean} params.isDryRun Dry run flag
-     * @returns {Promise<{ status: string, applied: number, ats: string, externalUrl: string, reason?: string }>}
+     * @param {import('playwright').Page} params.naukriPage
+     * @param {import('playwright').BrowserContext} params.context
+     * @param {Object} params.job
+     * @param {Object} params.candidateProfile
+     * @param {boolean} [params.isDryRun=false]
+     * @returns {Promise<{ status: string, applied: number, ats: string, externalUrl?: string, reason?: string }>}
      */
-    async processExternalJob({ naukriPage, context, job, candidateProfile = {}, isDryRun = false }) {
+    async processExternalJob({ naukriPage, context, job, candidateProfile, isDryRun = false }) {
         logger.info(`\n==================================================`);
         logger.info(`[ExternalApplicationEngine] Processing Job ID: ${job.id} | ${job.title} at ${job.company}`);
         logger.info(`==================================================`);
 
-        let externalPage = null;
-        let isPopupCreated = false;
-
         try {
-            // 1. Locate External Action Button on Naukri Job Page (Prefer explicit "Apply on company site")
+            // 1. Multi-Channel External Redirect Resolution
             const applyBtnLocators = [
                 naukriPage.locator("button:has-text('Apply on company site')"),
                 naukriPage.locator("a:has-text('Apply on company site')"),
                 naukriPage.locator("[class*='apply']:has-text('company site')"),
                 naukriPage.locator("button.apply-button"),
-                naukriPage.locator("#apply-button"),
                 naukriPage.locator("button:has-text('Apply')")
             ];
 
@@ -52,49 +46,38 @@ class ExternalApplicationEngine {
             if (!applyBtn) {
                 logger.warn(`[ExternalEngine] Could not locate apply button for Job ID ${job.id}`);
                 await oraclePersistence.updateJobStatus(job.id, 'APPLY_BUTTON_NOT_FOUND');
-                return { status: 'APPLY_BUTTON_NOT_FOUND', applied: 0, ats: 'UNKNOWN', externalUrl: job.url };
+                return { status: 'APPLY_BUTTON_NOT_FOUND', applied: 0, ats: 'UNKNOWN' };
             }
 
-            // 2. Multi-Channel External Redirect Resolution
             const resolution = await externalRedirectResolver.resolveExternalDestination({
                 page: naukriPage,
                 context,
                 applyBtn
             });
 
-            // HARD DOMAIN INVARIANT CHECK
-            if (!resolution.resolved || !resolution.isExternalDomain) {
-                logger.warn(`⚠️ [ExternalEngine] HARD DOMAIN INVARIANT TRIGGERED: Destination URL (${resolution.destinationUrl || job.url}) remains on naukri.com.`);
-                logger.warn(`   Flagging EXTERNAL_HANDOFF_UNRESOLVED. Consuming 0 verified application slots.`);
-
+            // Hard Domain Safety Guard: Must be genuine external domain
+            if (!resolution.resolved || !resolution.isExternalDomain || !resolution.destinationUrl) {
+                logger.warn(`⚠️ [ExternalEngine] Safety Invariant Triggered: Target URL is not external (${resolution.destinationUrl || 'None'}). Aborting.`);
                 await oraclePersistence.updateJobStatus(job.id, 'EXTERNAL_HANDOFF_UNRESOLVED');
-                await db.run("UPDATE jobs SET status = 'EXTERNAL_HANDOFF_UNRESOLVED', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [job.id]).catch(() => {});
-
-                if (resolution.isPopupCreated && resolution.pageInstance) {
-                    await resolution.pageInstance.close().catch(() => {});
-                }
-
-                return {
-                    status: 'EXTERNAL_HANDOFF_UNRESOLVED',
-                    applied: 0,
-                    ats: 'NAUKRI_INTERNAL',
-                    externalUrl: resolution.destinationUrl || job.url,
-                    reason: 'Destination domain is naukri.com (external redirect did not occur)'
-                };
+                await db.run(
+                    "UPDATE jobs SET status = 'EXTERNAL_HANDOFF_UNRESOLVED', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?",
+                    [job.id]
+                ).catch(() => {});
+                return { status: 'EXTERNAL_HANDOFF_UNRESOLVED', applied: 0, ats: 'NAUKRI_INTERNAL', externalUrl: resolution.destinationUrl };
             }
 
-            externalPage = resolution.pageInstance;
-            isPopupCreated = resolution.isPopupCreated;
             const externalUrl = resolution.destinationUrl;
+            const externalPage = resolution.pageInstance;
+            const isPopupCreated = resolution.isPopupCreated;
 
             logger.info(`✓ [ExternalEngine] External Destination Confirmed: ${externalUrl} (Domain: ${resolution.destinationDomain}, Method: ${resolution.method})`);
 
-            // 3. ATS Classification on External Page & URL
+            // 2. ATS Classification (Enforces Hard Domain Invariant)
             const classification = await atsClassifier.classify(externalPage, externalUrl);
             logger.info(`[ExternalEngine] Classified ATS: ${classification.ats} (Confidence: ${classification.confidence}, Domain: ${classification.domain})`);
 
-            if (classification.ats === "NAUKRI_INTERNAL") {
-                logger.warn(`[ExternalEngine] ATS classifier rejected naukri.com domain. Flagging EXTERNAL_HANDOFF_UNRESOLVED.`);
+            if (!classification.isExternalDomain) {
+                logger.warn(`⚠️ [ExternalEngine] ATSClassifier detected internal Naukri domain. Aborting external routing.`);
                 await oraclePersistence.updateJobStatus(job.id, 'EXTERNAL_HANDOFF_UNRESOLVED');
                 if (isPopupCreated && externalPage) await externalPage.close().catch(() => {});
                 return { status: 'EXTERNAL_HANDOFF_UNRESOLVED', applied: 0, ats: 'NAUKRI_INTERNAL', externalUrl };
@@ -136,7 +119,7 @@ class ExternalApplicationEngine {
             const authCheck = await adapter.detectAuthOrCaptcha(externalPage);
 
             if (authCheck.blocked) {
-                const blockedStatus = authCheck.reason || 'WAITING_FOR_INPUT';
+                const blockedStatus = authCheck.reason || 'AUTH_REQUIRED';
                 logger.warn(`⚠️ [ExternalEngine] Application halted on ${classification.ats}: ${blockedStatus} (${authCheck.details})`);
 
                 await oraclePersistence.updateJobStatus(job.id, blockedStatus);
@@ -159,43 +142,47 @@ class ExternalApplicationEngine {
 
             // 4. Attach Candidate Resume
             const resumePath = await candidateKnowledgeService.getResumePath().catch(() => null);
+            let resumeAttached = false;
             if (resumePath) {
-                await adapter.uploadResume(externalPage, resumePath);
+                const uploadRes = await adapter.uploadResume(externalPage, resumePath);
+                resumeAttached = uploadRes.attached;
             }
 
-            // 5. Questionnaire Engine & Required Field Validation
+            // 5. Questionnaire Engine & Form Safety Evaluation
             const fillResult = await adapter.fillForm(externalPage, candidateProfile, questionnaireEngine);
 
-            if (!fillResult.success || fillResult.status === "WAITING_FOR_INPUT") {
-                const missingField = fillResult.unresolvedRequired?.[0]?.label || "Required form question unresolved";
-                logger.warn(`⚠️ [ExternalEngine] Unresolved required question on ${classification.ats}: "${missingField}". Marking WAITING_FOR_INPUT.`);
+            if (!fillResult.success || fillResult.status !== "FORM_READY") {
+                const failureStatus = fillResult.status || 'SUBMIT_FAILED';
+                const failureReason = fillResult.details || fillResult.reasonCode || (fillResult.unresolvedRequired?.[0]?.label ? `Unresolved required field: "${fillResult.unresolvedRequired[0].label}"` : "Pre-submission safety check failed");
 
-                await oraclePersistence.updateJobStatus(job.id, 'WAITING_FOR_INPUT');
-                await db.run("UPDATE jobs SET status = 'WAITING_FOR_INPUT', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [job.id]).catch(() => {});
+                logger.warn(`⚠️ [ExternalEngine] Application halted on ${classification.ats}: ${failureStatus} (${failureReason})`);
+
+                await oraclePersistence.updateJobStatus(job.id, failureStatus);
+                await db.run("UPDATE jobs SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [failureStatus, job.id]).catch(() => {});
 
                 await telegramService.sendExternalActionRequiredNotification({
                     portal: "Naukri",
                     ats: classification.ats,
                     company: job.company,
                     role: job.title,
-                    status: "WAITING_FOR_INPUT",
-                    reason: `Unresolved required field: "${missingField}"`,
+                    status: failureStatus,
+                    reason: failureReason,
                     url: externalUrl,
                     jobId: job.id
                 }).catch(e => logger.error(`Telegram notification error: ${e.message}`));
 
                 if (isPopupCreated && externalPage) await externalPage.close().catch(() => {});
-                return { status: 'WAITING_FOR_INPUT', applied: 0, ats: classification.ats, externalUrl, reason: missingField };
+                return { status: failureStatus, applied: 0, ats: classification.ats, externalUrl, reason: failureReason };
             }
 
-            // 6. Submit Application
+            // 6. Submit Application ONLY IF FORM_READY
             logger.info(`[ExternalEngine] Executing Submit on ${classification.ats}...`);
             const submitClicked = await adapter.submit(externalPage);
             if (!submitClicked) {
                 logger.warn(`[ExternalEngine] Submit action button could not be clicked on ${classification.ats}.`);
                 await oraclePersistence.updateJobStatus(job.id, 'SUBMIT_FAILED');
                 if (isPopupCreated && externalPage) await externalPage.close().catch(() => {});
-                return { status: 'SUBMIT_FAILED', applied: 0, ats: classification.ats, externalUrl };
+                return { status: 'SUBMIT_FAILED', applied: 0, ats: classification.ats, externalUrl, reason: "Submit action button click failed" };
             }
 
             // 7. Layered Independent Submission Verification
@@ -221,19 +208,17 @@ class ExternalApplicationEngine {
                 if (isPopupCreated && externalPage) await externalPage.close().catch(() => {});
                 return { status: 'EMPLOYER_PENDING', applied: 1, ats: classification.ats, externalUrl };
             } else {
-                logger.warn(`⚠️ [ExternalEngine] Unverified submission state on ${classification.ats}. Flagging CLICKED_UNVERIFIED.`);
-                await oraclePersistence.updateJobStatus(job.id, 'CLICKED_UNVERIFIED');
-                await db.run("UPDATE jobs SET status = 'CLICKED_UNVERIFIED', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [job.id]).catch(() => {});
-
+                logger.warn(`⚠️ [ExternalEngine] Submit clicked but verification inconclusive on ${classification.ats}. Marking CLICKED_UNVERIFIED.`);
+                await oraclePersistence.updateJobStatus(job.id, 'CLICKED_UNVERIFIED', 0);
+                await db.run("UPDATE jobs SET applied = 0, status = 'CLICKED_UNVERIFIED', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = 'naukri' AND job_id = ?", [job.id]).catch(() => {});
                 if (isPopupCreated && externalPage) await externalPage.close().catch(() => {});
-                return { status: 'CLICKED_UNVERIFIED', applied: 0, ats: classification.ats, externalUrl };
+                return { status: 'CLICKED_UNVERIFIED', applied: 0, ats: classification.ats, externalUrl, reason: verifyResult.details };
             }
 
         } catch (err) {
-            logger.error(`❌ [ExternalEngine] Exception handling external job ${job.id}: ${err.message}`);
-            await oraclePersistence.updateJobStatus(job.id, 'EXTERNAL_FAILED');
-            if (isPopupCreated && externalPage) await externalPage.close().catch(() => {});
-            return { status: 'EXTERNAL_FAILED', applied: 0, ats: 'UNKNOWN', externalUrl: job.url, reason: err.message };
+            logger.error(`❌ [ExternalEngine] Exception while processing Job ID ${job.id}: ${err.message}`, err.stack);
+            await oraclePersistence.updateJobStatus(job.id, 'SUBMIT_FAILED');
+            return { status: 'SUBMIT_FAILED', applied: 0, ats: 'UNKNOWN', reason: err.message };
         }
     }
 }
