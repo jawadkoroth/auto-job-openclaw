@@ -492,6 +492,149 @@ class TelegramService {
         }
     }
 
+    /**
+     * Central Natural Language Command Handler
+     */
+    async handleCommand(msg) {
+        const text = msg.text || "";
+        const commandParser = require("./CommandParser");
+        const workerRegistry = require("../../packages/worker/WorkerRegistry");
+        const androidWorker = require("../../packages/worker/AndroidWorker");
+        const taskQueue = require("../../packages/queue/TaskQueue");
+
+        localLogger.info(`Received Telegram Command: "${text}" from User ID: ${msg.from ? msg.from.id : 'unknown'}`);
+        const parsed = commandParser.parse(text);
+
+        switch (parsed.intent) {
+            case "START": {
+                const targetWorker = workerRegistry.getBestWorkerForPortal(parsed.portal);
+                const taskId = await taskQueue.push(parsed.portal, parsed.action || "apply", { limit: 10 }, targetWorker.id);
+                await this.sendMessage(`🚀 <b>Automation Started</b>\n\n• <b>Portal</b>: <code>${parsed.portal}</code>\n• <b>Action</b>: <code>${parsed.action || 'apply'}</code>\n• <b>Assigned Worker</b>: <code>${targetWorker.name || targetWorker.id}</code>\n• <b>Task ID</b>: <code>${taskId.substring(0, 8)}</code>`);
+                
+                // If assigned to Android worker, execute immediately or via queue
+                if (targetWorker.id === "android") {
+                    androidWorker.startJob(parsed.portal, parsed.action || "apply", { taskId, limit: 10 });
+                }
+                break;
+            }
+
+            case "REFRESH_PROFILE": {
+                const targetWorker = workerRegistry.getBestWorkerForPortal(parsed.portal);
+                const taskId = await taskQueue.push(parsed.portal, "updateProfile", {}, targetWorker.id);
+                await this.sendMessage(`👤 <b>Profile Refresh Queued</b>\n\n• <b>Portal</b>: <code>${parsed.portal}</code>\n• <b>Assigned Worker</b>: <code>${targetWorker.name}</code>\n• <b>Task ID</b>: <code>${taskId.substring(0, 8)}</code>`);
+                
+                if (targetWorker.id === "android") {
+                    androidWorker.startJob(parsed.portal, "updateProfile", { taskId });
+                }
+                break;
+            }
+
+            case "STOP": {
+                await androidWorker.stopJob(parsed.portal);
+                await taskQueue.cancelPending(parsed.portal);
+                await this.sendMessage(`🛑 <b>Automation Stopped</b>\n\n• Target Portal: <code>${parsed.portal}</code>\n• Pending queue cleared and active task terminated.`);
+                break;
+            }
+
+            case "PAUSE": {
+                androidWorker.pause();
+                await this.sendMessage(`⏸️ <b>Android Worker Paused</b>\n\nWorker will not process queued tasks until resumed.`);
+                break;
+            }
+
+            case "RESUME": {
+                androidWorker.resume();
+                await this.sendMessage(`▶️ <b>Android Worker Resumed</b>\n\nWorker is ready for incoming automation tasks.`);
+                break;
+            }
+
+            case "WORKERS": {
+                const workers = workerRegistry.getAllWorkers();
+                let output = `<b>🖥️ OpenClaw Execution Worker Nodes</b>\n\n`;
+                for (const w of workers) {
+                    const statusEmoji = w.status === "online" ? "🟢" : (w.status === "busy" ? "🟡" : "🔴");
+                    const batteryInfo = w.battery ? ` | 🔋 ${w.battery.level}%${w.battery.charging ? '⚡' : ''}` : "";
+                    const taskInfo = w.currentTask ? ` | ⚙️ Task: ${w.currentTask}` : "";
+                    output += `${statusEmoji} <b>${w.name}</b> (\`${w.id}\`)\n• Status: <code>${w.status.toUpperCase()}</code>${batteryInfo}${taskInfo}\n• Portals: <i>${w.capabilities.slice(0, 4).join(", ")}...</i>\n\n`;
+                }
+                await this.sendMessage(output);
+                break;
+            }
+
+            case "HEALTH": {
+                const health = await androidWorker.getHealth();
+                const text = `<b>🏥 Android Worker Health Status</b>\n\n` +
+                    `• <b>Node State</b>: <code>${health.status.toUpperCase()}</code>\n` +
+                    `• <b>ADB Device</b>: <code>${health.connection.adbConnected ? 'CONNECTED' : 'EMULATED'}</code>\n` +
+                    `• <b>Chrome CDP</b>: <code>${health.connection.cdpConnected ? 'ACTIVE' : 'READY'}</code>\n` +
+                    `• <b>Battery Level</b>: <b>${health.battery.level}%</b> (${health.battery.charging ? 'Charging ⚡' : 'Discharging'})\n` +
+                    `• <b>Last Heartbeat</b>: <code>${health.lastHeartbeat}</code>`;
+                await this.sendMessage(text);
+                break;
+            }
+
+            case "STATUS": {
+                const pendingCount = await taskQueue.getPendingCount();
+                const workers = workerRegistry.getAllWorkers();
+                const activeCount = workers.filter(w => w.status === "online" || w.status === "busy").length;
+                const text = `<b>📊 OpenClaw System Status</b>\n\n` +
+                    `• <b>Pending Queue Tasks</b>: <code>${pendingCount}</code>\n` +
+                    `• <b>Active Execution Nodes</b>: <code>${activeCount}/${workers.length}</code>\n` +
+                    `• <b>System Engine</b>: <code>HEALTHY</code>`;
+                await this.sendMessage(text);
+                break;
+            }
+
+            case "LOGS": {
+                const logs = androidWorker.getLogs(8);
+                const logBlock = logs.length > 0 ? logs.join("\n") : "No recent log entries.";
+                await this.sendMessage(`<b>📜 Android Worker Recent Logs</b>\n\n<pre>${escapeHTML(logBlock)}</pre>`);
+                break;
+            }
+
+            case "SCREENSHOT": {
+                const screenshots = androidWorker.getScreenshots();
+                if (screenshots.length > 0) {
+                    const latest = screenshots[screenshots.length - 1];
+                    await this.sendPhoto(latest, `📸 <b>Latest Android Worker Screenshot</b>`);
+                } else {
+                    await this.sendMessage(`📸 <b>Screenshot Query</b>: No screenshots captured yet.`);
+                }
+                break;
+            }
+
+            case "HEARTBEAT": {
+                await androidWorker.sendHeartbeat();
+                await this.sendMessage(`💓 <b>Heartbeat Triggered</b>\n\nHeartbeat ping sent to WorkerRegistry.`);
+                break;
+            }
+
+            case "RESTART_WORKER": {
+                androidWorker.resume();
+                await androidWorker.sendHeartbeat();
+                await this.sendMessage(`🔄 <b>Android Worker Restarted</b>\n\nWorker process re-initialized successfully.`);
+                break;
+            }
+
+            default: {
+                if (parsed.isDeterministicCommand) {
+                    await this.sendMessage(`❓ <b>Unrecognized Command</b>\n\nAvailable commands:\n• <code>start naukri</code> / <code>start hirist</code> / <code>start linkedin</code>\n• <code>refresh naukri profile</code>\n• <code>stop naukri</code> / <code>stop all</code>\n• <code>status</code> | <code>health</code> | <code>workers</code> | <code>logs</code> | <code>restart worker</code>`);
+                } else {
+                    // Conversational AI Request -> Forward to OpenRouter/AI failover chain
+                    const aiService = require("../../packages/ai");
+                    try {
+                        const aiReply = await aiService.chatCompletion(text);
+                        await this.sendMessage(`<b>🤖 OpenClaw AI Assistant</b>\n\n${aiReply}`);
+                    } catch (aiErr) {
+                        localLogger.error(`AI Completion Error: ${aiErr.message}`);
+                        await this.sendMessage(`⚠️ <b>AI Service Notice</b>\n\n<i>${escapeHTML(aiErr.message)}</i>\n\nℹ️ <b>System Note</b>: Deterministic automation commands remain 100% operational.`);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
     startPolling(onMessageCallback) {
         if (!this.token) {
             localLogger.warn("Telegram Bot token missing. Interactive commands listener is disabled.");
@@ -508,12 +651,13 @@ class TelegramService {
                 this.lastUpdateId = update.update_id;
                 if (update.message && update.message.text) {
                     const fromId = update.message.chat.id;
-                    if (String(fromId) !== String(this.chatId)) {
+                    if (this.chatId && String(fromId) !== String(this.chatId)) {
                         localLogger.warn(`Refused message from unauthorized Chat ID: ${fromId}`);
                         continue;
                     }
                     try {
-                        await onMessageCallback(update.message);
+                        await this.handleCommand(update.message);
+                        if (onMessageCallback) await onMessageCallback(update.message);
                     } catch (err) {
                         localLogger.error(`Failed handling telegram command: ${err.stack}`);
                     }

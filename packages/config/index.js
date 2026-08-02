@@ -96,5 +96,28 @@ module.exports = {
         weworkremotely: {
             url: "https://weworkremotely.com"
         }
+    },
+
+    android: {
+        adbHost: process.env.ANDROID_ADB_HOST || "127.0.0.1",
+        adbPort: getEnvInt("ANDROID_ADB_PORT", 5555),
+        deviceSerial: process.env.ANDROID_DEVICE_SERIAL || "localhost:5555",
+        chromeCdpPort: getEnvInt("ANDROID_CHROME_CDP_PORT", 9222),
+        sharedSecret: process.env.ANDROID_WORKER_SECRET || "openclaw_android_secret_key_2026",
+        pollIntervalMs: getEnvInt("ANDROID_POLL_INTERVAL_MS", 3000),
+        heartbeatIntervalMs: getEnvInt("ANDROID_HEARTBEAT_INTERVAL_MS", 10000)
+    },
+
+    workerPriorities: {
+        naukri: ["android", "windows", "oracle"],
+        linkedin: ["windows", "android", "oracle"],
+        hirist: ["oracle", "windows", "android"],
+        cutshort: ["oracle", "windows", "android"],
+        foundit: ["oracle", "windows", "android"],
+        instahyre: ["oracle", "windows", "android"],
+        wellfound: ["oracle", "windows", "android"],
+        remoteok: ["oracle", "windows", "android"],
+        weworkremotely: ["oracle", "windows", "android"],
+        default: ["oracle", "windows", "android"]
     }
 };

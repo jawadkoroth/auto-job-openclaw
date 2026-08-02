@@ -7,7 +7,8 @@ const logger = require("../logger");
 
 class AiService {
     constructor() {
-        this.provider = this.resolveProvider();
+        this.providers = this.resolveProviders();
+        this.provider = this.providers[0] || null;
         this.circuitTripped = false;
         this.circuitTrippedReason = "";
     }
@@ -18,22 +19,56 @@ class AiService {
     }
 
     /**
-     * Resolve active AI provider class based on configured keys
+     * Resolve all configured AI providers into prioritized failover chain
      */
-    resolveProvider() {
+    resolveProviders() {
+        const providers = [];
         if (config.ai.openRouterKey) {
-            return new OpenRouterProvider(config.ai.openRouterKey, config.ai.model);
+            providers.push(new OpenRouterProvider(config.ai.openRouterKey, config.ai.model));
         }
         if (process.env.GEMINI_API_KEY) {
-            return new GeminiProvider(process.env.GEMINI_API_KEY);
+            providers.push(new GeminiProvider(process.env.GEMINI_API_KEY));
         }
         if (process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY) {
-            return new ClaudeProvider(process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY);
+            providers.push(new ClaudeProvider(process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY));
         }
         if (process.env.OPENAI_API_KEY) {
-            return new OpenAIProvider(process.env.OPENAI_API_KEY);
+            providers.push(new OpenAIProvider(process.env.OPENAI_API_KEY));
         }
-        return null;
+        return providers;
+    }
+
+    /**
+     * Execute provider method with automatic primary -> secondary -> tertiary failover
+     */
+    async executeWithFailover(actionName, fn) {
+        if (this.providers.length === 0) {
+            throw new Error("NO_AI_PROVIDERS_CONFIGURED: No AI API keys found in environment.");
+        }
+
+        let lastError = null;
+        for (let i = 0; i < this.providers.length; i++) {
+            const provider = this.providers[i];
+            const providerName = provider.constructor.name;
+            try {
+                logger.automation.info(`[AI Failover] Executing ${actionName} on provider: ${providerName} (Attempt ${i + 1}/${this.providers.length})`);
+                return await fn(provider);
+            } catch (err) {
+                lastError = err;
+                logger.automation.warn(`[AI Failover] Provider ${providerName} failed on ${actionName}: ${err.message}. Trying next provider...`);
+            }
+        }
+        throw new Error(`ALL_AI_PROVIDERS_FAILED: All configured AI providers failed. Last error: ${lastError ? lastError.message : 'Unknown'}`);
+    }
+
+    /**
+     * General Conversational Chat Completion for non-automation user questions
+     */
+    async chatCompletion(userMessage) {
+        const systemPrompt = "You are OpenClaw AI assistant. Help the user concisely with technical questions, summaries, or general inquiries.";
+        return await this.executeWithFailover("chatCompletion", async (provider) => {
+            return await provider.generateText(userMessage, systemPrompt);
+        });
     }
 
     /**

@@ -9,22 +9,24 @@ class TaskQueue {
      * @param {Object} args Custom arguments
      * @returns {Promise<string>} Created task unique ID
      */
-    async push(portal, action, args = {}) {
+    async push(portal, action, args = {}, targetWorker = null) {
         await db.init();
         const id = crypto.randomUUID();
+        const fullArgs = { ...args, targetWorker };
         const sql = `
             INSERT INTO tasks (id, portal, action, args, status, attempts, created_at, updated_at)
             VALUES (?, ?, ?, ?, 'pending', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         `;
-        await db.run(sql, [id, portal.toLowerCase(), action, JSON.stringify(args)]);
+        await db.run(sql, [id, portal.toLowerCase(), action, JSON.stringify(fullArgs)]);
         return id;
     }
 
     /**
-     * Poll and fetch the oldest pending task, marking it as running
+     * Poll and fetch the oldest pending task matching target worker or unassigned
+     * @param {string} workerId Target worker requesting a task
      * @returns {Promise<Object|null>} Task object or null if queue is empty
      */
-    async getNext() {
+    async getNext(workerId = null) {
         await db.init();
         
         // Fetch oldest pending task
@@ -32,9 +34,25 @@ class TaskQueue {
             SELECT * FROM tasks 
             WHERE status = 'pending' 
             ORDER BY created_at ASC 
-            LIMIT 1
+            LIMIT 10
         `;
-        const task = await db.get(sqlSelect);
+        const tasks = await db.all(sqlSelect);
+        if (!tasks || tasks.length === 0) return null;
+
+        let task = null;
+        if (workerId) {
+            task = tasks.find(t => {
+                try {
+                    const parsed = JSON.parse(t.args || "{}");
+                    return !parsed.targetWorker || parsed.targetWorker === workerId;
+                } catch (e) {
+                    return true;
+                }
+            }) || tasks[0];
+        } else {
+            task = tasks[0];
+        }
+
         if (!task) return null;
 
         // Reserve task by updating status to 'running'
@@ -51,6 +69,15 @@ class TaskQueue {
             task.args = {};
         }
         return task;
+    }
+
+    async cancelPending(portal = null) {
+        await db.init();
+        if (portal && portal !== "all") {
+            await db.run("UPDATE tasks SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE portal = ? AND status = 'pending'", [portal.toLowerCase()]);
+        } else {
+            await db.run("UPDATE tasks SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE status = 'pending'");
+        }
     }
 
     /**
