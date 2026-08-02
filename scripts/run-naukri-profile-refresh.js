@@ -16,6 +16,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const executionHost = process.platform === "win32" ? "Windows PC" : "Oracle VM";
 
     logger.info("==================================================");
+    logger.info("[LIFECYCLE] START");
     logger.info("NAUKRI HARDENED PROFILE REFRESH RUNNER");
     logger.info(`Execution Host: ${executionHost}`);
     logger.info("Execution Time: " + new Date().toISOString());
@@ -32,6 +33,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const storageStatePath = path.join(process.cwd(), "sessions", "naukri", "storageState.json");
     const bootstrapHelper = new NaukriSessionBootstrap(storageStatePath);
     const boot = await bootstrapHelper.bootstrap();
+    logger.info("[LIFECYCLE] PLAYWRIGHT_LAUNCHED");
 
     if (boot.status === "SESSION_EXPIRED") {
         logger.error("❌ Profile Refresh halted: Session expired. Re-authentication required.");
@@ -60,6 +62,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         logger.info("[1/4] Navigating to Candidate Profile Page...");
         let profileRes = await page.goto("https://www.naukri.com/mnjuser/profile", { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => null);
         await delay(4000);
+        logger.info("[LIFECYCLE] PROFILE_LOADED");
 
         let currentUrl = page.url();
         let pageTitle = await page.title().catch(() => "");
@@ -146,6 +149,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         }
 
         logger.info(`✓ Read Resume Headline BEFORE refresh (${beforeHeadline.length} chars): "${beforeHeadline.slice(0, 60)}..."`);
+        logger.info("[LIFECYCLE] HEADLINE_READ");
 
         // Click Edit
         logger.info("[2/4] Opening Headline Edit Form...");
@@ -289,18 +293,11 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         }
 
         logger.info("✓ Headline Integrity Verified (BEFORE === AFTER).");
+        logger.info("[LIFECYCLE] VERIFICATION_PASSED");
 
         const nowIst = new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
-        const tgMsg = `<b>Naukri Profile Refresh</b>\n\n` +
-            `• <b>Portal</b>: <code>Naukri</code>\n` +
-            `• <b>Action</b>: <code>Profile Refresh</code>\n` +
-            `• <b>Status</b>: <code>SUCCESS</code>\n` +
-            `• <b>Profile Data Changed</b>: <code>NO</code>\n` +
-            `• <b>Executed From</b>: <code>${executionHost}</code>\n` +
-            `• <b>Time (IST)</b>: <code>${nowIst}</code>`;
-
-        await telegramService.sendMessage(tgMsg).catch(e => logger.error(`Telegram send error: ${e.message}`));
         logger.info("✓ Naukri Profile Refresh Run Complete Successfully.");
+        logger.info("[LIFECYCLE] FINISHED");
 
     } catch (err) {
         logger.error(`❌ Naukri Profile Refresh Error: ${err.message}`);

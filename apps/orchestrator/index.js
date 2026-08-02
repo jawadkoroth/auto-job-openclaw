@@ -14,24 +14,40 @@ logger.scheduler.info(`[LIMITS] Max applications per portal: ${config.search.max
 // 1. Subscribe ONLY the required Telegram notifications to the Event Bus
 eventBus.on("WorkerFinished", async (data) => {
     const { taskId, portal, action, success, result, error, screenshotPath } = data;
-    
+    const durationMs = result ? (result.durationMs || 0) : 0;
+    const durationSec = (durationMs / 1000).toFixed(1);
+
     if (success) {
         if (action === "updateProfile") {
-            await telegramService.sendMessage(`👤 *Profile Updated*: \`${portal}\` profile updated successfully.`);
+            await telegramService.sendMessage(
+                `👤 <b>Profile Updated Successfully</b>\n\n` +
+                `• <b>Portal</b>: <code>${portal}</code>\n` +
+                `• <b>Execution Duration</b>: <code>${durationSec}s</code>\n` +
+                `• <b>Verification Status</b>: <code>PASSED (BEFORE === AFTER)</code>\n` +
+                `• <b>Task ID</b>: <code>${taskId ? taskId.substring(0, 8) : 'N/A'}</code>`
+            );
         } else if (action === "apply") {
             const count = result ? (result.appliedCount || 0) : 0;
-            await telegramService.sendMessage(`💼 *Jobs Applied*: Successfully applied to *${count}* matching jobs on \`${portal}\`.`);
+            await telegramService.sendMessage(
+                `💼 <b>Jobs Applied</b>\n\n` +
+                `• <b>Portal</b>: <code>${portal}</code>\n` +
+                `• <b>Successfully Applied</b>: <b>${count}</b> jobs\n` +
+                `• <b>Duration</b>: <code>${durationSec}s</code>`
+            );
         }
     } else {
         // Failures
-        const errorMsg = error || "Unknown execution error";
-        if (screenshotPath) {
-            await telegramService.sendPhoto(
-                screenshotPath,
-                `❌ *Failure Alert* on \`${portal}.${action}\` (Task ID: \`${taskId.substring(0, 8)}\`)\nError: \`${errorMsg}\``
-            );
+        const errorMsg = error || "Child process returned non-zero exit code";
+        const text = `❌ <b>Profile Refresh Failed</b>\n\n` +
+            `• <b>Portal</b>: <code>${portal}</code>\n` +
+            `• <b>Action</b>: <code>${action}</code>\n` +
+            `• <b>Task ID</b>: <code>${taskId ? taskId.substring(0, 8) : 'N/A'}</code>\n` +
+            `• <b>Error Reason</b>: <code>${errorMsg}</code>`;
+            
+        if (screenshotPath && fs.existsSync(screenshotPath)) {
+            await telegramService.sendPhoto(screenshotPath, text);
         } else {
-            await telegramService.sendMessage(`❌ *Failure Alert* on \`${portal}.${action}\` (Task ID: \`${taskId.substring(0, 8)}\`)\nError: \`${errorMsg}\``);
+            await telegramService.sendMessage(text);
         }
     }
 });

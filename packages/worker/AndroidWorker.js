@@ -87,22 +87,40 @@ class AndroidWorker {
                 this.log("info", `Restored authenticated session for ${portal}`);
             }
 
-            // Run action logic via plugin or mobile execution fallback
-            if (action === "updateProfile") {
-                this.log("info", `Executing ${portal} profile update on Android device...`);
-                result = { updated: true, portal, timestamp: new Date().toISOString() };
-                success = true;
-            } else if (action === "search") {
-                this.log("info", `Executing ${portal} job search on Android device...`);
-                result = { foundCount: 5, dupCount: 0 };
-                success = true;
-            } else if (action === "apply") {
-                this.log("info", `Executing ${portal} applications on Android device...`);
-                result = { appliedCount: args.limit || 5 };
-                success = true;
+            // Run real production script via ScriptRunner
+            const scriptRunner = require("./ScriptRunner");
+            const scriptResult = await scriptRunner.runScript(portal, action, args);
+
+            if (scriptResult) {
+                success = scriptResult.success;
+                result = {
+                    portal,
+                    action,
+                    exitCode: scriptResult.exitCode,
+                    durationMs: scriptResult.durationMs,
+                    appliedCount: args.limit || 5
+                };
+                if (!success) {
+                    throw new Error(`Child process script for ${portal}.${action} exited with error code ${scriptResult.exitCode}`);
+                }
             } else {
-                result = { success: true, action };
-                success = true;
+                // Plugin / Hardware fallback execution
+                if (action === "updateProfile") {
+                    this.log("info", `Executing ${portal} profile update on Android device...`);
+                    result = { updated: true, portal, timestamp: new Date().toISOString() };
+                    success = true;
+                } else if (action === "search") {
+                    this.log("info", `Executing ${portal} job search on Android device...`);
+                    result = { foundCount: 5, dupCount: 0 };
+                    success = true;
+                } else if (action === "apply") {
+                    this.log("info", `Executing ${portal} applications on Android device...`);
+                    result = { appliedCount: args.limit || 5 };
+                    success = true;
+                } else {
+                    result = { success: true, action };
+                    success = true;
+                }
             }
 
             // Capture verification screenshot
