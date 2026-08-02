@@ -493,7 +493,7 @@ class TelegramService {
     }
 
     /**
-     * Central Natural Language Command Handler
+     * Central Natural Language & Multi-Mode Command Handler (Phase Y)
      */
     async handleCommand(msg) {
         const text = msg.text || "";
@@ -501,38 +501,148 @@ class TelegramService {
         const workerRegistry = require("../../packages/worker/WorkerRegistry");
         const androidWorker = require("../../packages/worker/AndroidWorker");
         const taskQueue = require("../../packages/queue/TaskQueue");
+        const candidateKnowledgeService = require("../../packages/knowledge/CandidateKnowledgeService");
+        const eventBus = require("../../packages/events/EventBus");
+        const db = require("../../packages/database");
 
         localLogger.info(`Received Telegram Command: "${text}" from User ID: ${msg.from ? msg.from.id : 'unknown'}`);
+
+        // =========================================================================
+        // MODE 1 — Automation Mode (Highest Priority)
+        // If ANY task or job is in WAITING_FOR_INPUT, all incoming messages belong to that task.
+        // =========================================================================
+        await db.init();
+        const waitingJob = await db.get(
+            "SELECT * FROM jobs WHERE status = 'WAITING_FOR_INPUT' ORDER BY updated_at DESC LIMIT 1"
+        );
+        const waitingTask = await db.get(
+            "SELECT * FROM tasks WHERE status = 'WAITING_FOR_INPUT' ORDER BY updated_at DESC LIMIT 1"
+        );
+
+        if (waitingJob || waitingTask) {
+            const targetItem = waitingJob || waitingTask;
+            const questionText = targetItem.pending_question || targetItem.question || "Pending Automation Question";
+            const portal = targetItem.portal || "generic";
+            const jobId = targetItem.job_id || targetItem.id;
+
+            localLogger.info(`[Automation Mode] Intercepted user answer for waiting question: "${questionText}" -> "${text}"`);
+
+            // 1. Record Answer into Knowledge Bank / Answer Bank
+            await candidateKnowledgeService.answerBank.saveAnswer(questionText, text, "TELEGRAM_USER_INPUT", "FACTUAL").catch(() => {});
+
+            // 2. Update DB status to READY_TO_RESUME
+            if (waitingJob) {
+                await db.run(
+                    `UPDATE jobs SET 
+                        status = 'READY_TO_RESUME', 
+                        pending_suggested_answer = ?, 
+                        updated_at = CURRENT_TIMESTAMP 
+                     WHERE id = ?`,
+                    [text, waitingJob.id]
+                );
+            }
+            if (waitingTask) {
+                await db.run(
+                    `UPDATE tasks SET 
+                        status = 'READY_TO_RESUME', 
+                        result = ?, 
+                        updated_at = CURRENT_TIMESTAMP 
+                     WHERE id = ?`,
+                    [JSON.stringify({ answer: text }), waitingTask.id]
+                );
+            }
+
+            // 3. Emit event to notify waiting worker
+            eventBus.publish(eventBus.EVENTS.QUESTION_ANSWERED || "QuestionAnswered", {
+                portal,
+                jobId,
+                question: questionText,
+                answer: text,
+                source: "TELEGRAM_AUTOMATION_MODE"
+            });
+
+            // 4. Respond to Telegram user confirming response forwarded to automation
+            const safeQ = escapeHTML(questionText);
+            const safeA = escapeHTML(text);
+            const safePortal = escapeHTML(portal);
+            await this.sendMessage(
+                `<b>✅ Answer Forwarded to Automation</b>\n\n` +
+                `• <b>Portal</b>: <code>${safePortal}</code>\n` +
+                `• <b>Question</b>: <i>"${safeQ}"</i>\n` +
+                `• <b>Recorded Answer</b>: <code>${safeA}</code>\n\n` +
+                `⚙️ <i>Waiting worker notified. Task resuming...</i>`
+            );
+
+            // Automation mode owns the conversation completely until completed/cancelled.
+            return;
+        }
+
+        // =========================================================================
+        // MODE 2 — Command Mode (Second Priority)
+        // If no task is waiting, parse deterministic commands locally. Never AI.
+        // =========================================================================
         const parsed = commandParser.parse(text);
 
         switch (parsed.intent) {
             case "START": {
-                const targetWorker = workerRegistry.getBestWorkerForPortal(parsed.portal);
+                const targetWorker = workerRegistry.getBestWorker(parsed.portal, parsed.targetWorker);
                 const taskId = await taskQueue.push(parsed.portal, parsed.action || "apply", { limit: 10 }, targetWorker.id);
-                await this.sendMessage(`🚀 <b>Automation Started</b>\n\n• <b>Portal</b>: <code>${parsed.portal}</code>\n• <b>Action</b>: <code>${parsed.action || 'apply'}</code>\n• <b>Assigned Worker</b>: <code>${targetWorker.name || targetWorker.id}</code>\n• <b>Task ID</b>: <code>${taskId.substring(0, 8)}</code>`);
                 
-                // If assigned to Android worker, execute immediately or via queue
-                if (targetWorker.id === "android") {
-                    androidWorker.startJob(parsed.portal, parsed.action || "apply", { taskId, limit: 10 });
-                }
+                await this.sendMessage(
+                    `🚀 <b>${escapeHTML(parsed.portal.toUpperCase())} Job Automation</b>\n\n` +
+                    `• <b>Portal</b>: <code>${escapeHTML(parsed.portal)}</code>\n` +
+                    `• <b>Action</b>: <code>${escapeHTML(parsed.action || 'apply')}</code>\n` +
+                    `• <b>Worker</b>:\n<b>${escapeHTML(targetWorker.name || targetWorker.id)}</b>\n` +
+                    `• <b>Status</b>:\nQueued\n` +
+                    `• <b>Task ID</b>: <code>${taskId.substring(0, 8)}</code>`
+                );
+                
+                await workerRegistry.execute(targetWorker.id, { taskId, portal: parsed.portal, action: parsed.action || "apply", limit: 10 });
                 break;
             }
 
             case "REFRESH_PROFILE": {
-                const targetWorker = workerRegistry.getBestWorkerForPortal(parsed.portal);
+                const targetWorker = workerRegistry.getBestWorker(parsed.portal, parsed.targetWorker);
                 const taskId = await taskQueue.push(parsed.portal, "updateProfile", {}, targetWorker.id);
-                await this.sendMessage(`👤 <b>Profile Refresh Queued</b>\n\n• <b>Portal</b>: <code>${parsed.portal}</code>\n• <b>Assigned Worker</b>: <code>${targetWorker.name}</code>\n• <b>Task ID</b>: <code>${taskId.substring(0, 8)}</code>`);
                 
-                if (targetWorker.id === "android") {
-                    androidWorker.startJob(parsed.portal, "updateProfile", { taskId });
-                }
+                await this.sendMessage(
+                    `👤 <b>${escapeHTML(parsed.portal.toUpperCase())} Profile Refresh</b>\n\n` +
+                    `• <b>Portal</b>: <code>${escapeHTML(parsed.portal)}</code>\n` +
+                    `• <b>Worker</b>:\n<b>${escapeHTML(targetWorker.name || targetWorker.id)}</b>\n` +
+                    `• <b>Status</b>:\nQueued\n` +
+                    `• <b>Task ID</b>: <code>${taskId.substring(0, 8)}</code>`
+                );
+                
+                await workerRegistry.execute(targetWorker.id, { taskId, portal: parsed.portal, action: "updateProfile" });
+                break;
+            }
+
+            case "HELP": {
+                const helpText = `<b>🤖 OpenClaw Telegram Control</b>\n\n` +
+                    `<b>Automation Commands</b>\n` +
+                    `• <code>start naukri</code>\n` +
+                    `• <code>start hirist</code>\n` +
+                    `• <code>start cutshort</code>\n` +
+                    `• <code>refresh naukri profile</code>\n\n` +
+                    `<b>Worker Selection</b>\n` +
+                    `• <code>start naukri pc</code>\n` +
+                    `• <code>start naukri mobile</code>\n` +
+                    `• <code>start naukri oracle</code>\n\n` +
+                    `<b>AI Assistant</b>\n` +
+                    `• <code>/ai &lt;question&gt;</code>\n\n` +
+                    `<b>Examples</b>\n` +
+                    `• <code>/ai explain docker</code>\n` +
+                    `• <code>start naukri</code>\n` +
+                    `• <code>workers</code>\n` +
+                    `• <code>status</code>`;
+                await this.sendMessage(helpText);
                 break;
             }
 
             case "STOP": {
                 await androidWorker.stopJob(parsed.portal);
                 await taskQueue.cancelPending(parsed.portal);
-                await this.sendMessage(`🛑 <b>Automation Stopped</b>\n\n• Target Portal: <code>${parsed.portal}</code>\n• Pending queue cleared and active task terminated.`);
+                await this.sendMessage(`🛑 <b>Automation Stopped</b>\n\n• Target Portal: <code>${escapeHTML(parsed.portal)}</code>\n• Pending queue cleared and active task terminated.`);
                 break;
             }
 
@@ -555,7 +665,7 @@ class TelegramService {
                     const statusEmoji = w.status === "online" ? "🟢" : (w.status === "busy" ? "🟡" : "🔴");
                     const batteryInfo = w.battery ? ` | 🔋 ${w.battery.level}%${w.battery.charging ? '⚡' : ''}` : "";
                     const taskInfo = w.currentTask ? ` | ⚙️ Task: ${w.currentTask}` : "";
-                    output += `${statusEmoji} <b>${w.name}</b> (\`${w.id}\`)\n• Status: <code>${w.status.toUpperCase()}</code>${batteryInfo}${taskInfo}\n• Portals: <i>${w.capabilities.slice(0, 4).join(", ")}...</i>\n\n`;
+                    output += `${statusEmoji} <b>${escapeHTML(w.name)}</b> (<code>${escapeHTML(w.id)}</code>)\n• Status: <code>${w.status.toUpperCase()}</code>${batteryInfo}${taskInfo}\n• Portals: <i>${w.capabilities.slice(0, 4).join(", ")}...</i>\n\n`;
                 }
                 await this.sendMessage(output);
                 break;
@@ -616,20 +726,34 @@ class TelegramService {
                 break;
             }
 
-            default: {
-                if (parsed.isDeterministicCommand) {
-                    await this.sendMessage(`❓ <b>Unrecognized Command</b>\n\nAvailable commands:\n• <code>start naukri</code> / <code>start hirist</code> / <code>start linkedin</code>\n• <code>refresh naukri profile</code>\n• <code>stop naukri</code> / <code>stop all</code>\n• <code>status</code> | <code>health</code> | <code>workers</code> | <code>logs</code> | <code>restart worker</code>`);
-                } else {
-                    // Conversational AI Request -> Forward to OpenRouter/AI failover chain
-                    const aiService = require("../../packages/ai");
-                    try {
-                        const aiReply = await aiService.chatCompletion(text);
-                        await this.sendMessage(`<b>🤖 OpenClaw AI Assistant</b>\n\n${aiReply}`);
-                    } catch (aiErr) {
-                        localLogger.error(`AI Completion Error: ${aiErr.message}`);
-                        await this.sendMessage(`⚠️ <b>AI Service Notice</b>\n\n<i>${escapeHTML(aiErr.message)}</i>\n\nℹ️ <b>System Note</b>: Deterministic automation commands remain 100% operational.`);
+            // =========================================================================
+            // MODE 3 — AI Mode (Explicit ONLY)
+            // Triggers ONLY when message starts with /ai (e.g. /ai Explain Docker networking)
+            // =========================================================================
+            case "AI": {
+                const aiService = require("../../packages/ai");
+                try {
+                    const prompt = parsed.prompt || text;
+                    if (!prompt) {
+                        await this.sendMessage(`🤖 <b>AI Assistant</b>\n\nPlease provide a question after <code>/ai</code> (e.g. <code>/ai Explain Docker networking</code>).`);
+                        break;
                     }
+                    const aiReply = await aiService.chatCompletion(prompt);
+                    await this.sendMessage(`<b>🤖 OpenClaw AI Assistant</b>\n\n${aiReply}`);
+                } catch (aiErr) {
+                    localLogger.error(`AI Completion Error: ${aiErr.message}`);
+                    await this.sendMessage(`⚠️ <b>AI Service Notice</b>\n\n<i>${escapeHTML(aiErr.message)}</i>\n\nℹ️ <b>System Note</b>: Deterministic automation commands remain 100% operational.`);
                 }
+                break;
+            }
+
+            default: {
+                // Non-command text when AI is NOT explicitly requested via /ai
+                await this.sendMessage(
+                    `❓ <b>Unrecognized Command</b>\n\n` +
+                    `AI questions require explicit <code>/ai</code> prefix (e.g. <code>/ai ${escapeHTML(text)}</code>).\n\n` +
+                    `Type <code>help</code> to view all available commands.`
+                );
                 break;
             }
         }

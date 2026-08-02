@@ -109,7 +109,7 @@ module.exports = {
     },
 
     workerPriorities: {
-        naukri: ["android", "windows", "oracle"],
+        naukri: ["windows", "android", "oracle"],
         linkedin: ["windows", "android", "oracle"],
         hirist: ["oracle", "windows", "android"],
         cutshort: ["oracle", "windows", "android"],

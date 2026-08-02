@@ -8,16 +8,33 @@ class CommandParser {
     /**
      * Parse incoming natural language text message into structured intent and parameters
      * @param {string} text 
-     * @returns {Object} { intent, portal, action, targetWorker, isDeterministicCommand, rawText }
+     * @returns {Object} { intent, portal, action, targetWorker, isDeterministicCommand, prompt, rawText }
      */
     parse(text) {
         if (!text || typeof text !== "string") {
-            return { intent: "CONVERSATION", isDeterministicCommand: false, rawText: text };
+            return { intent: "UNRECOGNIZED", isDeterministicCommand: false, rawText: text };
         }
 
-        const normalized = text.trim().toLowerCase();
+        const trimmed = text.trim();
+        const normalized = trimmed.toLowerCase();
 
-        // 1. System Commands
+        // 1. Explicit AI Activation (/ai <question>)
+        if (normalized.startsWith("/ai ") || normalized === "/ai") {
+            const prompt = trimmed.substring(3).trim();
+            return {
+                intent: "AI",
+                prompt,
+                isDeterministicCommand: true,
+                rawText: text
+            };
+        }
+
+        // 2. Help Commands (help, commands, /help)
+        if (normalized === "help" || normalized === "commands" || normalized === "/help" || normalized === "/start") {
+            return { intent: "HELP", isDeterministicCommand: true, rawText: text };
+        }
+
+        // 3. System Commands
         if (normalized === "status" || normalized.includes("show status") || normalized.includes("system status")) {
             return { intent: "STATUS", isDeterministicCommand: true, rawText: text };
         }
@@ -54,23 +71,25 @@ class CommandParser {
             return { intent: "RESUME", isDeterministicCommand: true, rawText: text };
         }
 
-        // 2. Profile Refresh Intent (e.g. "start naukri profile refresh", "refresh naukri profile", "update linkedin profile")
+        // 4. Profile Refresh Intent (e.g. "refresh naukri profile", "refresh naukri profile mobile", "refresh naukri profile oracle")
         if (
             (normalized.includes("start") && normalized.includes("profile") && (normalized.includes("refresh") || normalized.includes("update"))) ||
             normalized.includes("refresh") || 
             normalized.includes("update profile")
         ) {
             const portal = this.extractPortal(normalized);
+            const targetWorker = this.extractWorker(normalized);
             return {
                 intent: "REFRESH_PROFILE",
                 portal: portal || "naukri",
                 action: "updateProfile",
+                targetWorker,
                 isDeterministicCommand: true,
                 rawText: text
             };
         }
 
-        // 3. Stop Intent (e.g. "stop naukri", "stop all", "stop")
+        // 5. Stop Intent (e.g. "stop naukri", "stop all", "stop")
         if (normalized === "stop" || normalized.startsWith("stop") || normalized.includes("cancel job")) {
             const portal = this.extractPortal(normalized);
             return {
@@ -81,34 +100,38 @@ class CommandParser {
             };
         }
 
-        // 4. Start Automation Intent (e.g. "start naukri", "start hirist", "run cutshort", "start linkedin")
+        // 6. Start Automation Intent (e.g. "start naukri", "start naukri mobile", "start naukri oracle", "start naukri pc", "start hirist")
         if (normalized.startsWith("start") || normalized.startsWith("run") || normalized.includes("apply on")) {
             const portal = this.extractPortal(normalized);
             if (portal) {
+                const targetWorker = this.extractWorker(normalized);
                 return {
                     intent: "START",
                     portal,
                     action: "apply",
+                    targetWorker,
                     isDeterministicCommand: true,
                     rawText: text
                 };
             }
         }
 
-        // 5. Single Known Portal Keyword (e.g. "naukri", "hirist", "cutshort", "linkedin")
+        // 7. Single Known Portal Keyword (e.g. "naukri", "hirist", "cutshort", "linkedin")
         const extractedPortal = this.extractPortal(normalized);
         if (extractedPortal && normalized.split(/\s+/).length <= 3 && !this.isConversationalPhrase(normalized)) {
+            const targetWorker = this.extractWorker(normalized);
             return {
                 intent: "START",
                 portal: extractedPortal,
                 action: "apply",
+                targetWorker,
                 isDeterministicCommand: true,
                 rawText: text
             };
         }
 
-        // Non-deterministic -> Conversational request
-        return { intent: "CONVERSATION", isDeterministicCommand: false, rawText: text };
+        // Non-deterministic -> Unrecognized command (AI must be triggered via /ai)
+        return { intent: "UNRECOGNIZED", isDeterministicCommand: false, rawText: text };
     }
 
     extractPortal(text) {
@@ -118,8 +141,15 @@ class CommandParser {
         return null;
     }
 
+    extractWorker(text) {
+        if (text.includes("mobile") || text.includes("android")) return "android";
+        if (text.includes("pc") || text.includes("windows") || text.includes("desktop")) return "windows";
+        if (text.includes("oracle") || text.includes("cloud")) return "oracle";
+        return null;
+    }
+
     isConversationalPhrase(text) {
-        return text.includes("explain") || text.includes("how") || text.includes("what") || text.includes("why") || text.includes("help") || text.includes("summary") || text.includes("write");
+        return text.includes("explain") || text.includes("how") || text.includes("what") || text.includes("why") || text.includes("summary") || text.includes("write");
     }
 }
 

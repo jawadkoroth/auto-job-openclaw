@@ -92,37 +92,81 @@ class WorkerRegistry extends EventEmitter {
         }
     }
 
+    normalizeWorkerId(id) {
+        if (!id || typeof id !== "string") return null;
+        const norm = id.trim().toLowerCase();
+        if (norm === "pc" || norm === "windows" || norm === "desktop") return "windows";
+        if (norm === "mobile" || norm === "android") return "android";
+        if (norm === "oracle" || norm === "cloud") return "oracle";
+        return norm;
+    }
+
     getWorker(id) {
-        return this.workers.get(id) || null;
+        const normId = this.normalizeWorkerId(id) || id;
+        return this.workers.get(normId) || this.workers.get(id) || null;
     }
 
     getAllWorkers() {
         return Array.from(this.workers.values());
     }
 
-    getBestWorkerForPortal(portal) {
-        const priorityList = config.workerPriorities[portal.toLowerCase()] || config.workerPriorities.default || ["oracle", "windows", "android"];
+    getBestWorker(portal, workerPreference = null) {
+        return this.getBestWorkerForPortal(portal, workerPreference);
+    }
+
+    getBestWorkerForPortal(portal, workerPreference = null) {
+        const pName = portal ? portal.toLowerCase() : "naukri";
+
+        // 1. Explicit Worker Selection (e.g., pc/windows, mobile/android, oracle)
+        if (workerPreference) {
+            const targetId = this.normalizeWorkerId(workerPreference);
+            const targetWorker = this.workers.get(targetId);
+            if (targetWorker) {
+                logger.scheduler ? logger.scheduler.info(`[WorkerRegistry] Explicit worker selected: '${targetWorker.id}' for portal '${pName}'`) : null;
+                return targetWorker;
+            }
+        }
+
+        // 2. Default Priority List matching portal config
+        const priorityList = config.workerPriorities[pName] || config.workerPriorities.default || ["windows", "android", "oracle"];
         
         for (const workerId of priorityList) {
             const worker = this.workers.get(workerId);
-            if (worker && (worker.status === "online" || worker.status === "idle") && worker.capabilities.includes(portal.toLowerCase())) {
-                logger.scheduler ? logger.scheduler.info(`[WorkerRegistry] Selected worker '${workerId}' for portal '${portal}'`) : null;
+            if (worker && (worker.status === "online" || worker.status === "idle") && worker.capabilities.includes(pName)) {
+                logger.scheduler ? logger.scheduler.info(`[WorkerRegistry] Selected best worker '${workerId}' for portal '${pName}'`) : null;
                 return worker;
             }
         }
 
         // Fallback: Return any online worker that lists capability
         for (const worker of this.workers.values()) {
-            if ((worker.status === "online" || worker.status === "idle") && worker.capabilities.includes(portal.toLowerCase())) {
-                logger.scheduler ? logger.scheduler.warn(`[WorkerRegistry] Preferred priority workers offline for '${portal}'. Fallback to '${worker.id}'`) : null;
+            if ((worker.status === "online" || worker.status === "idle") && worker.capabilities.includes(pName)) {
+                logger.scheduler ? logger.scheduler.warn(`[WorkerRegistry] Preferred priority workers offline for '${pName}'. Fallback to '${worker.id}'`) : null;
                 return worker;
             }
         }
 
         // Default fallback to first priority if none online
-        const fallbackId = priorityList[0] || "oracle";
-        logger.scheduler ? logger.scheduler.warn(`[WorkerRegistry] All candidate workers offline for '${portal}'. Defaulting task to '${fallbackId}'`) : null;
-        return this.workers.get(fallbackId) || { id: fallbackId, status: "offline" };
+        const fallbackId = priorityList[0] || "windows";
+        logger.scheduler ? logger.scheduler.warn(`[WorkerRegistry] All candidate workers offline for '${pName}'. Defaulting task to '${fallbackId}'`) : null;
+        return this.workers.get(fallbackId) || { id: fallbackId, name: `${fallbackId} Worker`, status: "offline" };
+    }
+
+    async execute(workerId, task = {}) {
+        const targetId = this.normalizeWorkerId(workerId) || "windows";
+        logger.scheduler ? logger.scheduler.info(`[WorkerRegistry] Routing execution to worker '${targetId}' for task ${task.taskId || 'N/A'}`) : null;
+
+        if (targetId === "android") {
+            const androidWorker = require("./AndroidWorker");
+            return androidWorker.startJob(task.portal, task.action || "apply", task);
+        } else if (targetId === "windows") {
+            const scriptRunner = require("./ScriptRunner");
+            return scriptRunner.runScript(task.portal, task.action || "apply", task);
+        } else {
+            // Oracle Cloud Worker
+            logger.scheduler ? logger.scheduler.info(`[WorkerRegistry] Task queued for Cloud Oracle Worker execution: ${task.taskId || 'N/A'}`) : null;
+            return { queued: true, workerId: "oracle" };
+        }
     }
 
     startHeartbeatMonitor() {

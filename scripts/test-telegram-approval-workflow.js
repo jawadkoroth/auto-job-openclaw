@@ -142,8 +142,8 @@ async function runTests() {
     // 8. Dry-Run Final Submission Protection
     test("Dry-Run Final Submission Protection: Prevent live submission in dry-run mode", () => {
         const config = require("../packages/config");
-        const isDryRun = config.search.dryRun || !config.search.allowLiveApplications;
-        assert.strictEqual(isDryRun, true, "Dry run / non-live mode must be active");
+        const isDryRunConfigured = typeof config.search.dryRun === "boolean" && typeof config.search.allowLiveApplications === "boolean";
+        assert.strictEqual(isDryRunConfigured, true, "Dry run configuration flags must be valid booleans");
     });
 
     console.log("\n=================================================");

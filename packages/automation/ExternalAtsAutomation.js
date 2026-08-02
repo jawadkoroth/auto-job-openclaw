@@ -526,7 +526,10 @@ class ExternalAtsAutomation {
 
     detectAiProhibition(text) {
         const str = String(text || "").toLowerCase();
-        return str.includes("ai generated content is strictly prohibited") || str.includes("do not use generative ai");
+        return str.includes("ai generated content is strictly prohibited") || 
+               str.includes("do not use generative ai") ||
+               str.includes("use of ai") ||
+               str.includes("plagiarism");
     }
 
     isAuthenticationField(name) {
@@ -540,9 +543,16 @@ class ExternalAtsAutomation {
         const pendingQuestionId = `foundit-${jobId}-${questionIdHash}`;
         const approvalId = pendingQuestionId;
 
+        // Check if existing record already has a pending suggested answer
+        const existing = await db.get("SELECT * FROM jobs WHERE (id = ? OR job_id = ?)", [jobId, jobId]).catch(() => null);
+        let finalSuggestedAnswer = suggestedAnswer;
+        if (existing && existing.status === "WAITING_FOR_INPUT" && existing.pending_suggested_answer) {
+            finalSuggestedAnswer = existing.pending_suggested_answer;
+        }
+
         job.status = "WAITING_FOR_INPUT";
         job.pendingQuestion = question;
-        job.pendingSuggestedAnswer = suggestedAnswer;
+        job.pendingSuggestedAnswer = finalSuggestedAnswer;
         job.pendingQuestionId = pendingQuestionId;
         job.approvalId = approvalId;
 
@@ -555,13 +565,13 @@ class ExternalAtsAutomation {
                      pending_question_id = ?, 
                      approval_id = ? 
                  WHERE (id = ? OR job_id = ?)`,
-                [question, suggestedAnswer, pendingQuestionId, approvalId, jobId, jobId]
+                [question, finalSuggestedAnswer, pendingQuestionId, approvalId, jobId, jobId]
             ).catch(() => {});
 
             const telegramMsg = `⚠️ <b>Application Action Required</b>\n\n` +
                 `<b>Job:</b> ${Telegram.escapeHTML(job.title || "Software Engineer")} at ${Telegram.escapeHTML(job.company || "Company")}\n` +
                 `<b>Question:</b> ${Telegram.escapeHTML(question)}\n` +
-                `<b>Suggested Answer:</b> ${Telegram.escapeHTML(suggestedAnswer || "Manual answer required")}\n\n` +
+                `<b>Suggested Answer:</b> ${Telegram.escapeHTML(finalSuggestedAnswer || "Manual answer required")}\n\n` +
                 `Reply with <code>/approve ${approvalId}</code> or <code>/answer ${approvalId} [Your Answer]</code>`;
 
             await Telegram.sendMessage(telegramMsg).catch(err => logger.worker.warn(`Telegram message failed: ${err.message}`));
