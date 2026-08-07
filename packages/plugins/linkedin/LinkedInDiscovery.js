@@ -52,28 +52,71 @@ class LinkedInDiscovery {
                         }
 
                         const titleEl = card.querySelector(".job-card-list__title, .job-card-container__link, strong");
-                        const companyEl = card.querySelector(".job-card-container__primary-description, .job-card-container__company-name");
+                        const companyEl = card.querySelector([
+                            ".job-card-container__company-name",
+                            ".job-card-container__primary-description",
+                            "a.job-card-container__company-name",
+                            "a[data-tracking-control-name*='company_name']",
+                            "a[href*='/company/']",
+                            ".artdeco-entity-lockup__subtitle",
+                            ".job-card-container__subtitle"
+                        ].join(", "));
+
                         const metadataItems = Array.from(card.querySelectorAll(".job-card-container__metadata-item, .job-card-container__metadata-wrapper li, .job-card-container__primary-description span"));
                         const metadataTexts = metadataItems.map(el => el.innerText.trim()).filter(Boolean);
 
                         const title = titleEl ? titleEl.innerText.trim() : "";
-                        const company = companyEl ? companyEl.innerText.trim() : "";
+                        
+                        let rawCompany = companyEl ? companyEl.innerText.trim() : "";
+                        if (rawCompany.includes("\n")) rawCompany = rawCompany.split("\n")[0].trim();
+                        if (rawCompany.includes("•")) rawCompany = rawCompany.split("•")[0].trim();
+                        const company = rawCompany || "Confidential";
+                        const companyNormalized = company.toLowerCase().trim().replace(/[^a-z0-9]/g, "");
+
                         const locationStr = metadataTexts[0] || (card.querySelector(".job-card-container__metadata-item") ? card.querySelector(".job-card-container__metadata-item").innerText.trim() : "India");
                         const dateEl = card.querySelector("time, .job-card-container__footer-item");
                         const postedStr = dateEl ? dateEl.innerText.trim() : "Today";
                         const isEasyApply = Boolean(card.querySelector(".job-card-container__apply-method") || card.textContent.includes("Easy Apply"));
 
+                        // Experience extraction from card text
+                        const fullCardText = card.innerText || "";
+                        let extractedExp = "";
+                        const rangeMatch = fullCardText.match(/(\d+)\s*(?:-|to)\s*(\d+)\s*(?:years?|yrs?|yoe)/i);
+                        if (rangeMatch) {
+                            extractedExp = `${rangeMatch[1]}-${rangeMatch[2]} Yrs`;
+                        } else {
+                            const plusMatch = fullCardText.match(/(\d+)\s*\+\s*(?:years?|yrs?|yoe)/i) || fullCardText.match(/(?:min|minimum|at least)\s*(\d+)\s*(?:years?|yrs?|yoe)/i);
+                            if (plusMatch) {
+                                extractedExp = `${plusMatch[1]}+ Yrs`;
+                            } else {
+                                const textLower = fullCardText.toLowerCase();
+                                if (textLower.includes("entry level") || textLower.includes("fresher")) {
+                                    extractedExp = "0-2 Yrs";
+                                } else if (textLower.includes("associate")) {
+                                    extractedExp = "1-3 Yrs";
+                                } else if (textLower.includes("mid-senior level") || textLower.includes("mid senior")) {
+                                    extractedExp = "2-5 Yrs";
+                                } else if (textLower.includes("director") || textLower.includes("executive")) {
+                                    extractedExp = "8-15 Yrs";
+                                } else {
+                                    extractedExp = "2-4 Yrs";
+                                }
+                            }
+                        }
+
                         return {
                             id: extractedId,
                             title,
                             company,
+                            companyNormalized,
                             location: locationStr,
                             postedDate: postedStr,
                             url: extractedId ? `https://www.linkedin.com/jobs/view/${extractedId}/` : (href ? `https://www.linkedin.com${href}` : ""),
                             isEasyApply,
                             applyType: "EASY_APPLY",
                             portal: "linkedin",
-                            experience: "1-6 Yrs"
+                            experience: extractedExp,
+                            experienceString: extractedExp
                         };
                     }).filter(c => Boolean(c.id && c.title));
                 }).catch(err => {
@@ -81,9 +124,13 @@ class LinkedInDiscovery {
                     return [];
                 });
 
+                const { parseExperience } = require("../../router/ExperienceEligibilityFilter");
                 for (const job of cardsData) {
                     if (!seenJobIds.has(job.id)) {
                         seenJobIds.add(job.id);
+                        const expParsed = parseExperience(job.experience);
+                        job.experienceMin = expParsed.min;
+                        job.experienceMax = expParsed.max;
                         discoveredJobs.push(job);
                     }
                 }
