@@ -351,6 +351,9 @@ const server = http.createServer(async (req, res) => {
                 } catch (err) {}
             }
 
+            return sendJson(res, 200, { success: true, processedCount: processed });
+        }
+
         // --- LinkedIn Persistence API Endpoints ---
         if (pathname === "/api/linkedin/daily-count" && method === "GET") {
             const dateStr = parsedUrl.query.date || new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
