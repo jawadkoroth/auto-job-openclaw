@@ -17,8 +17,8 @@ const telegramService = require("../apps/telegram");
 const { validatePortalConfig } = require("../packages/config/validation");
 const pluginManager = require("../packages/plugins/PluginManager");
 const browserPool = require("../packages/browser/BrowserPool");
-const config = require("../packages/config");
 const { checkExperienceEligibility } = require("../packages/router/ExperienceEligibilityFilter");
+const intelligentJobRanker = require("../packages/router/IntelligentJobRanker");
 
 function normalizeFailureReason(errMessage, statusReason) {
     const raw = String(statusReason || errMessage || "").toUpperCase();
@@ -153,7 +153,8 @@ function normalizeFailureReason(errMessage, statusReason) {
                 continue;
             }
 
-            // Keyword Match
+            // Exclude SRE roles & Keyword Match
+            if (intelligentJobRanker.isSreRole(job.title)) continue;
             const matchesKeyword = config.search.keywords.some(kw => job.title.toLowerCase().includes(kw.toLowerCase()));
             if (!matchesKeyword) continue;
 

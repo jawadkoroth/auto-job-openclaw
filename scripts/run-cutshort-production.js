@@ -9,7 +9,7 @@ const eventBus = require("../packages/events/EventBus");
 const candidateKnowledgeService = require("../packages/knowledge/CandidateKnowledgeService");
 const conversationEngine = require("../packages/automation/ConversationEngine");
 const { checkLocationEligibility } = require("../packages/router/LocationEligibilityFilter");
-const { checkExperienceEligibility } = require("../packages/router/ExperienceEligibilityFilter");
+const intelligentJobRanker = require("../packages/router/IntelligentJobRanker");
 const telegramService = require("../apps/telegram");
 
 const TARGET_ROLES = [
@@ -22,7 +22,7 @@ const TARGET_ROLES = [
     "Azure DevOps Engineer",
     "GCP DevOps Engineer",
     "Kubernetes Engineer",
-    "Site Reliability Engineer"
+    "Cloud Platform Engineer"
 ];
 const MAX_APPLICATIONS_PER_RUN = parseInt(process.env.MAX_APPLICATIONS_PER_RUN || "3", 10);
 const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.MAX_APPLICATIONS_PER_DAY || "6", 10);
@@ -221,8 +221,9 @@ function resolveQuestionAnswer(questionText, options = []) {
 
                     // Role Matching Check
                     const titleLower = title.toLowerCase();
+                    if (intelligentJobRanker.isSreRole(title)) continue;
                     const isArchitectOrManager = titleLower.includes("architect") || titleLower.includes("manager") || titleLower.includes("director") || titleLower.includes("designer") || titleLower.includes("full stack");
-                    const isDevOpsTarget = titleLower.includes("devops") || titleLower.includes("cloud") || titleLower.includes("platform") || titleLower.includes("infrastructure") || titleLower.includes("sre") || titleLower.includes("kubernetes") || titleLower.includes("aws") || titleLower.includes("site reliability");
+                    const isDevOpsTarget = titleLower.includes("devops") || titleLower.includes("cloud") || titleLower.includes("platform") || titleLower.includes("infrastructure") || titleLower.includes("kubernetes") || titleLower.includes("aws");
 
                     if (isArchitectOrManager || !isDevOpsTarget) continue;
                     telemetry.RoleEligible++;
@@ -290,6 +291,9 @@ function resolveQuestionAnswer(questionText, options = []) {
             }
         }
 
+        const rankedCandidates = intelligentJobRanker.rankJobs(discovered);
+        discovered.length = 0;
+        discovered.push(...rankedCandidates);
         telemetry.FinalCandidates = discovered.length;
         console.log(`✓ Discovered ${discovered.length} relevant eligible unapplied Cutshort jobs.`);
 

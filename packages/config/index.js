@@ -45,7 +45,7 @@ module.exports = {
     },
 
     search: {
-        keywords: (process.env.SEARCH_KEYWORDS || "DevOps Engineer, Cloud Engineer, Platform Engineer, Site Reliability Engineer, Infrastructure Engineer").split(",").map(s => s.trim()),
+        keywords: (process.env.SEARCH_KEYWORDS || "DevOps Engineer, Cloud Engineer, Platform Engineer, Infrastructure Engineer, Cloud Platform Engineer").split(",").map(s => s.trim()),
         locations: (process.env.SEARCH_LOCATIONS || "Bangalore, Hyderabad, Chennai, Kochi, Trivandrum, Remote").split(",").map(s => s.trim()),
         minExperience: getEnvInt("MIN_EXPERIENCE", 2),
         maxExperience: getEnvInt("MAX_EXPERIENCE", 5),

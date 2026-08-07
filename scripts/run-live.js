@@ -8,6 +8,7 @@ const fs = require("fs");
 const path = require("path");
 
 const { checkExperienceEligibility } = require("../packages/router/ExperienceEligibilityFilter");
+const intelligentJobRanker = require("../packages/router/IntelligentJobRanker");
 
 function sanitizeFilename(str) {
     return str.replace(/[^a-zA-Z0-9_-]/g, "_").toLowerCase().substring(0, 30);
@@ -144,6 +145,20 @@ function sanitizeFilename(str) {
                     continue;
                 }
 
+                // SRE Role Exclusion Check
+                if (intelligentJobRanker.isSreRole(job.title)) {
+                    portalStats[portal].skipped++;
+                    portalStats[portal].keywordMismatch++;
+                    if (isDebug) {
+                        logger.automation.info(`[${portal}] [SKIP] SRE role excluded: "${job.title}"`);
+                    }
+                    await db.run(
+                        "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, ignored, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 'Skipped', 'SRE Role Excluded')",
+                        [portal, job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
+                    ).catch(() => {});
+                    continue;
+                }
+
                 // Title Keyword Match
                 const matchesKeyword = config.search.keywords.some(kw => 
                     job.title.toLowerCase().includes(kw.toLowerCase())
@@ -195,6 +210,11 @@ function sanitizeFilename(str) {
 
                 candidateJobs.push(job);
             }
+
+            // Rank eligible candidate jobs using central IntelligentJobRanker
+            const rankedCandidateJobs = intelligentJobRanker.rankJobs(candidateJobs);
+            candidateJobs.length = 0;
+            candidateJobs.push(...rankedCandidateJobs);
 
             portalStats[portal].matchingFilters = candidateJobs.length;
             logger.automation.info(`[${portal}] Found ${candidateJobs.length} eligible jobs. Applying (Limit: ${maxApplicationsLimit})...`);

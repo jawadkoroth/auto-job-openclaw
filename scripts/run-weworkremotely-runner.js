@@ -5,6 +5,7 @@ const candidateKnowledgeService = require("../packages/knowledge/CandidateKnowle
 const WeWorkRemotelyPlugin = require("../packages/plugins/weworkremotely");
 const ExternalApplicationRouter = require("../packages/router/ExternalApplicationRouter");
 const { checkLocationEligibility } = require("../packages/router/LocationEligibilityFilter");
+const intelligentJobRanker = require("../packages/router/IntelligentJobRanker");
 
 const DRY_RUN = process.env.DRY_RUN !== "false";
 const ALLOW_LIVE_APPLICATIONS = process.env.ALLOW_LIVE_APPLICATIONS === "true";
@@ -74,8 +75,9 @@ async function runWwrRunner() {
 
     // Step 2: Relevance, Location & ATS Classification
     for (const job of discovered) {
+        if (intelligentJobRanker.isSreRole(job.title)) continue;
         const titleLower = job.title.toLowerCase();
-        const isRelevant = ["devops", "cloud", "platform", "infrastructure", "sre", "kubernetes", "aws"].some(k => titleLower.includes(k));
+        const isRelevant = ["devops", "cloud", "platform", "infrastructure", "kubernetes", "aws"].some(k => titleLower.includes(k));
         
         if (!isRelevant) continue;
         countRelevant++;
