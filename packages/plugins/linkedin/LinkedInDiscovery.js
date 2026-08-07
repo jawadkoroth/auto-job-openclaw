@@ -53,12 +53,13 @@ class LinkedInDiscovery {
 
                         const titleEl = card.querySelector(".job-card-list__title, .job-card-container__link, strong");
                         const companyEl = card.querySelector(".job-card-container__primary-description, .job-card-container__company-name");
-                        const locEl = card.querySelector(".job-card-container__metadata-item");
-                        const dateEl = card.querySelector("time, .job-card-container__footer-item");
+                        const metadataItems = Array.from(card.querySelectorAll(".job-card-container__metadata-item, .job-card-container__metadata-wrapper li, .job-card-container__primary-description span"));
+                        const metadataTexts = metadataItems.map(el => el.innerText.trim()).filter(Boolean);
 
                         const title = titleEl ? titleEl.innerText.trim() : "";
                         const company = companyEl ? companyEl.innerText.trim() : "";
-                        const locationStr = locEl ? locEl.innerText.trim() : "";
+                        const locationStr = metadataTexts[0] || (card.querySelector(".job-card-container__metadata-item") ? card.querySelector(".job-card-container__metadata-item").innerText.trim() : "India");
+                        const dateEl = card.querySelector("time, .job-card-container__footer-item");
                         const postedStr = dateEl ? dateEl.innerText.trim() : "Today";
                         const isEasyApply = Boolean(card.querySelector(".job-card-container__apply-method") || card.textContent.includes("Easy Apply"));
 
