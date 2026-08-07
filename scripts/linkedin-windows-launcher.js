@@ -154,39 +154,30 @@ async function main() {
         process.exit(0);
     }
 
-    // 3. Execute Target Runner Script
-    const scriptToRun = path.join(__dirname, "run-live.js");
+    // 3. Execute Target Production Runner Script
+    const scriptToRun = taskType === "profile" 
+        ? path.join(__dirname, "run-linkedin-profile-refresh.js")
+        : path.join(__dirname, "run-linkedin-production.js");
+    
     const passArgs = args.filter(a => a !== "--task" && a !== taskType);
 
-    // Isolate LinkedIn portal execution for run-live.js
-    process.env.ENABLE_LINKEDIN = "true";
-    process.env.ENABLE_NAUKRI = "false";
-    process.env.ENABLE_HIRIST = "false";
-    process.env.ENABLE_CUTSHORT = "false";
-
-    logger.info(`🚀 Launching child worker script: node ${scriptToRun} ${passArgs.join(" ")}`);
+    logger.info(`🚀 Launching production child worker script: node ${scriptToRun} ${passArgs.join(" ")}`);
 
     lock.release();
 
     const child = fork(scriptToRun, passArgs, {
-        env: {
-            ...process.env,
-            ENABLE_LINKEDIN: "true",
-            ENABLE_NAUKRI: "false",
-            ENABLE_HIRIST: "false",
-            ENABLE_CUTSHORT: "false"
-        },
+        env: process.env,
         stdio: "inherit"
     });
 
     child.on("exit", (code) => {
         if (code === 0) {
-            logger.info(`✅ Child worker script completed successfully. Marking slot(s) COMPLETED.`);
+            logger.info(`✅ Production child worker script completed successfully. Marking slot(s) COMPLETED.`);
             for (const slot of uncompletedSlots) {
                 markSlotState(dateStr, slot, "COMPLETED");
             }
         } else {
-            logger.error(`❌ Child worker script exited with error code ${code}.`);
+            logger.error(`❌ Production child worker script exited with error code ${code}.`);
             for (const slot of uncompletedSlots) {
                 markSlotState(dateStr, slot, "FAILED", `Exit code ${code}`);
             }

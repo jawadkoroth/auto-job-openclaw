@@ -72,8 +72,36 @@ runTest("Explicit 'start linkedin oracle' routes to Oracle Worker", () => {
     assert.strictEqual(workerOra.id, "oracle");
 });
 
-// 3. Schedule State Persistence Directory
-console.log("\n--- TEST GROUP 3: Schedule State Directory ---");
+// 3. Complete Production Architecture Component Verification
+console.log("\n--- TEST GROUP 3: Complete Production Component Existence ---");
+runTest("All production scripts and LinkedIn plugin modules exist", () => {
+    const prodRunner = path.join(__dirname, "run-linkedin-production.js");
+    const refreshRunner = path.join(__dirname, "run-linkedin-profile-refresh.js");
+    const launcherScript = path.join(__dirname, "linkedin-windows-launcher.js");
+    const bootstrapModule = path.join(__dirname, "../packages/plugins/linkedin/LinkedInSessionBootstrap.js");
+    const discoveryModule = path.join(__dirname, "../packages/plugins/linkedin/LinkedInDiscovery.js");
+    const applyEngineModule = path.join(__dirname, "../packages/plugins/linkedin/LinkedInApplyEngine.js");
+    const verifyModule = path.join(__dirname, "../packages/plugins/linkedin/LinkedInVerification.js");
+    const persistenceModule = path.join(__dirname, "../packages/plugins/linkedin/LinkedInPersistence.js");
+
+    assert.strictEqual(fs.existsSync(prodRunner), true, "run-linkedin-production.js must exist");
+    assert.strictEqual(fs.existsSync(refreshRunner), true, "run-linkedin-profile-refresh.js must exist");
+    assert.strictEqual(fs.existsSync(launcherScript), true, "linkedin-windows-launcher.js must exist");
+    assert.strictEqual(fs.existsSync(bootstrapModule), true, "LinkedInSessionBootstrap.js must exist");
+    assert.strictEqual(fs.existsSync(discoveryModule), true, "LinkedInDiscovery.js must exist");
+    assert.strictEqual(fs.existsSync(applyEngineModule), true, "LinkedInApplyEngine.js must exist");
+    assert.strictEqual(fs.existsSync(verifyModule), true, "LinkedInVerification.js must exist");
+    assert.strictEqual(fs.existsSync(persistenceModule), true, "LinkedInPersistence.js must exist");
+});
+
+runTest("linkedin-windows-launcher.js correctly references run-linkedin-production.js and removes run-live.js dependency", () => {
+    const launcherContent = fs.readFileSync(path.join(__dirname, "linkedin-windows-launcher.js"), "utf8");
+    assert.ok(launcherContent.includes("run-linkedin-production.js"), "Launcher must reference run-linkedin-production.js");
+    assert.ok(!launcherContent.includes("run-live.js"), "Launcher must NOT reference run-live.js");
+});
+
+// 4. Schedule State Persistence Directory
+console.log("\n--- TEST GROUP 4: Schedule State Directory ---");
 runTest("Sessions directory structure for LinkedIn exists or can be initialized", () => {
     const sessionDir = path.join(process.cwd(), "sessions", "linkedin");
     fs.mkdirpSync(sessionDir);
@@ -87,3 +115,4 @@ console.log("==================================================");
 if (failed > 0) {
     process.exit(1);
 }
+
