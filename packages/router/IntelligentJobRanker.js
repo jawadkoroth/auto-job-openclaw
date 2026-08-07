@@ -2,8 +2,8 @@ const { checkExperienceEligibility, parseExperience } = require("./ExperienceEli
 const { checkLocationEligibility } = require("./LocationEligibilityFilter");
 
 /**
- * Deterministic, explainable ranking engine for candidate job matches.
- * Centrally enforces role preferences, SRE exclusion, recency scoring, YOE fit, and portal-agnostic ranking.
+ * Deterministic, explainable ranking engine v2 for candidate job matches.
+ * Centrally enforces role preferences, SRE exclusion, continuous recency scoring, YOE fit, apply-type prioritization, and portal-agnostic ranking.
  */
 class IntelligentJobRanker {
     /**
@@ -13,14 +13,74 @@ class IntelligentJobRanker {
      */
     isSreRole(title = "") {
         const titleLower = (title || "").toLowerCase();
-        // Exclude site reliability, reliability engineer, reliability platform engineer, sre word variants
         const sreRegex = /\bsite reliability\b|\breliability engineer\b|\breliability platform engineer\b|\bsre\b/i;
         return sreRegex.test(titleLower);
     }
 
     /**
-     * Calculate recency score boost based on job age/posting date.
-     * <24h: +100 | 1–3 days: +70 | 4–7 days: +40 | 8–15 days: +15 | Older: 0
+     * Centralized detection for Apply Type across all job portals (LinkedIn, Naukri, Cutshort, Hirist, Foundit, WWR, etc.)
+     * Returns 'NATIVE' (+400), 'EASY_APPLY' (+250), or 'EXTERNAL' (-100).
+     * @param {Object} job 
+     * @returns {string} 'NATIVE' | 'EASY_APPLY' | 'EXTERNAL'
+     */
+    detectApplyType(job = {}) {
+        if (!job) return 'EXTERNAL';
+
+        const applyTypeRaw = (job.applyType || "").toString().toLowerCase().trim();
+        const buttonTextRaw = (job.buttonText || "").toString().toLowerCase().trim();
+        const portal = (job.portal || "").toString().toLowerCase().trim();
+        const url = (job.url || "").toString().toLowerCase().trim();
+
+        // 1. Easy Apply / One-Click Apply Detection
+        if (
+            job.isEasyApply === true || 
+            applyTypeRaw === 'easy_apply' || 
+            applyTypeRaw === 'easy apply' ||
+            /easy apply|one-click|quick apply/i.test(applyTypeRaw) ||
+            /easy apply|one-click|quick apply/i.test(buttonTextRaw)
+        ) {
+            return 'EASY_APPLY';
+        }
+
+        // 2. Explicit External Detection
+        if (
+            job.isExternal === true || 
+            applyTypeRaw === 'external' || 
+            /external|company site|company website|apply on company site/i.test(applyTypeRaw) ||
+            /external|company site|company website|apply on company site/i.test(buttonTextRaw)
+        ) {
+            return 'EXTERNAL';
+        }
+
+        // 3. Explicit Native Detection
+        if (
+            job.isNative === true || 
+            applyTypeRaw === 'native' || 
+            /native|in-app|instant apply/i.test(applyTypeRaw)
+        ) {
+            return 'NATIVE';
+        }
+
+        // 4. Portal-specific default classifications
+        if (portal === 'weworkremotely' || portal === 'remoteok') {
+            return 'EXTERNAL';
+        }
+
+        // LinkedIn default: if not explicit Easy Apply, standard LinkedIn links point to external company site
+        if (portal === 'linkedin') {
+            if (/easy apply/i.test(`${job.title || ''} ${job.description || ''}`)) {
+                return 'EASY_APPLY';
+            }
+            return 'EXTERNAL';
+        }
+
+        // Default for Naukri, Cutshort, Hirist, Foundit, Instahyre native cards:
+        return 'NATIVE';
+    }
+
+    /**
+     * Calculate continuous recency score boost based on job age/posting date.
+     * 0-24h: +100 | 24-48h: +80 | 48-72h: +60 | 3-5d: +40 | 5-7d: +25 | 7-15d: +10 | Older / Missing: 0
      * @param {Object} job 
      * @returns {number} Recency score
      */
@@ -28,9 +88,11 @@ class IntelligentJobRanker {
         if (job.ageDays !== undefined && job.ageDays !== null && !isNaN(Number(job.ageDays))) {
             const days = Number(job.ageDays);
             if (days <= 1) return 100;
-            if (days <= 3) return 70;
-            if (days <= 7) return 40;
-            if (days <= 15) return 15;
+            if (days <= 2) return 80;
+            if (days <= 3) return 60;
+            if (days <= 5) return 40;
+            if (days <= 7) return 25;
+            if (days <= 15) return 10;
             return 0;
         }
 
@@ -38,24 +100,34 @@ class IntelligentJobRanker {
 
         if (!dateText) return 0;
 
-        // <24h indicators: "just posted", "today", "few hours", "hour ago", "hours ago", "0d ago", "1d ago", "1 day ago", "24h", "24 hours", "minute", "moments", "just now", "new"
+        // 0–24h: "just posted", "today", "just now", "moments ago", "hours ago", "0d", "1d ago", "1 day ago", "24h", "new"
         if (/just posted|today|just now|moments ago|\bhours? ago|\b\d+\s*mins?|\b\d+\s*minutes?|0d|1d ago|1 day ago|24h|24\s*hours?|\bnew\b/i.test(dateText)) {
             return 100;
         }
 
-        // 1-3 days indicators: "2 days ago", "3 days ago", "2d ago", "3d ago", "2 days", "3 days"
-        if (/2\s*days?|3\s*days?|2d|3d/i.test(dateText)) {
-            return 70;
+        // 24–48h: "2 days ago", "2d ago", "48h", "2 days"
+        if (/2\s*days? ago|2d ago|48h|2\s*days?/i.test(dateText)) {
+            return 80;
         }
 
-        // 4-7 days indicators: "4 days", "5 days", "6 days", "7 days", "4d", "5d", "6d", "7d", "1 week"
-        if (/[4-7]\s*days?|[4-7]d|1\s*week/i.test(dateText)) {
+        // 48–72h: "3 days ago", "3d ago", "72h", "3 days"
+        if (/3\s*days? ago|3d ago|72h|3\s*days?/i.test(dateText)) {
+            return 60;
+        }
+
+        // 3–5 days: "4 days", "5 days", "4d", "5d"
+        if (/[4-5]\s*days?|[4-5]d/i.test(dateText)) {
             return 40;
         }
 
-        // 8-15 days indicators: "8 days"..."15 days", "8d"..."15d", "2 weeks"
+        // 5–7 days: "6 days", "7 days", "6d", "7d", "1 week"
+        if (/[6-7]\s*days?|[6-7]d|1\s*week/i.test(dateText)) {
+            return 25;
+        }
+
+        // 7–15 days: "8 days"..."15 days", "8d"..."15d", "2 weeks"
         if (/(?:8|9|1[0-5])\s*days?|(?:8|9|1[0-5])d|2\s*weeks/i.test(dateText)) {
-            return 15;
+            return 10;
         }
 
         return 0;
@@ -105,7 +177,7 @@ class IntelligentJobRanker {
                 rankScore: 0,
                 isEligible: false,
                 ineligibleReason: "SRE_EXCLUDED: Title contains SRE / Site Reliability keyword.",
-                breakdown: { role: 0, recency: 0, yoe: 0, location: 0, nativeBonus: 0, company: 0, skill: 0, salary: 0 },
+                breakdown: { applyTypeScore: 0, recency: 0, yoe: 0, location: 0, company: 0, skill: 0, salary: 0, role: 0 },
                 selectionReason: "INELIGIBLE (SRE EXCLUDED)"
             };
         }
@@ -118,12 +190,73 @@ class IntelligentJobRanker {
                 rankScore: 0,
                 isEligible: false,
                 ineligibleReason: !expCheck.eligible ? expCheck.reason : locCheck.reason,
-                breakdown: { role: 0, recency: 0, yoe: 0, location: 0, nativeBonus: 0, company: 0, skill: 0, salary: 0 },
+                breakdown: { applyTypeScore: 0, recency: 0, yoe: 0, location: 0, company: 0, skill: 0, salary: 0, role: 0 },
                 selectionReason: "INELIGIBLE"
             };
         }
 
-        // 2. Role Relevance Score (Base)
+        // 2. Apply Type Score (Native: +400 | Easy Apply: +250 | External: -100)
+        const applyTypeCategory = this.detectApplyType(job);
+        let applyTypeScore = 0;
+        if (applyTypeCategory === 'NATIVE') applyTypeScore = 400;
+        else if (applyTypeCategory === 'EASY_APPLY') applyTypeScore = 250;
+        else if (applyTypeCategory === 'EXTERNAL') applyTypeScore = -100;
+
+        // 3. Recency Score (0-24h: +100 | 24-48h: +80 | 48-72h: +60 | 3-5d: +40 | 5-7d: +25 | 7-15d: +10 | Older/Missing: 0)
+        const recencyScore = this.calculateRecencyScore(job);
+
+        // 4. Experience Fit Score (YOE Bonus)
+        const yoeBonus = this.calculateYoeBonus(experienceStr);
+
+        // 5. Location Score (Bangalore: +30 | Remote: +20 | Other India Hubs: +10)
+        let locationScore = 0;
+        const locLower = locationStr.toLowerCase();
+        if (locLower.includes("bangalore") || locLower.includes("bengaluru")) {
+            locationScore = 30;
+        } else if (locLower.includes("remote") || locLower.includes("work from home")) {
+            locationScore = 20;
+        } else if (/hyderabad|pune|chennai|mumbai|gurugram|noida|delhi|kochi|trivandrum/i.test(locLower)) {
+            locationScore = 10;
+        } else {
+            locationScore = 5;
+        }
+
+        // 6. Skill Match Score (Max 25 Pts)
+        const primarySkills = ["aws", "kubernetes", "terraform", "docker", "ci/cd", "linux"];
+        const secondarySkills = ["python", "jenkins", "ansible", "azure", "gcp", "prometheus", "grafana", "github actions"];
+        const combinedText = `${titleLower} ${skillsText}`;
+        const matchedSkillsList = [];
+
+        let skillScore = 0;
+        for (const skill of primarySkills) {
+            if (combinedText.includes(skill)) {
+                skillScore += 3;
+                matchedSkillsList.push(skill.toUpperCase());
+            }
+        }
+        for (const skill of secondarySkills) {
+            if (combinedText.includes(skill)) {
+                skillScore += 2;
+                matchedSkillsList.push(skill.toUpperCase());
+            }
+        }
+        skillScore = Math.min(25, skillScore);
+        if (skillScore === 0) skillScore = 5; // Baseline skill match
+
+        // 7. Company Quality Bonus
+        let companyScore = 0;
+        if (job.isTopCompany || /amazon|google|microsoft|cisco|walmart|accenture|tcs|infosys|wipro|cognizant|ibm|capgemini|oracle|salesforce|vmware|redhat/i.test(company)) {
+            companyScore = 15;
+        }
+
+        // 8. Salary Availability Score (+10 Pts if disclosed)
+        let salaryScore = 0;
+        const salStr = (job.salary || "").trim().toLowerCase();
+        if (salStr && !salStr.includes("not disclosed") && !salStr.includes("undisclosed") && !salStr.includes("n/a")) {
+            salaryScore = 10;
+        }
+
+        // 9. Role Relevance Score (Base)
         const directDevOpsRoles = [
             "devops engineer", "cloud engineer", "cloud devops engineer",
             "platform engineer", "infrastructure engineer", "cloud infrastructure engineer",
@@ -151,79 +284,22 @@ class IntelligentJobRanker {
             roleScore = 15;
         }
 
-        // 3. Native Application Preference Bonus
-        const isExternal = job.isExternal === true || job.applyType === 'EXTERNAL';
-        const nativeBonus = !isExternal ? 400 : 0;
-
-        // 4. Recency Score (<24h: +100 | 1-3d: +70 | 4-7d: +40 | 8-15d: +15 | Older: 0)
-        const recencyScore = this.calculateRecencyScore(job);
-
-        // 5. Experience Fit Score (YOE Bonus)
-        const yoeBonus = this.calculateYoeBonus(experienceStr);
-
-        // 6. Location Score (Bangalore: +30 | Remote: +20 | Other India Hubs: +10)
-        let locationScore = 0;
-        const locLower = locationStr.toLowerCase();
-        if (locLower.includes("bangalore") || locLower.includes("bengaluru")) {
-            locationScore = 30;
-        } else if (locLower.includes("remote") || locLower.includes("work from home")) {
-            locationScore = 20;
-        } else if (/hyderabad|pune|chennai|mumbai|gurugram|noida|delhi|kochi|trivandrum/i.test(locLower)) {
-            locationScore = 10;
-        } else {
-            locationScore = 5;
-        }
-
-        // 7. Company Quality Bonus
-        let companyScore = 0;
-        if (job.isTopCompany || /amazon|google|microsoft|cisco|walmart|accenture|tcs|infosys|wipro|cognizant|ibm|capgemini|oracle|salesforce|vmware|redhat/i.test(company)) {
-            companyScore = 15;
-        }
-
-        // 8. Skill Match Score (Max 25 Pts)
-        const primarySkills = ["aws", "kubernetes", "terraform", "docker", "ci/cd", "linux"];
-        const secondarySkills = ["python", "jenkins", "ansible", "azure", "gcp", "prometheus", "grafana", "github actions"];
-        const combinedText = `${titleLower} ${skillsText}`;
-        const matchedSkillsList = [];
-
-        let skillScore = 0;
-        for (const skill of primarySkills) {
-            if (combinedText.includes(skill)) {
-                skillScore += 3;
-                matchedSkillsList.push(skill.toUpperCase());
-            }
-        }
-        for (const skill of secondarySkills) {
-            if (combinedText.includes(skill)) {
-                skillScore += 2;
-                matchedSkillsList.push(skill.toUpperCase());
-            }
-        }
-        skillScore = Math.min(25, skillScore);
-        if (skillScore === 0) skillScore = 5; // Baseline skill match
-
-        // 9. Salary Availability Score (+10 Pts if disclosed)
-        let salaryScore = 0;
-        const salStr = (job.salary || "").trim().toLowerCase();
-        if (salStr && !salStr.includes("not disclosed") && !salStr.includes("undisclosed") && !salStr.includes("n/a")) {
-            salaryScore = 10;
-        }
-
         // Final Total Rank Score Calculation
-        const totalScore = nativeBonus + recencyScore + yoeBonus + locationScore + companyScore + Math.round(skillScore) + salaryScore + roleScore;
+        const totalScore = applyTypeScore + recencyScore + yoeBonus + locationScore + Math.round(skillScore) + companyScore + salaryScore + roleScore;
 
-        const selectionReason = `Score: ${totalScore} | Native (${nativeBonus}) | Recency (${recencyScore}) | YOE (${yoeBonus}) | Loc (${locationScore}) | Company (${companyScore}) | Skills (${Math.round(skillScore)}) | Salary (${salaryScore}) | Role (${roleScore})`;
+        const selectionReason = `Score: ${totalScore} | ApplyType: ${applyTypeCategory} (${applyTypeScore}) | Recency (${recencyScore}) | YOE (${yoeBonus}) | Loc (${locationScore}) | Skills (${Math.round(skillScore)}) | Company (${companyScore}) | Salary (${salaryScore}) | Role (${roleScore})`;
 
         return {
             rankScore: totalScore,
             isEligible: true,
             breakdown: {
-                nativeBonus,
+                applyType: applyTypeCategory,
+                applyTypeScore,
                 recency: recencyScore,
                 yoeBonus,
                 location: locationScore,
-                company: companyScore,
                 skill: Math.round(skillScore),
+                company: companyScore,
                 salary: salaryScore,
                 role: roleScore
             },
@@ -266,4 +342,5 @@ class IntelligentJobRanker {
 }
 
 module.exports = new IntelligentJobRanker();
+
 
