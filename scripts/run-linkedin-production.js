@@ -180,14 +180,14 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
             }
 
             if (result.status === "SUBMITTED") {
-                const verifyResult = await linkedinVerification.verifyApplication(page, job);
+                const verifyResult = await linkedinVerification.verifyApplication(page, job, { networkLogs: result.networkLogs, transitions: result.transitions });
                 if (verifyResult.verified) {
                     telemetry.LiveApplied++;
                     await oraclePersistence.updateJobStatus(jobId, "APPLIED", 1);
                     await oraclePersistence.recordEvent(`evt_app_${Date.now()}`, jobId, "linkedin", "APPLICATION_SUBMITTED", { verified: true });
-                    logger.info(`✅ [STATE_TRANSITION] Job ${jobId} | 'SUBMITTED' -> 'VERIFIED' (Live Application Completed)`);
+                    logger.info(`✅ [STATE_TRANSITION] Job ${jobId} | 'SUBMITTED' -> 'VERIFIED_APPLIED' (Authoritative Proof Verified)`);
 
-                    const tgMsg = `<b>✅ LinkedIn Easy Apply Submitted</b>\n\n` +
+                    const tgMsg = `<b>✅ LinkedIn Easy Apply Submitted & Verified</b>\n\n` +
                         `• <b>Title</b>: <code>${job.title}</code>\n` +
                         `• <b>Company</b>: <code>${job.company}</code>\n` +
                         `• <b>Rank Score</b>: <code>${job.rankScore}</code>\n` +
@@ -197,7 +197,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
                 } else {
                     telemetry.Failed++;
                     await oraclePersistence.updateJobStatus(jobId, "UNVERIFIED", 0);
-                    logger.warn(`⚠️ [STATE_TRANSITION] Job ${jobId} | 'SUBMITTED' -> 'UNVERIFIED' (Verification Failed)`);
+                    logger.warn(`⚠️ [STATE_TRANSITION] Job ${jobId} | 'SUBMITTED' -> 'UNVERIFIED' (Root Cause: ${verifyResult.reason})`);
                 }
             } else {
                 telemetry.Failed++;

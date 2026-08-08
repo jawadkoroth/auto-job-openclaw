@@ -1,3 +1,5 @@
+const path = require("path");
+const fs = require("fs-extra");
 const candidateKnowledgeService = require("../../knowledge/CandidateKnowledgeService");
 const telegramService = require("../../../apps/telegram");
 const logger = require("../../logger").plugin("linkedin");
@@ -10,19 +12,51 @@ class LinkedInApplyEngine {
      * @param {Page} page Playwright Page
      * @param {Object} job Target Job Card
      * @param {Object} options Options { dryRun: boolean }
-     * @returns {Promise<Object>} Apply Result { status, verified, error, reason, transitions }
+     * @returns {Promise<Object>} Apply Result { status, verified, error, reason, transitions, networkLogs }
      */
     async applyJob(page, job, options = {}) {
         const isDryRun = options.dryRun === true || process.env.DRY_RUN === "true";
         const jobId = job.id || job.job_id;
         const jobUrl = job.url || `https://www.linkedin.com/jobs/view/${jobId}/`;
         const transitions = [];
+        const networkLogs = [];
+
+        const evidenceDir = path.join(process.cwd(), "logs", "linkedin", String(jobId));
+        await fs.mkdirp(evidenceDir);
 
         const logTransition = (fromState, toState, details = "") => {
             const timestamp = new Date().toISOString();
             transitions.push({ from: fromState, to: toState, timestamp, details });
             logger.info(`[${timestamp}] [STATE_TRANSITION] Job ${jobId} | '${fromState}' -> '${toState}'${details ? ` | ${details}` : ""}`);
         };
+
+        // Attach network response listener for Easy Apply submission API traffic
+        const responseListener = (response) => {
+            const url = response.url();
+            if (url.includes("voyager/api") || url.includes("easyApply") || url.includes("/jobs/") || url.includes("graphql") || url.includes("api/")) {
+                const method = response.request().method();
+                const status = response.status();
+                let durationMs = null;
+                try {
+                    const req = response.request();
+                    if (req && typeof req.timing === "function") {
+                        const timing = req.timing();
+                        if (timing && timing.responseEnd > 0) {
+                            durationMs = Math.round(timing.responseEnd - timing.requestStart);
+                        }
+                    }
+                } catch (e) {}
+
+                networkLogs.push({
+                    timestamp: new Date().toISOString(),
+                    url,
+                    method,
+                    status,
+                    durationMs
+                });
+            }
+        };
+        page.on("response", responseListener);
 
         logTransition("RANKED", "CANDIDATE_SELECTED", `Title: '${job.title}', Company: '${job.company}'`);
 
@@ -36,7 +70,8 @@ class LinkedInApplyEngine {
             if (pageText.includes("application submitted") || pageText.includes("already applied") || pageText.includes("applied on")) {
                 logger.info(`[ApplyEngine] Job ${jobId} is already applied on LinkedIn.`);
                 logTransition("CANDIDATE_SELECTED", "ALREADY_APPLIED", "Application record found on page");
-                return { status: "ALREADY_APPLIED", verified: true, transitions };
+                page.off("response", responseListener);
+                return { status: "ALREADY_APPLIED", verified: true, transitions, networkLogs };
             }
 
             // Find Easy Apply button (supports both <button> and <a> elements)
@@ -62,7 +97,8 @@ class LinkedInApplyEngine {
             if (!applyBtn) {
                 logger.warn(`[ApplyEngine] Easy Apply button not visible for job ${jobId}. (May be external or closed)`);
                 logTransition("CANDIDATE_SELECTED", "SKIPPED_EXTERNAL_ONLY", "No Easy Apply button found");
-                return { status: "SKIPPED_EXTERNAL_ONLY", verified: false, reason: "No Easy Apply button", transitions };
+                page.off("response", responseListener);
+                return { status: "SKIPPED_EXTERNAL_ONLY", verified: false, reason: "No Easy Apply button", transitions, networkLogs };
             }
 
             logger.info(`[ApplyEngine] Clicking 'Easy Apply' button for job ${jobId}...`);
@@ -70,9 +106,14 @@ class LinkedInApplyEngine {
             logTransition("CANDIDATE_SELECTED", "EASY_APPLY_OPENED", "Easy Apply button clicked");
             await delay(2500);
 
+            // Save before_submit.png screenshot immediately upon modal open
+            const beforeSubmitScreenshotPath = path.join(evidenceDir, "before_submit.png");
+            await page.screenshot({ path: beforeSubmitScreenshotPath, fullPage: false }).catch(() => {});
+
             // Easy Apply Modal Multi-Step Form Loop
             let stepCount = 0;
             const maxSteps = 10;
+            let currentState = "EASY_APPLY_OPENED";
 
             while (stepCount < maxSteps) {
                 stepCount++;
@@ -81,26 +122,41 @@ class LinkedInApplyEngine {
                     return modal ? modal.innerText : "";
                 }).catch(() => "");
 
-                // Check for completion or final submit step
+                const isReviewPage = /review your application|review/i.test(modalText);
                 const isFinalSubmitStep = /submit application|submit/i.test(modalText) && !/next/i.test(modalText);
 
+                if (isReviewPage) {
+                    logTransition(currentState, "REVIEW_PAGE", `Form page ${stepCount} is Review step`);
+                    currentState = "REVIEW_PAGE";
+                } else if (!isFinalSubmitStep) {
+                    const pageState = `QUESTIONNAIRE_PAGE_${stepCount}`;
+                    logTransition(currentState, pageState, `Form page ${stepCount}`);
+                    currentState = pageState;
+                }
+
                 if (isFinalSubmitStep) {
-                    logTransition("EASY_APPLY_OPENED", "QUESTIONNAIRE_COMPLETED", "Final submit form step reached");
+                    logTransition(currentState, "SUBMIT_CLICKED", "Final submit button reached");
+                    currentState = "SUBMIT_CLICKED";
+
+                    // Save before_submit.png screenshot
+                    const beforeSubmitScreenshotPath = path.join(evidenceDir, "before_submit.png");
+                    await page.screenshot({ path: beforeSubmitScreenshotPath, fullPage: false }).catch(() => {});
 
                     if (isDryRun) {
                         logger.info(`[ApplyEngine] 🛑 [DRY_RUN] Final Submit button reached for Job ${jobId}. Closing modal without submitting.`);
                         await this.dismissModal(page);
-                        logTransition("QUESTIONNAIRE_COMPLETED", "DRY_RUN_MODAL_DISMISSED", "Modal closed in dry run");
-                        logTransition("DRY_RUN_MODAL_DISMISSED", "DRY_RUN_PASSED", "Dry run form verification passed");
-                        return { status: "DRY_RUN_PASSED", verified: true, isDryRun: true, transitions };
+                        logTransition("SUBMIT_CLICKED", "DRY_RUN_PASSED", "Modal closed cleanly in dry run");
+                        page.off("response", responseListener);
+                        return { status: "DRY_RUN_PASSED", verified: true, isDryRun: true, transitions, networkLogs };
                     } else {
                         logger.info(`[ApplyEngine] 🚀 Clicking final 'Submit application' button for Job ${jobId}...`);
                         const submitBtn = page.locator(".jobs-easy-apply-modal button:has-text('Submit application'), div[role='dialog'] button:has-text('Submit')").first();
                         if (await submitBtn.isVisible().catch(() => false)) {
                             await submitBtn.click();
-                            logTransition("QUESTIONNAIRE_COMPLETED", "SUBMITTED", "Submit application button clicked");
+                            logTransition("SUBMIT_CLICKED", "SUBMITTED", "Submit application button clicked");
                             await delay(3000);
-                            return { status: "SUBMITTED", verified: true, isDryRun: false, transitions };
+                            page.off("response", responseListener);
+                            return { status: "SUBMITTED", verified: true, isDryRun: false, transitions, networkLogs };
                         }
                     }
                 }
@@ -109,7 +165,7 @@ class LinkedInApplyEngine {
                 const unansweredQuestion = await this.fillModalQuestions(page, job);
                 if (unansweredQuestion) {
                     logger.warn(`[ApplyEngine] ⚠️ Unanswered question encountered: '${unansweredQuestion}'. Halting as WAITING_FOR_INPUT.`);
-                    logTransition("EASY_APPLY_OPENED", "WAITING_FOR_INPUT", `Unresolved question: ${unansweredQuestion}`);
+                    logTransition(currentState, "WAITING_FOR_INPUT", `Unresolved question: ${unansweredQuestion}`);
 
                     const tgMsg = `<b>❓ Candidate Action Required (LinkedIn Question)</b>\n\n` +
                         `• <b>Portal</b>: <code>LinkedIn</code>\n` +
@@ -119,7 +175,8 @@ class LinkedInApplyEngine {
                     await telegramService.sendMessage(tgMsg).catch(() => {});
 
                     await this.dismissModal(page);
-                    return { status: "WAITING_FOR_INPUT", verified: false, reason: "UNANSWERED_QUESTION", questionText: unansweredQuestion, transitions };
+                    page.off("response", responseListener);
+                    return { status: "WAITING_FOR_INPUT", verified: false, reason: "UNANSWERED_QUESTION", questionText: unansweredQuestion, transitions, networkLogs };
                 }
 
                 // Click Next / Review Button
@@ -132,20 +189,23 @@ class LinkedInApplyEngine {
                 }
             }
 
+            page.off("response", responseListener);
+
             if (isDryRun) {
                 await this.dismissModal(page);
-                logTransition("EASY_APPLY_OPENED", "DRY_RUN_PASSED", "Form loop finished cleanly in dry run");
-                return { status: "DRY_RUN_PASSED", verified: true, isDryRun: true, transitions };
+                logTransition(currentState, "DRY_RUN_PASSED", "Form loop finished cleanly in dry run");
+                return { status: "DRY_RUN_PASSED", verified: true, isDryRun: true, transitions, networkLogs };
             }
 
-            logTransition("EASY_APPLY_OPENED", "SUBMITTED", "Form loop completed in live mode");
-            return { status: "SUBMITTED", verified: true, isDryRun: false, transitions };
+            logTransition(currentState, "SUBMITTED", "Form loop completed in live mode");
+            return { status: "SUBMITTED", verified: true, isDryRun: false, transitions, networkLogs };
 
         } catch (err) {
             logger.error(`[ApplyEngine] Apply error for job ${jobId}: ${err.message}`);
             logTransition("CANDIDATE_SELECTED", "FAILED", err.message);
             await this.dismissModal(page);
-            return { status: "FAILED", verified: false, error: err.message, transitions };
+            page.off("response", responseListener);
+            return { status: "FAILED", verified: false, error: err.message, transitions, networkLogs };
         }
     }
 
