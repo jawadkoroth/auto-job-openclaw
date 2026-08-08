@@ -10,16 +10,24 @@ class LinkedInApplyEngine {
      * @param {Page} page Playwright Page
      * @param {Object} job Target Job Card
      * @param {Object} options Options { dryRun: boolean }
-     * @returns {Promise<Object>} Apply Result { status, verified, error, reason }
+     * @returns {Promise<Object>} Apply Result { status, verified, error, reason, transitions }
      */
     async applyJob(page, job, options = {}) {
         const isDryRun = options.dryRun === true || process.env.DRY_RUN === "true";
         const jobId = job.id || job.job_id;
         const jobUrl = job.url || `https://www.linkedin.com/jobs/view/${jobId}/`;
+        const transitions = [];
 
-        logger.info(`[ApplyEngine] Navigating to LinkedIn Job page: ${job.title} at ${job.company} (${jobUrl}) [DRY_RUN: ${isDryRun}]`);
+        const logTransition = (fromState, toState, details = "") => {
+            const timestamp = new Date().toISOString();
+            transitions.push({ from: fromState, to: toState, timestamp, details });
+            logger.info(`[${timestamp}] [STATE_TRANSITION] Job ${jobId} | '${fromState}' -> '${toState}'${details ? ` | ${details}` : ""}`);
+        };
+
+        logTransition("RANKED", "CANDIDATE_SELECTED", `Title: '${job.title}', Company: '${job.company}'`);
 
         try {
+            logger.info(`[ApplyEngine] Navigating to LinkedIn Job page: ${job.title} at ${job.company} (${jobUrl}) [Mode: ${isDryRun ? "DRY_RUN" : "LIVE"}]`);
             await page.goto(jobUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
             await delay(3000);
 
@@ -27,7 +35,8 @@ class LinkedInApplyEngine {
             const pageText = await page.evaluate(() => document.body ? document.body.innerText.toLowerCase() : "").catch(() => "");
             if (pageText.includes("application submitted") || pageText.includes("already applied") || pageText.includes("applied on")) {
                 logger.info(`[ApplyEngine] Job ${jobId} is already applied on LinkedIn.`);
-                return { status: "ALREADY_APPLIED", verified: true };
+                logTransition("CANDIDATE_SELECTED", "ALREADY_APPLIED", "Application record found on page");
+                return { status: "ALREADY_APPLIED", verified: true, transitions };
             }
 
             // Find Easy Apply button (supports both <button> and <a> elements)
@@ -52,11 +61,13 @@ class LinkedInApplyEngine {
 
             if (!applyBtn) {
                 logger.warn(`[ApplyEngine] Easy Apply button not visible for job ${jobId}. (May be external or closed)`);
-                return { status: "SKIPPED_EXTERNAL_ONLY", verified: false, reason: "No Easy Apply button" };
+                logTransition("CANDIDATE_SELECTED", "SKIPPED_EXTERNAL_ONLY", "No Easy Apply button found");
+                return { status: "SKIPPED_EXTERNAL_ONLY", verified: false, reason: "No Easy Apply button", transitions };
             }
 
             logger.info(`[ApplyEngine] Clicking 'Easy Apply' button for job ${jobId}...`);
             await applyBtn.click();
+            logTransition("CANDIDATE_SELECTED", "EASY_APPLY_OPENED", "Easy Apply button clicked");
             await delay(2500);
 
             // Easy Apply Modal Multi-Step Form Loop
@@ -74,17 +85,22 @@ class LinkedInApplyEngine {
                 const isFinalSubmitStep = /submit application|submit/i.test(modalText) && !/next/i.test(modalText);
 
                 if (isFinalSubmitStep) {
+                    logTransition("EASY_APPLY_OPENED", "QUESTIONNAIRE_COMPLETED", "Final submit form step reached");
+
                     if (isDryRun) {
-                        logger.info(`[ApplyEngine] 🛑 [DRY_RUN] Final Submit button reached for Job ${jobId}. Form steps completed cleanly. Halting before submit.`);
+                        logger.info(`[ApplyEngine] 🛑 [DRY_RUN] Final Submit button reached for Job ${jobId}. Closing modal without submitting.`);
                         await this.dismissModal(page);
-                        return { status: "DRY_RUN_COMPLETED", verified: true, isDryRun: true };
+                        logTransition("QUESTIONNAIRE_COMPLETED", "DRY_RUN_MODAL_DISMISSED", "Modal closed in dry run");
+                        logTransition("DRY_RUN_MODAL_DISMISSED", "DRY_RUN_PASSED", "Dry run form verification passed");
+                        return { status: "DRY_RUN_PASSED", verified: true, isDryRun: true, transitions };
                     } else {
                         logger.info(`[ApplyEngine] 🚀 Clicking final 'Submit application' button for Job ${jobId}...`);
                         const submitBtn = page.locator(".jobs-easy-apply-modal button:has-text('Submit application'), div[role='dialog'] button:has-text('Submit')").first();
                         if (await submitBtn.isVisible().catch(() => false)) {
                             await submitBtn.click();
+                            logTransition("QUESTIONNAIRE_COMPLETED", "SUBMITTED", "Submit application button clicked");
                             await delay(3000);
-                            return { status: "SUBMITTED", verified: true };
+                            return { status: "SUBMITTED", verified: true, isDryRun: false, transitions };
                         }
                     }
                 }
@@ -93,7 +109,8 @@ class LinkedInApplyEngine {
                 const unansweredQuestion = await this.fillModalQuestions(page, job);
                 if (unansweredQuestion) {
                     logger.warn(`[ApplyEngine] ⚠️ Unanswered question encountered: '${unansweredQuestion}'. Halting as WAITING_FOR_INPUT.`);
-                    
+                    logTransition("EASY_APPLY_OPENED", "WAITING_FOR_INPUT", `Unresolved question: ${unansweredQuestion}`);
+
                     const tgMsg = `<b>❓ Candidate Action Required (LinkedIn Question)</b>\n\n` +
                         `• <b>Portal</b>: <code>LinkedIn</code>\n` +
                         `• <b>Job</b>: <code>${job.title}</code> at <code>${job.company}</code>\n` +
@@ -102,7 +119,7 @@ class LinkedInApplyEngine {
                     await telegramService.sendMessage(tgMsg).catch(() => {});
 
                     await this.dismissModal(page);
-                    return { status: "WAITING_FOR_INPUT", verified: false, reason: "UNANSWERED_QUESTION", questionText: unansweredQuestion };
+                    return { status: "WAITING_FOR_INPUT", verified: false, reason: "UNANSWERED_QUESTION", questionText: unansweredQuestion, transitions };
                 }
 
                 // Click Next / Review Button
@@ -117,20 +134,22 @@ class LinkedInApplyEngine {
 
             if (isDryRun) {
                 await this.dismissModal(page);
-                return { status: "DRY_RUN_COMPLETED", verified: true, isDryRun: true };
+                logTransition("EASY_APPLY_OPENED", "DRY_RUN_PASSED", "Form loop finished cleanly in dry run");
+                return { status: "DRY_RUN_PASSED", verified: true, isDryRun: true, transitions };
             }
 
-            return { status: "SUBMITTED", verified: true };
+            logTransition("EASY_APPLY_OPENED", "SUBMITTED", "Form loop completed in live mode");
+            return { status: "SUBMITTED", verified: true, isDryRun: false, transitions };
 
         } catch (err) {
             logger.error(`[ApplyEngine] Apply error for job ${jobId}: ${err.message}`);
+            logTransition("CANDIDATE_SELECTED", "FAILED", err.message);
             await this.dismissModal(page);
-            return { status: "FAILED", verified: false, error: err.message };
+            return { status: "FAILED", verified: false, error: err.message, transitions };
         }
     }
 
     async fillModalQuestions(page, job) {
-        // Attempt to auto-resolve input fields, dropdowns, and radio buttons using CandidateKnowledgeService
         const questionsInfo = await page.evaluate(() => {
             const modal = document.querySelector(".jobs-easy-apply-modal, div[role='dialog']");
             if (!modal) return [];
@@ -149,7 +168,7 @@ class LinkedInApplyEngine {
             if (!q.hasValue) {
                 const answer = candidateKnowledgeService.resolveQuestion ? candidateKnowledgeService.resolveQuestion(q.labelText) : null;
                 if (!answer) {
-                    return q.labelText; // Return unresolved question prompt
+                    return q.labelText;
                 }
             }
         }

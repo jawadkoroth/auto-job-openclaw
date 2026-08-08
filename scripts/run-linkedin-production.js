@@ -30,7 +30,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
     logger.info("==================================================");
     logger.info("LINKEDIN HARDENED PRODUCTION AUTOMATION RUNNER");
     logger.info(`Execution Host: ${executionHost}`);
-    logger.info(`Mode: ${isDryRun ? "DRY RUN (No Applications Submitted)" : "ACTIVE PRODUCTION (Live Submissions)"}`);
+    logger.info(`Mode: ${isDryRun ? "DRY RUN (No Submissions)" : "ACTIVE PRODUCTION (Live Submissions)"}`);
     logger.info(`Execution Time: ${new Date().toISOString()}`);
     logger.info(`Limits: Max ${MAX_APPLICATIONS_PER_RUN} per run, Max ${MAX_APPLICATIONS_PER_DAY} per day`);
     logger.info("==================================================\n");
@@ -42,32 +42,25 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
     }
 
     await oraclePersistence.flushOutbox().catch(() => {});
-
     await db.init();
-    const candidateProfile = await candidateProfileService.getProfile().catch(() => ({}));
 
     const telemetry = {
         timestamp: new Date().toISOString(),
         isDryRun,
         discoveryStatus: "UNKNOWN",
         Discovered: 0,
-        RoleEligible: 0,
-        ExperienceEligible: 0,
-        LocationEligible: 0,
-        Duplicates: 0,
-        AlreadyApplied: 0,
-        Ranked: 0,
         FinalCandidates: 0,
         Attempted: 0,
-        Applied: 0,
-        EasyApplied: 0,
-        ExternalApplied: 0,
+        LiveApplied: 0,
+        DryRunPassed: 0,
+        SkippedExternal: 0,
         WaitingForInput: 0,
         Failed: 0,
         zeroApplicationReason: null,
         dailyLimit: MAX_APPLICATIONS_PER_DAY,
         dailyAppliedCount: 0,
-        dailyRemainingCapacity: 0
+        dailyRemainingCapacity: 0,
+        allTransitions: []
     };
 
     const saveTelemetry = () => {
@@ -107,11 +100,11 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
         process.exit(1);
     }
 
-    const { browser, context, page } = boot;
+    const { browser, page } = boot;
 
     try {
         // 2. Discovery & Ranking
-        logger.info("[Step 2] Discovering target DevOps/Cloud/Platform candidate jobs on LinkedIn...");
+        logger.info("[Step 2] [DISCOVERY] Searching target DevOps/Cloud/Platform candidate jobs on LinkedIn...");
         const discovered = await linkedinDiscovery.discoverJobs(page, {
             keywords: ["DevOps Engineer", "Cloud Engineer", "Platform Engineer", "Infrastructure Engineer"],
             location: "India",
@@ -130,14 +123,13 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
             process.exit(0);
         }
 
-        // 3. Filter Duplicates & Process Candidates
+        // 3. Filter Duplicates & Select Candidates
         const validCandidates = [];
         for (const job of discovered) {
             const jobId = job.id || job.job_id;
             const isDup = await oraclePersistence.isDuplicateJob(jobId, job.url);
             if (isDup) {
-                telemetry.Duplicates++;
-                logger.info(`[Filter] Job ID ${jobId} is already in Oracle DB / Outbox as applied. Skipping.`);
+                logger.info(`[Filter] Job ID ${jobId} is already in Oracle DB / Outbox. Skipping.`);
                 continue;
             }
 
@@ -148,7 +140,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
         }
 
         telemetry.FinalCandidates = validCandidates.length;
-        logger.info(`[Step 3] ${validCandidates.length} final candidate jobs ready for Easy Apply engine processing.`);
+        logger.info(`[Step 3] [CANDIDATES_SELECTED] ${validCandidates.length} final candidate jobs ready for Easy Apply engine processing.`);
 
         // 4. Easy Apply Engine Loop
         for (const job of validCandidates) {
@@ -156,19 +148,19 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
             telemetry.Attempted++;
 
             logger.info(`\n--------------------------------------------------`);
-            logger.info(`Processing Job: '${job.title}' at '${job.company}' (ID: ${jobId})`);
-            logger.info(`Score: ${job.rankScore} | Selection Reason: ${job.selectionReason}`);
+            logger.info(`Processing Job #${telemetry.Attempted}: '${job.title}' at '${job.company}' (ID: ${jobId})`);
+            logger.info(`Rank Score: ${job.rankScore} | Reason: ${job.selectionReason}`);
 
             await oraclePersistence.updateJobStatus(jobId, "APPLYING", 0);
 
             const result = await linkedinApplyEngine.applyJob(page, job, { dryRun: isDryRun });
+            if (result.transitions) telemetry.allTransitions.push(...result.transitions);
 
-            if (result.status === "DRY_RUN_COMPLETED") {
-                telemetry.Applied++;
-                telemetry.EasyApplied++;
+            if (result.status === "DRY_RUN_PASSED") {
+                telemetry.DryRunPassed++;
                 await oraclePersistence.updateJobStatus(jobId, "DRY_RUN_PASSED", 0);
                 await oraclePersistence.recordEvent(`evt_dry_${Date.now()}`, jobId, "linkedin", "DRY_RUN_PASSED", { jobTitle: job.title });
-                logger.info(`✅ [DRY_RUN] Successfully completed form navigation for Job ${jobId}.`);
+                logger.info(`✅ [STATE_TRANSITION] Job ${jobId} | 'DRY_RUN_MODAL_DISMISSED' -> 'DRY_RUN_PASSED'`);
                 continue;
             }
 
@@ -176,18 +168,25 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
                 telemetry.WaitingForInput++;
                 await oraclePersistence.updateJobStatus(jobId, "WAITING_FOR_INPUT", 0);
                 await oraclePersistence.recordEvent(`evt_wfi_${Date.now()}`, jobId, "linkedin", "WAITING_FOR_INPUT", { question: result.questionText });
-                logger.warn(`⚠️ Job ${jobId} set to WAITING_FOR_INPUT.`);
+                logger.warn(`⚠️ [STATE_TRANSITION] Job ${jobId} -> WAITING_FOR_INPUT.`);
+                continue;
+            }
+
+            if (result.status === "SKIPPED_EXTERNAL_ONLY") {
+                telemetry.SkippedExternal++;
+                await oraclePersistence.updateJobStatus(jobId, "SKIPPED_EXTERNAL_ONLY", 0);
+                logger.warn(`ℹ️ [STATE_TRANSITION] Job ${jobId} -> SKIPPED_EXTERNAL_ONLY (No Easy Apply button visible).`);
                 continue;
             }
 
             if (result.status === "SUBMITTED") {
                 const verifyResult = await linkedinVerification.verifyApplication(page, job);
                 if (verifyResult.verified) {
-                    telemetry.Applied++;
-                    telemetry.EasyApplied++;
+                    telemetry.LiveApplied++;
                     await oraclePersistence.updateJobStatus(jobId, "APPLIED", 1);
                     await oraclePersistence.recordEvent(`evt_app_${Date.now()}`, jobId, "linkedin", "APPLICATION_SUBMITTED", { verified: true });
-                    
+                    logger.info(`✅ [STATE_TRANSITION] Job ${jobId} | 'SUBMITTED' -> 'VERIFIED' (Live Application Completed)`);
+
                     const tgMsg = `<b>✅ LinkedIn Easy Apply Submitted</b>\n\n` +
                         `• <b>Title</b>: <code>${job.title}</code>\n` +
                         `• <b>Company</b>: <code>${job.company}</code>\n` +
@@ -198,10 +197,12 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
                 } else {
                     telemetry.Failed++;
                     await oraclePersistence.updateJobStatus(jobId, "UNVERIFIED", 0);
+                    logger.warn(`⚠️ [STATE_TRANSITION] Job ${jobId} | 'SUBMITTED' -> 'UNVERIFIED' (Verification Failed)`);
                 }
             } else {
                 telemetry.Failed++;
                 await oraclePersistence.updateJobStatus(jobId, result.status || "FAILED", 0);
+                logger.error(`❌ [STATE_TRANSITION] Job ${jobId} -> FAILED (${result.status || result.error})`);
             }
 
             await delay(2000);
@@ -215,13 +216,19 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
             `• <b>Mode</b>: <code>${isDryRun ? "DRY_RUN" : "LIVE"}</code>\n` +
             `• <b>Discovered</b>: <code>${telemetry.Discovered}</code>\n` +
             `• <b>Attempted</b>: <code>${telemetry.Attempted}</code>\n` +
-            `• <b>Applied / Passed</b>: <code>${telemetry.Applied}</code>\n` +
+            `• <b>${isDryRun ? "Dry Run Passed" : "Live Applied"}</b>: <code>${isDryRun ? telemetry.DryRunPassed : telemetry.LiveApplied}</code>\n` +
             `• <b>Waiting For Input</b>: <code>${telemetry.WaitingForInput}</code>\n` +
-            `• <b>Daily Progress</b>: <code>${telemetry.dailyAppliedCount + telemetry.Applied} / ${MAX_APPLICATIONS_PER_DAY}</code>`;
+            `• <b>Skipped (External)</b>: <code>${telemetry.SkippedExternal}</code>\n` +
+            `• <b>Daily Progress</b>: <code>${telemetry.dailyAppliedCount + (isDryRun ? 0 : telemetry.LiveApplied)} / ${MAX_APPLICATIONS_PER_DAY}</code>`;
 
         await telegramService.sendMessage(summaryMsg).catch(() => {});
+
         logger.info(`\n==================================================`);
-        logger.info(`RUN COMPLETED. Total Applied/Passed: ${telemetry.Applied}/${telemetry.Attempted}`);
+        if (isDryRun) {
+            logger.info(`RUN COMPLETED [DRY_RUN]. Dry Run Passed: ${telemetry.DryRunPassed}/${telemetry.Attempted} | Live Applied: 0 (DRY_RUN)`);
+        } else {
+            logger.info(`RUN COMPLETED [LIVE]. Live Applied: ${telemetry.LiveApplied}/${telemetry.Attempted}`);
+        }
         logger.info(`==================================================\n`);
 
     } catch (err) {
