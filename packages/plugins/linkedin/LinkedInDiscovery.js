@@ -76,7 +76,8 @@ class LinkedInDiscovery {
                         const locationStr = metadataTexts[0] || (card.querySelector(".job-card-container__metadata-item") ? card.querySelector(".job-card-container__metadata-item").innerText.trim() : "India");
                         const dateEl = card.querySelector("time, .job-card-container__footer-item");
                         const postedStr = dateEl ? dateEl.innerText.trim() : "Today";
-                        const isEasyApply = Boolean(card.querySelector(".job-card-container__apply-method") || card.textContent.includes("Easy Apply"));
+                        const cardLines = (card.innerText || "").split(/[\r\n]+/).map(l => l.trim().toLowerCase());
+                        const isEasyApply = Boolean(card.querySelector(".job-card-container__apply-method") || cardLines.includes("easy apply"));
 
                         // Experience extraction from card text
                         const fullCardText = card.innerText || "";
@@ -113,7 +114,7 @@ class LinkedInDiscovery {
                             postedDate: postedStr,
                             url: extractedId ? `https://www.linkedin.com/jobs/view/${extractedId}/` : (href ? `https://www.linkedin.com${href}` : ""),
                             isEasyApply,
-                            applyType: "EASY_APPLY",
+                            applyType: isEasyApply ? "EASY_APPLY" : "EXTERNAL",
                             portal: "linkedin",
                             experience: extractedExp,
                             experienceString: extractedExp

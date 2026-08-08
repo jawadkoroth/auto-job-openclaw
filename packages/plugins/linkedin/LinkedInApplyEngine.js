@@ -30,11 +30,16 @@ class LinkedInApplyEngine {
                 return { status: "ALREADY_APPLIED", verified: true };
             }
 
-            // Find Easy Apply button
+            // Find Easy Apply button (supports both <button> and <a> elements)
             const applyBtnLocators = [
                 page.locator("button.jobs-apply-button"),
+                page.locator("a.jobs-apply-button"),
+                page.locator(".jobs-apply-button"),
                 page.locator("button:has-text('Easy Apply')"),
-                page.locator("div.jobs-apply-button--top-card button")
+                page.locator("a:has-text('Easy Apply')"),
+                page.locator("[aria-label*='Easy Apply']"),
+                page.locator("div.jobs-apply-button--top-card button"),
+                page.locator("div.jobs-apply-button--top-card a")
             ];
 
             let applyBtn = null;
