@@ -60,11 +60,20 @@ function checkLocationEligibility(locationStr = "", titleStr = "") {
     }
 
     // India Eligible
-    if (text.includes("india") || text.includes("bengaluru") || text.includes("bangalore") || text.includes("mumbai") || text.includes("delhi") || text.includes("pune") || text.includes("hyderabad")) {
+    if (/(?:india|bengaluru|bangalore|mumbai|delhi|pune|hyderabad|gurgaon|gurugram|noida|chennai|kochi|cochin|trivandrum|thiruvananthapuram|kerala|ahmedabad|kolkata|chandigarh|jaipur|indore|surat)/i.test(text)) {
         return {
             eligible: true,
             category: "INDIA_ELIGIBLE",
             reason: "ELIGIBLE: Explicit India location listing."
+        };
+    }
+
+    // Generic Unrestricted Remote / Work From Home Eligible
+    if (/(?:remote|work from home|wfh|anywhere)/i.test(text)) {
+        return {
+            eligible: true,
+            category: "REMOTE_ELIGIBLE",
+            reason: "ELIGIBLE: Unrestricted Remote / Work-from-home listing."
         };
     }
 

@@ -367,7 +367,7 @@ class Database {
     async isDuplicateJob(portal, jobId) {
         await this.init().catch(() => {});
         const activeStatuses = [
-            "DISCOVERED", "APPLY_STARTED", "CONVERSATION_CREATED", 
+            "APPLY_STARTED", "CONVERSATION_CREATED", 
             "QUESTIONNAIRE_PENDING", "QUESTIONNAIRE_IN_PROGRESS", "QUESTIONNAIRE_SUBMITTED", 
             "APPLICATION_SUBMITTED", "EMPLOYER_PENDING", "SHORTLISTED",
             "EXTERNAL_PENDING", "EXTERNAL_IN_PROGRESS", "WAITING_FOR_INPUT", 

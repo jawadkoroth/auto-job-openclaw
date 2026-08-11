@@ -14,10 +14,12 @@ process.env.ENABLE_NAUKRI = "false";
 const db = require("../packages/database");
 const logger = require("../packages/logger");
 const telegramService = require("../apps/telegram");
+const config = require("../packages/config");
 const { validatePortalConfig } = require("../packages/config/validation");
 const pluginManager = require("../packages/plugins/PluginManager");
 const browserPool = require("../packages/browser/BrowserPool");
 const { checkExperienceEligibility } = require("../packages/router/ExperienceEligibilityFilter");
+const { checkLocationEligibility } = require("../packages/router/LocationEligibilityFilter");
 const intelligentJobRanker = require("../packages/router/IntelligentJobRanker");
 
 function normalizeFailureReason(errMessage, statusReason) {
@@ -141,6 +143,23 @@ function normalizeFailureReason(errMessage, statusReason) {
 
         jobsDiscovered = rawJobs.length;
 
+        const diagStats = {
+            discovered: rawJobs.length,
+            roleEligible: 0,
+            roleRejected: 0,
+            sreRejected: 0,
+            expEligible: 0,
+            expRejected: 0,
+            locEligible: 0,
+            locRejected: 0,
+            duplicate: 0,
+            applyTypeRejected: 0,
+            finalEligible: 0
+        };
+
+        const eligibleJobsList = [];
+
+        console.log(`\n--- HIRIST DIAGNOSTIC DISCOVERY TRACE (${rawJobs.length} Jobs Discovered) ---`);
         for (const job of rawJobs) {
             // Single Job Allowlist Filter
             if (singleJobAllowlist && String(job.job_id) !== String(singleJobAllowlist)) {
@@ -148,25 +167,73 @@ function normalizeFailureReason(errMessage, statusReason) {
             }
 
             const isDup = await db.isDuplicateJob("hirist", job.job_id);
-            if (isDup) {
-                jobsSkippedDuplicate++;
-                continue;
+            if (isDup) diagStats.duplicate++;
+
+            const isSre = intelligentJobRanker.isSreRole(job.title);
+            if (isSre) diagStats.sreRejected++;
+
+            const matchesKeyword = config.search.keywords ? config.search.keywords.some(kw => job.title.toLowerCase().includes(kw.toLowerCase())) : true;
+            if (matchesKeyword && !isSre) diagStats.roleEligible++;
+            else if (!isSre) diagStats.roleRejected++;
+
+            const expEval = checkExperienceEligibility(job.experience);
+            if (expEval.eligible) diagStats.expEligible++;
+            else diagStats.expRejected++;
+
+            const locEval = checkLocationEligibility(job.location, job.title);
+            if (locEval.eligible) diagStats.locEligible++;
+            else diagStats.locRejected++;
+
+            const applyType = intelligentJobRanker.detectApplyType(job);
+            const rankResult = intelligentJobRanker.rankJob(job);
+
+            let rejectionReason = "NONE";
+            if (isDup) rejectionReason = "DUPLICATE_JOB";
+            else if (isSre) rejectionReason = "SRE_EXCLUDED";
+            else if (!matchesKeyword) rejectionReason = "KEYWORD_ROLE_MISMATCH";
+            else if (!expEval.eligible) rejectionReason = expEval.reason;
+            else if (!locEval.eligible) rejectionReason = locEval.reason;
+            else if (!rankResult.isEligible) rejectionReason = rankResult.ineligibleReason || "RANKER_INELIGIBLE";
+
+            const isFinalEligible = !isDup && !isSre && matchesKeyword && expEval.eligible && locEval.eligible && rankResult.isEligible;
+
+            if (isFinalEligible) {
+                diagStats.finalEligible++;
+                eligibleJobsList.push({
+                    ...job,
+                    rankScore: rankResult.rankScore,
+                    selectionReason: rankResult.selectionReason
+                });
             }
 
-            // Exclude SRE roles & Keyword Match
-            if (intelligentJobRanker.isSreRole(job.title)) continue;
-            const matchesKeyword = config.search.keywords.some(kw => job.title.toLowerCase().includes(kw.toLowerCase()));
-            if (!matchesKeyword) continue;
+            console.log(`[Job ${job.job_id}] "${job.title}" at "${job.company}"`);
+            console.log(`  ├─ Loc: "${job.location}" | Exp: "${job.experience}" | Age: "${job.postedAgo || 'N/A'}" | ApplyType: ${applyType}`);
+            console.log(`  ├─ Dup: ${isDup ? 'YES' : 'NO'} | SRE: ${isSre ? 'REJECTED' : 'PASS'} | RoleMatch: ${matchesKeyword ? 'PASS' : 'REJECTED'} | Exp: ${expEval.eligible ? 'PASS' : 'FAIL'} | Loc: ${locEval.eligible ? 'PASS' : 'FAIL'}`);
+            console.log(`  └─ Final Status: ${isFinalEligible ? '✅ ELIGIBLE (Score: ' + rankResult.rankScore + ')' : '❌ INELIGIBLE (' + rejectionReason + ')'}`);
+        }
 
-            // Location Match
-            const matchesLocation = config.search.locations.some(loc => job.location.toLowerCase().includes(loc.toLowerCase()));
-            if (!matchesLocation) continue;
+        console.log("\n==================================================");
+        console.log("HIRIST DISCOVERY DIAGNOSTIC AGGREGATE SUMMARY");
+        console.log("==================================================");
+        console.log(`Discovered: ${diagStats.discovered}`);
+        console.log(`Role eligible: ${diagStats.roleEligible}`);
+        console.log(`Role rejected: ${diagStats.roleRejected}`);
+        console.log(`SRE rejected: ${diagStats.sreRejected}`);
+        console.log(`Experience eligible: ${diagStats.expEligible}`);
+        console.log(`Experience rejected: ${diagStats.expRejected}`);
+        console.log(`Location eligible: ${diagStats.locEligible}`);
+        console.log(`Location rejected: ${diagStats.locRejected}`);
+        console.log(`Duplicate: ${diagStats.duplicate}`);
+        console.log(`Apply-type rejected: ${diagStats.applyTypeRejected}`);
+        console.log(`Final eligible: ${diagStats.finalEligible}`);
+        console.log("==================================================\n");
 
-            // Experience Match
-            const expEval = checkExperienceEligibility(job.experience);
-            if (!expEval.eligible) continue;
+        jobsEligible = eligibleJobsList.length;
 
-            jobsEligible++;
+        // Sort eligible jobs by rank score
+        eligibleJobsList.sort((a, b) => (b.rankScore || 0) - (a.rankScore || 0));
+
+        for (const job of eligibleJobsList) {
             applicationsAttempted++;
 
             let applyResult = null;

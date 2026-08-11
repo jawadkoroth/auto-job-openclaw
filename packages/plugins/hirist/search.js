@@ -71,10 +71,11 @@ module.exports = async function search(plugin, page, queryOptions = {}) {
                         }
                     }
 
-                    const expCheck = checkExperienceEligibility(experience);
-                    if (!expCheck.eligible) {
-                        logger.info(`Skipping Hirist job ${jobId} due to experience: ${expCheck.reason}`);
-                        continue;
+                    let postedAgo = "Recently";
+                    for (const line of lines) {
+                        if (/ago|today|just now|yesterday/i.test(line)) {
+                            postedAgo = line;
+                        }
                     }
 
                     allDiscoveredJobs.push({
@@ -85,6 +86,8 @@ module.exports = async function search(plugin, page, queryOptions = {}) {
                         location: jobLocation.trim(),
                         experience: experience.trim(),
                         salary: "Not Disclosed",
+                        postedAgo,
+                        postedDate: postedAgo,
                         url: url.startsWith("http") ? url : "https://www.hirist.tech" + url
                     });
                 } catch (err) {

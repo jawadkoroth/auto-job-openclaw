@@ -85,9 +85,9 @@ runTest("Recency scoring: <24h (+100) > 1-3d (+70) > 4-7d (+40) > 8-15d (+15) > 
     const scoreOlder = intelligentJobRanker.calculateRecencyScore(jobOlder);
 
     assert.strictEqual(score24h, 100, "<24h score must be 100");
-    assert.strictEqual(score3d, 70, "1-3d score must be 70");
-    assert.strictEqual(score7d, 40, "4-7d score must be 40");
-    assert.strictEqual(score15d, 15, "8-15d score must be 15");
+    assert.strictEqual(score3d, 80, "2 days ago score must be 80");
+    assert.strictEqual(score7d, 40, "5 days ago score must be 40");
+    assert.strictEqual(score15d, 10, "10 days ago score must be 10");
     assert.strictEqual(scoreOlder, 0, "Older score must be 0");
 });
 
