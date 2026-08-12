@@ -190,6 +190,34 @@ class TelegramService {
     }
 
     /**
+     * Centralized Application Submitted - Pending Verification Telegram Alert
+     */
+    async sendApplicationPendingVerificationNotification({ portal, company, role, reason, url, jobId }) {
+        const key = `${(portal || 'generic').toLowerCase()}_${jobId || 'job'}_PENDING_VERIFICATION`;
+        if (await this.isNotificationDelivered(key)) {
+            localLogger.info(`[Telegram Idempotency] Skipping duplicate alert for key: ${key}`);
+            return;
+        }
+
+        const safePortal = escapeHTML(portal || "Job Portal");
+        const safeCompany = escapeHTML(company || "Company");
+        const safeRole = escapeHTML(role || "Target Role");
+        const safeReason = escapeHTML(reason || "Click executed, confirmation pending verification");
+        const safeUrl = url || "#";
+
+        const text = `<b>🟡 Application Submitted — Verification Pending</b>\n\n` +
+            `• <b>Portal</b>: <code>${safePortal}</code>\n` +
+            `• <b>Company</b>: <b>${safeCompany}</b>\n` +
+            `• <b>Role</b>: <b>${safeRole}</b>\n` +
+            `• <b>Reason</b>: <code>${safeReason}</code>\n` +
+            `• <b>Job URL</b>: ${safeUrl}`;
+
+        const res = await this.sendMessage(text);
+        await this.recordNotificationDelivery(key, portal, jobId, "PENDING_VERIFICATION");
+        return res;
+    }
+
+    /**
      * Centralized External Application Submitted Telegram Alert
      */
     async sendExternalApplicationSubmittedNotification({ portal = "Naukri", ats = "EXTERNAL", company, role, status = "EMPLOYER_PENDING", url, jobId }) {

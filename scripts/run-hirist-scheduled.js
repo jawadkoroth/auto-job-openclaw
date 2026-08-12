@@ -110,6 +110,7 @@ function normalizeFailureReason(errMessage, statusReason) {
     let applicationsDryRunCount = 0;
     let applicationsFailed = 0;
     let applicationsWaitingInput = 0;
+    let applicationsPendingVerification = 0;
     
     // Failure Breakdown map
     const failureBreakdown = {};
@@ -255,18 +256,19 @@ function normalizeFailureReason(errMessage, statusReason) {
                         "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'DRY_RUN', 'Dry run validated') ON CONFLICT(portal, job_id) DO UPDATE SET status = 'DRY_RUN', reason = 'Dry run validated'",
                         ["hirist", job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
                     ).catch(() => {});
-                } else if (statusReason === "clicked_unverified") {
+                } else if (statusReason === "submission_pending_verification" || job.status === "SUBMISSION_PENDING_VERIFICATION") {
                     applicationsSubmitted++;
-                    console.log(`[Hirist Scheduled] Job ${job.job_id} clicked but unverified.`);
+                    applicationsPendingVerification++;
+                    console.log(`[Hirist Scheduled] Job ${job.job_id} submitted (pending verification).`);
                     await db.run(
-                        "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'CLICKED_UNVERIFIED', 'Clicked but unverified') ON CONFLICT(portal, job_id) DO UPDATE SET status = 'CLICKED_UNVERIFIED', applied = 1, reason = 'Clicked but unverified'",
+                        "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'SUBMISSION_PENDING_VERIFICATION', 'Click executed, confirmation pending verification') ON CONFLICT(portal, job_id) DO UPDATE SET status = 'SUBMISSION_PENDING_VERIFICATION', applied = 1, reason = 'Click executed, confirmation pending verification'",
                         ["hirist", job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
                     ).catch(() => {});
                 } else {
                     applicationsSubmitted++;
-                    console.log(`[Hirist Scheduled] Job ${job.job_id} applied successfully.`);
+                    console.log(`[Hirist Scheduled] Job ${job.job_id} applied and verified.`);
                     await db.run(
-                        "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'APPLIED', 'Successfully applied') ON CONFLICT(portal, job_id) DO UPDATE SET status = 'APPLIED', applied = 1, reason = 'Successfully applied'",
+                        "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'VERIFIED_APPLIED', 'Successfully verified applied') ON CONFLICT(portal, job_id) DO UPDATE SET status = 'VERIFIED_APPLIED', applied = 1, reason = 'Successfully verified applied'",
                         ["hirist", job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
                     ).catch(() => {});
                 }

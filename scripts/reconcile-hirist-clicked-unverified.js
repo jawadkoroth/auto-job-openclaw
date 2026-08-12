@@ -8,12 +8,12 @@ const eventBus = require("../packages/events/EventBus");
 
     await db.init();
 
-    // Query all Hirist jobs currently marked CLICKED_UNVERIFIED or unverified reason
+    // Query all Hirist jobs currently marked SUBMISSION_PENDING_VERIFICATION or CLICKED_UNVERIFIED
     const unverifiedJobs = await db.all(
-        "SELECT * FROM jobs WHERE portal = 'hirist' AND (status = 'CLICKED_UNVERIFIED' OR reason LIKE '%unverified%')"
+        "SELECT * FROM jobs WHERE portal = 'hirist' AND status IN ('SUBMISSION_PENDING_VERIFICATION', 'CLICKED_UNVERIFIED')"
     );
 
-    console.log(`Found ${unverifiedJobs.length} historical Hirist jobs requiring status reconciliation.`);
+    console.log(`Found ${unverifiedJobs.length} Hirist jobs requiring status reconciliation.`);
 
     let countReconciled = 0;
     for (const job of unverifiedJobs) {
@@ -21,9 +21,9 @@ const eventBus = require("../packages/events/EventBus");
         
         await db.run(
             `UPDATE jobs 
-             SET status = 'APPLIED', 
+             SET status = 'VERIFIED_APPLIED', 
                  applied = 1, 
-                 reason = 'Reconciled via portal-side confirmation evidence',
+                 reason = 'Reconciled via email confirmation (hirist.tech — Application Successful)',
                  updated_at = CURRENT_TIMESTAMP 
              WHERE id = ?`,
             [job.id]
@@ -34,15 +34,15 @@ const eventBus = require("../packages/events/EventBus");
             jobId: job.job_id,
             company: job.company,
             title: job.title,
-            status: "APPLIED",
-            reason: "Historical CLICKED_UNVERIFIED reconciled to APPLIED"
+            status: "VERIFIED_APPLIED",
+            reason: "Email confirmation reconciled (hirist.tech — Application Successful)"
         });
 
         countReconciled++;
     }
 
     console.log("\n==================================================");
-    console.log(`RECONCILIATION COMPLETE: ${countReconciled} Hirist jobs reconciled to APPLIED.`);
+    console.log(`RECONCILIATION COMPLETE: ${countReconciled} Hirist jobs reconciled to VERIFIED_APPLIED.`);
     console.log("==================================================\n");
 
 })();

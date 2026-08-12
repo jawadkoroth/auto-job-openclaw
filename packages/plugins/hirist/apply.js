@@ -1,3 +1,6 @@
+const fs = require("fs-extra");
+const path = require("path");
+const crypto = require("crypto");
 const resumeManager = require("../../resume/ResumeManager");
 
 async function handleHiristCoverLetter(plugin, page, job, descText) {
@@ -39,23 +42,15 @@ async function handleHiristCoverLetter(plugin, page, job, descText) {
             await foundCheckbox.check();
             await page.waitForTimeout(1000);
             isChecked = await foundCheckbox.isChecked();
-            if (isChecked) {
-                logger.info("[hirist] Cover letter enabled.");
-            } else {
+            if (!isChecked) {
                 await foundCheckbox.click();
                 await page.waitForTimeout(1000);
                 isChecked = await foundCheckbox.isChecked();
-                if (isChecked) {
-                    logger.info("[hirist] Cover letter enabled.");
-                }
             }
-        } else {
-            logger.info("[hirist] Cover letter enabled.");
         }
     } else {
         await foundCheckbox.click();
         await page.waitForTimeout(1000);
-        logger.info("[hirist] Cover letter enabled.");
     }
 
     const textareaLocators = [
@@ -75,11 +70,10 @@ async function handleHiristCoverLetter(plugin, page, job, descText) {
     }
 
     if (!foundTextarea) {
-        logger.error("[hirist] Cover letter checkbox was checked, but cover letter textarea could not be found.");
+        logger.error("[hirist] Cover letter checkbox checked, but textarea not found.");
         return true;
     }
 
-    // Check if textarea is already filled
     const existingVal = await foundTextarea.inputValue().catch(() => "");
     if (existingVal && existingVal.trim().length > 10) {
         logger.info("[hirist] Cover letter attached/filled successfully.");
@@ -95,7 +89,6 @@ async function handleHiristCoverLetter(plugin, page, job, descText) {
         const systemPrompt = `
 You are an expert cover letter writer.
 Generate a concise, professional cover letter (1 paragraph, max 100 words) for a DevOps/Cloud/Platform/Infrastructure Engineer role.
-Tailor it to the job title and company, using the candidate profile details.
 Be concise and focus on cloud automation, CI/CD, and infrastructure-as-code.
 Candidate Profile:
 ${JSON.stringify(profile, null, 2)}
@@ -121,7 +114,8 @@ ${JSON.stringify(profile, null, 2)}
 
 module.exports = async function apply(plugin, page, job) {
     const { logger } = plugin;
-    logger.info(`Processing application for Hirist job: "${job.title}" at "${job.company}"`);
+    const jobIdStr = String(job.job_id || job.id || Date.now());
+    logger.info(`Processing application for Hirist job_id ${jobIdStr}: "${job.title}" at "${job.company}"`);
 
     if (!job.url) {
         throw new Error("Target job model does not contain a valid URL.");
@@ -132,7 +126,7 @@ module.exports = async function apply(plugin, page, job) {
 
     const alreadyAppliedSelector = ".already-applied, button:has-text('Applied'), span:has-text('Applied'), :has-text('You have applied')";
     if (await page.locator(alreadyAppliedSelector).count() > 0) {
-        logger.info(`Already applied status confirmed for job_id: ${job.job_id}`);
+        logger.info(`Already applied status confirmed for job_id: ${jobIdStr}`);
         job.statusReason = "alreadyApplied";
         return true;
     }
@@ -165,7 +159,29 @@ module.exports = async function apply(plugin, page, job) {
             return true;
         }
 
-        // Attempt cover letter handling before clicking Apply
+        // --- PRE-SUBMIT EVIDENCE CAPTURE SETUP ---
+        const artifactDir = path.join(process.cwd(), "sessions", "hirist", "verification", jobIdStr);
+        try { fs.mkdirpSync(artifactDir); } catch (e) {}
+
+        const networkEvents = [];
+        const responseListener = (response) => {
+            try {
+                const resUrl = response.url();
+                const status = response.status();
+                const reqMethod = response.request().method();
+                if (reqMethod === "POST" || reqMethod === "PUT") {
+                    if (/apply|job|hirist\.tech\/api|\/j\//i.test(resUrl)) {
+                        networkEvents.push({ url: resUrl, status, method: reqMethod, timestamp: new Date().toISOString() });
+                    }
+                }
+            } catch (e) {}
+        };
+        page.on("response", responseListener);
+
+        const beforeUrl = page.url();
+        await page.screenshot({ path: path.join(artifactDir, "before_submit.png") }).catch(() => {});
+
+        // Cover letter handling
         let coverLetterHandled = false;
         try {
             coverLetterHandled = await handleHiristCoverLetter(plugin, page, job, descText);
@@ -175,21 +191,17 @@ module.exports = async function apply(plugin, page, job) {
 
         logger.info("Clicking the Hirist Apply button...");
         await page.click(applyBtnSelector);
-        await page.waitForTimeout(4000);
+        await page.waitForTimeout(3000);
 
-        // Attempt cover letter handling after clicking Apply if not handled before
         if (!coverLetterHandled) {
             try {
                 coverLetterHandled = await handleHiristCoverLetter(plugin, page, job, descText);
             } catch (coverErr) {
-                logger.error(`[hirist] Cover letter handling encountered an error after click: ${coverErr.message}`);
+                logger.error(`[hirist] Cover letter handling error after click: ${coverErr.message}`);
             }
         }
 
-        if (!coverLetterHandled) {
-            logger.info("[hirist] Cover letter option not available for this application.");
-        }
-
+        // Chatbot / Questionnaire check
         const chatbotSelector = ".chatbot-container, :has-text('Submit answers'), :has-text('Answer questions'), :has-text('recruiter\\'s questions')";
         if (await page.locator(chatbotSelector).count() > 0) {
             const questionText = await page.locator(chatbotSelector).first().innerText().catch(() => "Chatbot questions");
@@ -234,70 +246,162 @@ module.exports = async function apply(plugin, page, job) {
                     `To custom approve: \`/approve ${job.id} <your answer>\``
                 ).catch(() => {});
                 
+                page.off("response", responseListener);
                 job.statusReason = "questionnaire";
                 return false;
             }
         }
 
-        // If a drawer/modal is still visible and has not been submitted, click the drawer submit button to finalize
+        // Drawer/modal submit check
         const drawerSubmitSelector = "div[class*='drawer'] button:has-text('Apply'), div[class*='drawer'] button:has-text('Submit'), div[class*='modal'] button:has-text('Apply'), div[class*='modal'] button:has-text('Submit'), button:has-text('Confirm Apply'), button:has-text('Submit Application'), button#submit-apply";
         const drawerSubmitBtn = page.locator(drawerSubmitSelector).filter({ visible: true }).first();
         if (await drawerSubmitBtn.count() > 0) {
-            logger.info("Found drawer/modal submit button. Clicking it to finalize application...");
+            logger.info("Found drawer/modal submit button. Clicking to finalize application...");
             await drawerSubmitBtn.click({ force: true });
             await page.waitForTimeout(4000);
         }
 
-        // Layered Verification of successful application
+        // --- 7-LAYER MULTI-STAGE POST-APPLICATION VERIFICATION ENGINE ---
         await page.waitForTimeout(2000);
+        page.off("response", responseListener);
 
-        // 1. Toast / popup message verification
-        const toastSelector = ".toast, .toastr, .toast-success, .toast-message, div[class*='toast'], div:has-text('Applied successfully'), div:has-text('Application sent'), div:has-text('Your application has been sent'), div:has-text('already applied')";
+        // Layer 1: Network submission evidence
+        const hasNetworkSuccess = networkEvents.some(e => e.status >= 200 && e.status < 300);
+        const hasNetworkError = networkEvents.some(e => e.status >= 400);
+
+        // Layer 2: Toast / popup message verification
+        const toastSelector = ".toast, .toastr, .toast-success, .toast-message, div[class*='toast'], div:has-text('Applied successfully'), div:has-text('Application sent'), div:has-text('Your application has been sent'), div:has-text('already applied'), p:has-text('Applied successfully'), div:has-text('successfully applied')";
         const toastFound = await page.locator(toastSelector).count().catch(() => 0) > 0;
 
-        // 2. Button state change verification
+        // Layer 3: Modal / drawer closure check
+        const modalCount = await page.locator("div[class*='drawer'], div[class*='modal']").filter({ visible: true }).count().catch(() => 0);
+        const modalClosed = (modalCount === 0);
+
+        // Layer 4: Apply button state change check
         const successConfirmSelector = ".already-applied, button:has-text('Applied'), span:has-text('Applied'), button:has-text('Application Sent'), span:has-text('Application Sent'), :has-text('You have applied'), :has-text('Applied successfully'), :has-text('Application Submitted')";
         const isConfirmed = await page.locator(successConfirmSelector).count().catch(() => 0) > 0;
-
-        // 3. Fallback: Re-inspect active card/page buttons
         const buttonText = await page.locator(applyBtnSelector).first().innerText().catch(() => "");
-        const isButtonApplied = buttonText.toLowerCase().includes("applied") || buttonText.toLowerCase().includes("sent");
+        const isButtonApplied = /applied|application sent|already applied/i.test(buttonText);
 
-        if (toastFound || isConfirmed || isButtonApplied) {
-            logger.info(`Successfully applied and verified for Hirist job_id: ${job.job_id}`);
+        // Layer 5: URL / Navigation change check
+        const afterUrl = page.url();
+        const urlChanged = (afterUrl !== beforeUrl);
+
+        // Layer 6: Fresh Page Reload Verification
+        await page.screenshot({ path: path.join(artifactDir, "after_submit.png") }).catch(() => {});
+        logger.info("[hirist] Executing fresh page reload for authoritative DOM verification...");
+        await page.reload({ waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {});
+        await page.waitForTimeout(2500);
+
+        await page.screenshot({ path: path.join(artifactDir, "after_reload.png") }).catch(() => {});
+        const htmlContent = await page.content().catch(() => "");
+        try { fs.writeFileSync(path.join(artifactDir, "page.html"), htmlContent); } catch (e) {}
+
+        const postReloadAppliedCount = await page.locator(".already-applied, button:has-text('Applied'), span:has-text('Applied'), :has-text('You have applied'), button[disabled]:has-text('Applied')").count().catch(() => 0);
+        const postReloadApplied = (postReloadAppliedCount > 0);
+
+        // Layer 7: Authoritative Verdict Resolution
+        let finalVerdict = "SUBMISSION_PENDING_VERIFICATION";
+        let verdictReason = "Apply click executed successfully; immediate confirmation unobserved.";
+
+        if (hasNetworkSuccess || toastFound || isConfirmed || isButtonApplied || postReloadApplied) {
+            finalVerdict = "VERIFIED_APPLIED";
+            verdictReason = toastFound ? "Confirmed via toast message." :
+                            postReloadApplied ? "Confirmed via post-reload 'Applied' state." :
+                            isButtonApplied ? "Confirmed via Apply button state change." :
+                            hasNetworkSuccess ? "Confirmed via HTTP API success response." : "Confirmed via DOM state.";
+        } else if (hasNetworkError) {
+            finalVerdict = "APPLICATION_FAILED";
+            verdictReason = `HTTP API submission error (${networkEvents.find(e => e.status >= 400)?.status || 500}).`;
+        }
+
+        // --- SAVE EVIDENCE ARTIFACTS ---
+        const verificationReport = {
+            jobId: jobIdStr,
+            submitClicked: true,
+            networkEvidence: {
+                triggered: networkEvents.length > 0,
+                events: networkEvents,
+                hasSuccess: hasNetworkSuccess,
+                hasError: hasNetworkError
+            },
+            confirmationEvidence: {
+                toastFound,
+                buttonApplied: isButtonApplied || isConfirmed
+            },
+            modalClosed,
+            urlChanged,
+            stateAfterReload: {
+                alreadyApplied: postReloadApplied
+            },
+            finalVerdict,
+            reason: verdictReason
+        };
+
+        try {
+            fs.writeJsonSync(path.join(artifactDir, "verification.json"), verificationReport, { spaces: 2 });
+            fs.writeJsonSync(path.join(artifactDir, "network-summary.json"), networkEvents, { spaces: 2 });
+        } catch (e) {}
+
+        // --- LIFECYCLE EVENT & DATABASE PERSISTENCE ---
+        const db = require("../../database");
+        const eventId = `evt_${Date.now()}_${crypto.randomBytes(4).toString("hex")}`;
+        await db.run(
+            "INSERT OR IGNORE INTO application_events (event_id, job_id, portal, event_type, payload) VALUES (?, ?, ?, ?, ?)",
+            [eventId, jobIdStr, "hirist", finalVerdict, JSON.stringify(verificationReport)]
+        ).catch(() => {});
+
+        const telegramService = require("../../../apps/telegram");
+
+        if (finalVerdict === "VERIFIED_APPLIED") {
+            logger.info(`[hirist] VERIFIED_APPLIED for job_id ${jobIdStr}: ${verdictReason}`);
             job.statusReason = "applied";
+            job.status = "VERIFIED_APPLIED";
 
-            const telegramService = require("../../../apps/telegram");
             await telegramService.sendApplicationSubmittedNotification({
                 portal: "Hirist",
                 company: job.company,
                 role: job.title,
-                status: "APPLIED",
+                status: "VERIFIED_APPLIED",
                 url: job.url,
-                jobId: job.job_id || job.id
+                jobId: jobIdStr
+            }).catch(e => logger.error(`[hirist] Telegram alert error: ${e.message}`));
+
+            return true;
+        } else if (finalVerdict === "SUBMISSION_PENDING_VERIFICATION") {
+            logger.warn(`[hirist] SUBMISSION_PENDING_VERIFICATION for job_id ${jobIdStr}: ${verdictReason}`);
+            job.statusReason = "submission_pending_verification";
+            job.status = "SUBMISSION_PENDING_VERIFICATION";
+
+            await telegramService.sendApplicationPendingVerificationNotification({
+                portal: "Hirist",
+                company: job.company,
+                role: job.title,
+                reason: verdictReason,
+                url: job.url,
+                jobId: jobIdStr
             }).catch(e => logger.error(`[hirist] Telegram alert error: ${e.message}`));
 
             return true;
         } else {
-            logger.warn(`Click action performed but application confirmation not detected on Hirist. Marking as CLICKED_UNVERIFIED.`);
-            job.statusReason = "clicked_unverified";
-            
-            const telegramService = require("../../../apps/telegram");
+            logger.error(`[hirist] APPLICATION_FAILED for job_id ${jobIdStr}: ${verdictReason}`);
+            job.statusReason = "APPLICATION_FAILED";
+            job.status = "FAILED";
+
             await telegramService.sendApplicationFailedNotification({
                 portal: "Hirist",
                 company: job.company,
                 role: job.title,
-                reason: "CLICKED_UNVERIFIED: Clicked apply but confirmation toast/button unobserved",
+                reason: verdictReason,
                 url: job.url,
-                jobId: job.job_id || job.id
+                jobId: jobIdStr
             }).catch(e => logger.error(`[hirist] Telegram alert error: ${e.message}`));
-            
-            return true;
+
+            return false;
         }
     } else {
-        logger.warn(`No standard apply buttons found for job_id: ${job.job_id}. Skipping.`);
+        logger.warn(`No standard apply buttons found for job_id: ${jobIdStr}. Skipping.`);
         job.statusReason = "APPLY_BUTTON_NOT_FOUND";
         return false;
     }
 };
-
