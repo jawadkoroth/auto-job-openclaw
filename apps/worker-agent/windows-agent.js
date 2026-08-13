@@ -4,15 +4,37 @@ const axios = require("axios");
 const { fork } = require("child_process");
 require("dotenv").config({ path: path.join(__dirname, "../../.env") });
 
-const ORACLE_SERVER_URL = process.env.ORACLE_SERVER_URL || process.env.ORCHESTRATOR_URL || "http://localhost:3005";
+const getOracleServerUrl = () => {
+    if (process.env.OPENCLAW_SERVER_URL) return process.env.OPENCLAW_SERVER_URL;
+    if (process.env.ORACLE_SERVER_URL) return process.env.ORACLE_SERVER_URL;
+    if (process.env.ORCHESTRATOR_URL) return process.env.ORCHESTRATOR_URL;
+    if (process.env.REMOTE_HOST) {
+        const port = process.env.DASHBOARD_PORT || process.env.PORT || 3005;
+        return `http://${process.env.REMOTE_HOST}:${port}`;
+    }
+    return "http://140.245.212.88:3005";
+};
+
+const ORACLE_SERVER_URL = getOracleServerUrl();
 const WORKER_ID = "windows";
 const HEARTBEAT_INTERVAL_MS = 15000;
 const POLL_INTERVAL_MS = 5000;
 
+const DASHBOARD_USER = process.env.DASHBOARD_USER || "admin";
+const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || "openclaw2026";
+const AUTH_HEADER = "Basic " + Buffer.from(`${DASHBOARD_USER}:${DASHBOARD_PASSWORD}`).toString("base64");
+const HTTP_CONFIG = {
+    headers: {
+        "Authorization": AUTH_HEADER,
+        "Content-Type": "application/json"
+    },
+    timeout: 8000
+};
+
 console.log("==================================================");
 console.log("OPENCLAW WINDOWS WORKER AGENT DAEMON");
 console.log(`Server Endpoint: ${ORACLE_SERVER_URL}`);
-console.log(`Worker Node: ${WORKER_ID} (${os.hostname()} - ${os.platform()})`);
+console.log(`Worker Node:     ${WORKER_ID} (${os.hostname()} - ${os.platform()})`);
 console.log("==================================================\n");
 
 let currentTask = null;
@@ -29,7 +51,7 @@ async function sendHeartbeat() {
             status,
             currentTask: currentTask ? currentTask.id : null,
             lastHeartbeat: Date.now()
-        }, { timeout: 8000 });
+        }, HTTP_CONFIG);
         console.log(`[Windows Agent] Heartbeat sent (${status})`);
     } catch (err) {
         console.warn(`[Windows Agent Warning] Heartbeat failed: ${err.message}`);
@@ -42,7 +64,7 @@ async function pollTask() {
     try {
         const res = await axios.get(`${ORACLE_SERVER_URL}/api/worker/poll`, {
             params: { workerId: WORKER_ID },
-            timeout: 8000
+            ...HTTP_CONFIG
         });
 
         if (res.data && res.data.task) {
@@ -64,7 +86,7 @@ async function executeTask(task) {
         await axios.post(`${ORACLE_SERVER_URL}/api/worker/ack`, {
             taskId: task.id,
             workerId: WORKER_ID
-        }, { timeout: 8000 }).catch(() => {});
+        }, HTTP_CONFIG).catch(() => {});
         console.log(`[Windows Agent] Acknowledged Task #${task.id.substring(0, 8)}`);
 
         // 2. Select Script
@@ -95,14 +117,14 @@ async function executeTask(task) {
                     taskId: task.id,
                     workerId: WORKER_ID,
                     result: { success: true, exitCode: 0 }
-                }, { timeout: 8000 }).catch(() => {});
+                }, HTTP_CONFIG).catch(() => {});
             } else {
                 console.error(`[Windows Agent] Task #${task.id.substring(0, 8)} FAILED with exit code ${code}.`);
                 await axios.post(`${ORACLE_SERVER_URL}/api/worker/fail`, {
                     taskId: task.id,
                     workerId: WORKER_ID,
                     error: `Process exited with error code ${code}`
-                }, { timeout: 8000 }).catch(() => {});
+                }, HTTP_CONFIG).catch(() => {});
             }
         });
 
@@ -114,7 +136,7 @@ async function executeTask(task) {
             taskId: task.id,
             workerId: WORKER_ID,
             error: err.message
-        }, { timeout: 8000 }).catch(() => {});
+        }, HTTP_CONFIG).catch(() => {});
     }
 }
 
