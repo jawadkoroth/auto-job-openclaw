@@ -118,6 +118,15 @@ function normalizeFailureReason(errMessage, statusReason) {
     let browserInstance = null;
     let page = null;
 
+    // Cleanup stale lock files before browser launch
+    try {
+        const lockFile = path.join(process.cwd(), "sessions", "hirist", "SingletonLock");
+        if (fs.existsSync(lockFile)) {
+            fs.removeSync(lockFile);
+            console.log("[Hirist Scheduled] Removed stale profile SingletonLock file.");
+        }
+    } catch (e) {}
+
     try {
         browserInstance = await browserPool.getInstance("hirist");
         page = await browserInstance.newPage();
@@ -159,6 +168,7 @@ function normalizeFailureReason(errMessage, statusReason) {
         };
 
         const eligibleJobsList = [];
+        const rejectedJobsList = [];
 
         console.log(`\n--- HIRIST DIAGNOSTIC DISCOVERY TRACE (${rawJobs.length} Jobs Discovered) ---`);
         for (const job of rawJobs) {
@@ -202,8 +212,14 @@ function normalizeFailureReason(errMessage, statusReason) {
                 diagStats.finalEligible++;
                 eligibleJobsList.push({
                     ...job,
+                    applyType,
                     rankScore: rankResult.rankScore,
                     selectionReason: rankResult.selectionReason
+                });
+            } else {
+                rejectedJobsList.push({
+                    ...job,
+                    rejectionReason
                 });
             }
 
@@ -214,19 +230,37 @@ function normalizeFailureReason(errMessage, statusReason) {
         }
 
         console.log("\n==================================================");
+        console.log("FIRST 10 REJECTED JOBS");
+        console.log("==================================================");
+        rejectedJobsList.slice(0, 10).forEach((j, idx) => {
+            console.log(`${idx + 1}. Title: "${j.title}" | Company: "${j.company}"`);
+            console.log(`   Location: "${j.location}" | Exp: "${j.experience}" | Age: "${j.postedAgo || 'N/A'}"`);
+            console.log(`   Rejection Reason: ${j.rejectionReason}`);
+        });
+
+        console.log("\n==================================================");
+        console.log("FIRST 10 ELIGIBLE JOBS");
+        console.log("==================================================");
+        eligibleJobsList.slice(0, 10).forEach((j, idx) => {
+            console.log(`${idx + 1}. Title: "${j.title}" | Company: "${j.company}"`);
+            console.log(`   Location: "${j.location}" | Exp: "${j.experience}" | Age: "${j.postedAgo || 'N/A'}"`);
+            console.log(`   ApplyType: ${j.applyType} | Rank Score: ${j.rankScore} | Reason: ${j.selectionReason}`);
+        });
+
+        console.log("\n==================================================");
         console.log("HIRIST DISCOVERY DIAGNOSTIC AGGREGATE SUMMARY");
         console.log("==================================================");
         console.log(`Discovered: ${diagStats.discovered}`);
-        console.log(`Role eligible: ${diagStats.roleEligible}`);
-        console.log(`Role rejected: ${diagStats.roleRejected}`);
-        console.log(`SRE rejected: ${diagStats.sreRejected}`);
-        console.log(`Experience eligible: ${diagStats.expEligible}`);
-        console.log(`Experience rejected: ${diagStats.expRejected}`);
-        console.log(`Location eligible: ${diagStats.locEligible}`);
-        console.log(`Location rejected: ${diagStats.locRejected}`);
+        console.log(`Role Eligible: ${diagStats.roleEligible}`);
+        console.log(`Role Rejected: ${diagStats.roleRejected}`);
+        console.log(`SRE Rejected: ${diagStats.sreRejected}`);
+        console.log(`Experience Eligible: ${diagStats.expEligible}`);
+        console.log(`Experience Rejected: ${diagStats.expRejected}`);
+        console.log(`Location Eligible: ${diagStats.locEligible}`);
+        console.log(`Location Rejected: ${diagStats.locRejected}`);
         console.log(`Duplicate: ${diagStats.duplicate}`);
-        console.log(`Apply-type rejected: ${diagStats.applyTypeRejected}`);
-        console.log(`Final eligible: ${diagStats.finalEligible}`);
+        console.log(`Apply Type Eligible: ${diagStats.finalEligible}`);
+        console.log(`Final Eligible: ${diagStats.finalEligible}`);
         console.log("==================================================\n");
 
         jobsEligible = eligibleJobsList.length;

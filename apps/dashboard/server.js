@@ -82,6 +82,61 @@ const server = http.createServer(async (req, res) => {
         return res.end();
     }
 
+    // --- Worker Network Agent API Endpoints (Bypass Basic Auth) ---
+    if (pathname.startsWith("/api/worker/")) {
+        try {
+            await db.init();
+            const workerRegistry = require("../../packages/worker/WorkerRegistry");
+            const taskQueue = require("../../packages/queue/TaskQueue");
+            const eventBus = require("../../packages/events/EventBus");
+
+            if (pathname === "/api/worker/heartbeat" && method === "POST") {
+                const body = await parseJsonBody(req);
+                if (!body.workerId) return sendJson(res, 400, { success: false, error: "workerId required" });
+                const worker = workerRegistry.updateHeartbeat(body.workerId, body);
+                return sendJson(res, 200, { success: true, worker });
+            }
+
+            if (pathname === "/api/worker/poll" && method === "GET") {
+                const workerId = parsedUrl.query.workerId || "windows";
+                const task = await taskQueue.getNext(workerId);
+                return sendJson(res, 200, { success: true, task });
+            }
+
+            if (pathname === "/api/worker/ack" && method === "POST") {
+                const body = await parseJsonBody(req);
+                const { taskId, workerId } = body;
+                if (!taskId) return sendJson(res, 400, { success: false, error: "taskId required" });
+                await taskQueue.acknowledge(taskId, workerId);
+                workerRegistry.setWorkerStatus(workerId || "windows", "busy", { currentTaskId: taskId, lastTaskAt: Date.now() });
+                eventBus.publish("TaskDispatched", { taskId, workerId });
+                return sendJson(res, 200, { success: true });
+            }
+
+            if (pathname === "/api/worker/complete" && method === "POST") {
+                const body = await parseJsonBody(req);
+                const { taskId, workerId, result } = body;
+                if (!taskId) return sendJson(res, 400, { success: false, error: "taskId required" });
+                await taskQueue.complete(taskId, result || {});
+                workerRegistry.setWorkerStatus(workerId || "windows", "online", { currentTaskId: null });
+                eventBus.emit("WorkerFinished", { taskId, portal: result ? result.portal : "generic", action: result ? result.action : "apply", success: true, result });
+                return sendJson(res, 200, { success: true });
+            }
+
+            if (pathname === "/api/worker/fail" && method === "POST") {
+                const body = await parseJsonBody(req);
+                const { taskId, workerId, error } = body;
+                if (!taskId) return sendJson(res, 400, { success: false, error: "taskId required" });
+                await taskQueue.fail(taskId, error || "Task failed");
+                workerRegistry.setWorkerStatus(workerId || "windows", "online", { currentTaskId: null });
+                eventBus.emit("WorkerFinished", { taskId, portal: "generic", action: "apply", success: false, error });
+                return sendJson(res, 200, { success: true });
+            }
+        } catch (err) {
+            return sendJson(res, 500, { success: false, error: err.message });
+        }
+    }
+
     // Require HTTP Basic Auth for all API & Admin UI routes
     if (!authenticate(req, res)) {
         return;

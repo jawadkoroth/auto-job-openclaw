@@ -55,10 +55,10 @@ class TaskQueue {
 
         if (!task) return null;
 
-        // Reserve task by updating status to 'running'
+        // Reserve task by updating status to 'dispatched'
         const sqlUpdate = `
             UPDATE tasks 
-            SET status = 'running', attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP 
+            SET status = 'dispatched', attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP 
             WHERE id = ?
         `;
         await db.run(sqlUpdate, [task.id]);
@@ -68,7 +68,18 @@ class TaskQueue {
         } catch (e) {
             task.args = {};
         }
+        task.status = "dispatched";
         return task;
+    }
+
+    async acknowledge(id, workerId) {
+        await db.init();
+        const sql = `
+            UPDATE tasks 
+            SET status = 'running', updated_at = CURRENT_TIMESTAMP 
+            WHERE id = ?
+        `;
+        await db.run(sql, [id]);
     }
 
     async cancelPending(portal = null) {

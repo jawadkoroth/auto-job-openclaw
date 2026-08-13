@@ -4,8 +4,9 @@ module.exports = async function login(plugin, page) {
 
     try {
         logger.info("Navigating to Hirist homepage...");
-        await page.goto("https://www.hirist.tech/", { waitUntil: "domcontentloaded", timeout: 45000 });
-        await page.waitForTimeout(5000);
+        await page.goto("https://www.hirist.tech/", { waitUntil: "commit", timeout: 45000 }).catch(() => {});
+        await page.waitForLoadState("domcontentloaded").catch(() => {});
+        await page.waitForTimeout(3000);
         
         const exportStorageState = async () => {
             try {

@@ -614,14 +614,26 @@ class TelegramService {
         switch (parsed.intent) {
             case "START": {
                 const targetWorker = workerRegistry.getBestWorker(parsed.portal, parsed.targetWorker);
+                const isOnline = workerRegistry.isWorkerOnline(targetWorker.id);
+
+                if (!isOnline && targetWorker.id !== "oracle") {
+                    await this.sendMessage(
+                        `❌ <b>Worker Unavailable</b>\n\n` +
+                        `• <b>Portal</b>: <code>${escapeHTML(parsed.portal)}</code>\n` +
+                        `• <b>Requested Worker</b>: <code>${escapeHTML(targetWorker.name || targetWorker.id)}</code>\n` +
+                        `• <b>Status</b>: <code>OFFLINE / STALE</code>\n\n` +
+                        `⚠️ The requested worker node is not connected. Please ensure the worker process is running.`
+                    );
+                    break;
+                }
+
                 const taskId = await taskQueue.push(parsed.portal, parsed.action || "apply", { limit: 10 }, targetWorker.id);
                 
                 await this.sendMessage(
-                    `🚀 <b>${escapeHTML(parsed.portal.toUpperCase())} Job Automation</b>\n\n` +
+                    `🖥️ <b>${escapeHTML(parsed.portal.toUpperCase())} Job Automation Queued</b>\n\n` +
                     `• <b>Portal</b>: <code>${escapeHTML(parsed.portal)}</code>\n` +
-                    `• <b>Action</b>: <code>${escapeHTML(parsed.action || 'apply')}</code>\n` +
-                    `• <b>Worker</b>:\n<b>${escapeHTML(targetWorker.name || targetWorker.id)}</b>\n` +
-                    `• <b>Status</b>:\nQueued\n` +
+                    `• <b>Worker</b>: <b>${escapeHTML(targetWorker.name || targetWorker.id)}</b>\n` +
+                    `• <b>Status</b>: <code>WAITING_FOR_WORKER</code>\n` +
                     `• <b>Task ID</b>: <code>${taskId.substring(0, 8)}</code>`
                 );
                 
@@ -631,13 +643,26 @@ class TelegramService {
 
             case "REFRESH_PROFILE": {
                 const targetWorker = workerRegistry.getBestWorker(parsed.portal, parsed.targetWorker);
+                const isOnline = workerRegistry.isWorkerOnline(targetWorker.id);
+
+                if (!isOnline && targetWorker.id !== "oracle") {
+                    await this.sendMessage(
+                        `❌ <b>Worker Unavailable</b>\n\n` +
+                        `• <b>Portal</b>: <code>${escapeHTML(parsed.portal)}</code>\n` +
+                        `• <b>Requested Worker</b>: <code>${escapeHTML(targetWorker.name || targetWorker.id)}</code>\n` +
+                        `• <b>Status</b>: <code>OFFLINE / STALE</code>\n\n` +
+                        `⚠️ The requested worker node is not connected.`
+                    );
+                    break;
+                }
+
                 const taskId = await taskQueue.push(parsed.portal, "updateProfile", {}, targetWorker.id);
                 
                 await this.sendMessage(
-                    `👤 <b>${escapeHTML(parsed.portal.toUpperCase())} Profile Refresh</b>\n\n` +
+                    `👤 <b>${escapeHTML(parsed.portal.toUpperCase())} Profile Refresh Queued</b>\n\n` +
                     `• <b>Portal</b>: <code>${escapeHTML(parsed.portal)}</code>\n` +
-                    `• <b>Worker</b>:\n<b>${escapeHTML(targetWorker.name || targetWorker.id)}</b>\n` +
-                    `• <b>Status</b>:\nQueued\n` +
+                    `• <b>Worker</b>: <b>${escapeHTML(targetWorker.name || targetWorker.id)}</b>\n` +
+                    `• <b>Status</b>: <code>WAITING_FOR_WORKER</code>\n` +
                     `• <b>Task ID</b>: <code>${taskId.substring(0, 8)}</code>`
                 );
                 

@@ -20,76 +20,100 @@ class WorkerRegistry extends EventEmitter {
             capabilities: ["hirist", "cutshort", "instahyre", "wellfound", "remoteok", "weworkremotely", "foundit"],
             battery: null,
             isCloud: true,
+            hostname: "oracle-cloud-vm",
+            platform: "linux",
             lastHeartbeat: Date.now()
         });
 
         this.registerWorker("windows", {
             type: "windows",
             name: "Windows Worker (Desktop Playwright)",
-            status: "online",
+            status: "offline", // Default to offline until live agent sends heartbeat
             capabilities: ["linkedin", "naukri", "foundit", "hirist", "cutshort", "instahyre", "wellfound", "remoteok", "weworkremotely"],
             battery: null,
             isCloud: false,
-            lastHeartbeat: Date.now()
+            hostname: "windows-pc",
+            platform: "win32",
+            lastHeartbeat: 0
         });
 
         this.registerWorker("android", {
             type: "android",
             name: "Android Worker (Native Mobile Node)",
-            status: "online",
+            status: "offline", // Default to offline until live agent sends heartbeat
             capabilities: ["naukri", "linkedin", "hirist", "cutshort", "foundit", "instahyre", "wellfound", "remoteok", "weworkremotely"],
             battery: { level: 92, charging: true },
             isCloud: false,
-            lastHeartbeat: Date.now()
+            hostname: "android-node",
+            platform: "android",
+            lastHeartbeat: 0
         });
     }
 
     registerWorker(id, details) {
-        const existing = this.workers.get(id) || {};
+        const normId = this.normalizeWorkerId(id) || id;
+        const existing = this.workers.get(normId) || {};
         const updated = {
-            id,
-            name: details.name || id,
-            type: details.type || id,
+            id: normId,
+            name: details.name || normId,
+            type: details.type || normId,
             status: details.status || "online",
-            capabilities: details.capabilities || [],
-            battery: details.battery || null,
-            currentTask: details.currentTask || null,
+            capabilities: details.capabilities || existing.capabilities || [],
+            battery: details.battery || existing.battery || null,
+            hostname: details.hostname || existing.hostname || "unknown",
+            platform: details.platform || existing.platform || "unknown",
+            currentTask: details.currentTask !== undefined ? details.currentTask : (existing.currentTask || null),
+            lastTaskAt: details.lastTaskAt || existing.lastTaskAt || null,
             lastHeartbeat: details.lastHeartbeat || Date.now(),
-            metrics: details.metrics || { tasksCompleted: 0, tasksFailed: 0 },
+            metrics: details.metrics || existing.metrics || { tasksCompleted: 0, tasksFailed: 0 },
             ...existing,
             ...details
         };
-        this.workers.set(id, updated);
-        logger.scheduler ? logger.scheduler.info(`[WorkerRegistry] Worker registered/updated: ${id} (${updated.status})`) : console.log(`Registered ${id}`);
+        this.workers.set(normId, updated);
+        logger.scheduler ? logger.scheduler.info(`[WorkerRegistry] Worker registered/updated: ${normId} (${updated.status})`) : console.log(`Registered ${normId}`);
         return updated;
     }
 
     updateHeartbeat(id, metrics = {}) {
-        const worker = this.workers.get(id);
+        const normId = this.normalizeWorkerId(id) || id;
+        const worker = this.workers.get(normId);
         if (!worker) {
-            return this.registerWorker(id, { ...metrics, lastHeartbeat: Date.now() });
+            return this.registerWorker(normId, { ...metrics, status: "online", lastHeartbeat: Date.now() });
         }
         worker.lastHeartbeat = Date.now();
         if (worker.status === "offline") {
             worker.status = "online";
-            logger.scheduler ? logger.scheduler.info(`[WorkerRegistry] Worker ${id} recovered back to ONLINE state`) : null;
-            eventBus.emit("WorkerOnline", { workerId: id });
+            logger.scheduler ? logger.scheduler.info(`[WorkerRegistry] Worker ${normId} recovered back to ONLINE state`) : null;
+            eventBus.emit("WorkerOnline", { workerId: normId });
         }
         if (metrics.status) worker.status = metrics.status;
         if (metrics.battery) worker.battery = metrics.battery;
+        if (metrics.hostname) worker.hostname = metrics.hostname;
+        if (metrics.platform) worker.platform = metrics.platform;
         if (metrics.currentTask !== undefined) worker.currentTask = metrics.currentTask;
+        if (metrics.lastTaskAt) worker.lastTaskAt = metrics.lastTaskAt;
         if (metrics.tasksCompleted) worker.metrics.tasksCompleted = metrics.tasksCompleted;
         if (metrics.tasksFailed) worker.metrics.tasksFailed = metrics.tasksFailed;
         return worker;
     }
 
     setWorkerStatus(id, status, details = {}) {
-        const worker = this.workers.get(id);
+        const normId = this.normalizeWorkerId(id) || id;
+        const worker = this.workers.get(normId);
         if (worker) {
             worker.status = status;
             if (details.currentTask !== undefined) worker.currentTask = details.currentTask;
-            logger.scheduler ? logger.scheduler.info(`[WorkerRegistry] Worker ${id} status set to: ${status}`) : null;
+            if (details.lastTaskAt) worker.lastTaskAt = details.lastTaskAt;
+            logger.scheduler ? logger.scheduler.info(`[WorkerRegistry] Worker ${normId} status set to: ${status}`) : null;
         }
+    }
+
+    isWorkerOnline(id) {
+        const worker = this.getWorker(id);
+        if (!worker) return false;
+        if (worker.isCloud) return true; // Oracle is local/cloud process
+        const isRecent = (Date.now() - (worker.lastHeartbeat || 0)) <= 45000;
+        return (worker.status === "online" || worker.status === "idle" || worker.status === "busy") && isRecent;
     }
 
     normalizeWorkerId(id) {
@@ -132,7 +156,7 @@ class WorkerRegistry extends EventEmitter {
         
         for (const workerId of priorityList) {
             const worker = this.workers.get(workerId);
-            if (worker && (worker.status === "online" || worker.status === "idle") && worker.capabilities.includes(pName)) {
+            if (worker && this.isWorkerOnline(workerId) && worker.capabilities.includes(pName)) {
                 logger.scheduler ? logger.scheduler.info(`[WorkerRegistry] Selected best worker '${workerId}' for portal '${pName}'`) : null;
                 return worker;
             }
@@ -140,7 +164,7 @@ class WorkerRegistry extends EventEmitter {
 
         // Fallback: Return any online worker that lists capability
         for (const worker of this.workers.values()) {
-            if ((worker.status === "online" || worker.status === "idle") && worker.capabilities.includes(pName)) {
+            if (this.isWorkerOnline(worker.id) && worker.capabilities.includes(pName)) {
                 logger.scheduler ? logger.scheduler.warn(`[WorkerRegistry] Preferred priority workers offline for '${pName}'. Fallback to '${worker.id}'`) : null;
                 return worker;
             }
@@ -156,16 +180,22 @@ class WorkerRegistry extends EventEmitter {
         const targetId = this.normalizeWorkerId(workerId) || "windows";
         logger.scheduler ? logger.scheduler.info(`[WorkerRegistry] Routing execution to worker '${targetId}' for task ${task.taskId || 'N/A'}`) : null;
 
+        if (!this.isWorkerOnline(targetId) && targetId !== "oracle") {
+            logger.scheduler ? logger.scheduler.warn(`[WorkerRegistry] Cannot execute task on OFFLINE worker '${targetId}'`) : null;
+            return { queued: false, success: false, error: `Worker '${targetId}' is OFFLINE`, status: "OFFLINE" };
+        }
+
         if (targetId === "android") {
             const androidWorker = require("./AndroidWorker");
             return androidWorker.startJob(task.portal, task.action || "apply", task);
         } else if (targetId === "windows") {
+            // Task is queued in TaskQueue for the remote Windows Worker Agent to poll & execute natively
+            logger.scheduler ? logger.scheduler.info(`[WorkerRegistry] Task ${task.taskId || 'N/A'} queued for Windows PC Worker Agent polling.`) : null;
+            return { queued: true, workerId: "windows", status: "WAITING_FOR_WINDOWS_WORKER" };
+        } else {
+            // Oracle Cloud Worker (Local execution)
             const scriptRunner = require("./ScriptRunner");
             return scriptRunner.runScript(task.portal, task.action || "apply", task);
-        } else {
-            // Oracle Cloud Worker
-            logger.scheduler ? logger.scheduler.info(`[WorkerRegistry] Task queued for Cloud Oracle Worker execution: ${task.taskId || 'N/A'}`) : null;
-            return { queued: true, workerId: "oracle" };
         }
     }
 
@@ -174,7 +204,7 @@ class WorkerRegistry extends EventEmitter {
             const now = Date.now();
             const timeoutThreshold = 45000; // 45s heartbeat timeout
             for (const [id, worker] of this.workers.entries()) {
-                if (worker.status !== "offline" && now - worker.lastHeartbeat > timeoutThreshold) {
+                if (!worker.isCloud && worker.status !== "offline" && (now - worker.lastHeartbeat > timeoutThreshold)) {
                     worker.status = "offline";
                     logger.scheduler ? logger.scheduler.warn(`[WorkerRegistry] Worker ${id} missed heartbeats. Marking OFFLINE.`) : console.warn(`Worker ${id} offline`);
                     eventBus.emit("WorkerOffline", { workerId: id });
