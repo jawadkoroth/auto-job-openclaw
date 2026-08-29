@@ -89,6 +89,7 @@ const server = http.createServer(async (req, res) => {
             const workerRegistry = require("../../packages/worker/WorkerRegistry");
             const taskQueue = require("../../packages/queue/TaskQueue");
             const eventBus = require("../../packages/events/EventBus");
+            const { workerEventLogger, storage } = require("../../packages/observability");
 
             if (pathname === "/api/worker/heartbeat" && method === "POST") {
                 const body = await parseJsonBody(req);
@@ -100,37 +101,91 @@ const server = http.createServer(async (req, res) => {
             if (pathname === "/api/worker/poll" && method === "GET") {
                 const workerId = parsedUrl.query.workerId || "windows";
                 const task = await taskQueue.getNext(workerId);
+                if (task) {
+                    await workerEventLogger.logTaskReceived(workerId, task.id, task.portal, task.action, task.runId).catch(() => {});
+                }
                 return sendJson(res, 200, { success: true, task });
             }
 
             if (pathname === "/api/worker/ack" && method === "POST") {
                 const body = await parseJsonBody(req);
-                const { taskId, workerId } = body;
+                const { taskId, workerId, runId } = body;
                 if (!taskId) return sendJson(res, 400, { success: false, error: "taskId required" });
                 await taskQueue.acknowledge(taskId, workerId);
                 workerRegistry.setWorkerStatus(workerId || "windows", "busy", { currentTaskId: taskId, lastTaskAt: Date.now() });
-                eventBus.publish("TaskDispatched", { taskId, workerId });
+                await workerEventLogger.logTaskAcknowledged(workerId || "windows", taskId, runId).catch(() => {});
+                eventBus.publish("TaskDispatched", { taskId, workerId, runId });
                 return sendJson(res, 200, { success: true });
             }
 
             if (pathname === "/api/worker/complete" && method === "POST") {
                 const body = await parseJsonBody(req);
-                const { taskId, workerId, result } = body;
+                const { taskId, workerId, runId, result } = body;
                 if (!taskId) return sendJson(res, 400, { success: false, error: "taskId required" });
                 await taskQueue.complete(taskId, result || {});
                 workerRegistry.setWorkerStatus(workerId || "windows", "online", { currentTaskId: null });
-                eventBus.emit("WorkerFinished", { taskId, portal: result ? result.portal : "generic", action: result ? result.action : "apply", success: true, result });
+                await workerEventLogger.logLauncherOutcome({
+                    workerId: workerId || "windows",
+                    taskId,
+                    runId,
+                    exitCode: result ? (result.exitCode || 0) : 0,
+                    durationMs: result ? (result.durationMs || 0) : 0
+                }).catch(() => {});
+                eventBus.emit("WorkerFinished", { taskId, runId, portal: result ? result.portal : "generic", action: result ? result.action : "apply", success: true, result });
                 return sendJson(res, 200, { success: true });
             }
 
             if (pathname === "/api/worker/fail" && method === "POST") {
                 const body = await parseJsonBody(req);
-                const { taskId, workerId, error } = body;
+                const { taskId, workerId, runId, error } = body;
                 if (!taskId) return sendJson(res, 400, { success: false, error: "taskId required" });
                 await taskQueue.fail(taskId, error || "Task failed");
                 workerRegistry.setWorkerStatus(workerId || "windows", "online", { currentTaskId: null });
-                eventBus.emit("WorkerFinished", { taskId, portal: "generic", action: "apply", success: false, error });
+                await workerEventLogger.logLauncherOutcome({
+                    workerId: workerId || "windows",
+                    taskId,
+                    runId,
+                    exitCode: 1,
+                    durationMs: 0,
+                    error: error || "Task failed"
+                }).catch(() => {});
+                eventBus.emit("WorkerFinished", { taskId, runId, portal: "generic", action: "apply", success: false, error });
                 return sendJson(res, 200, { success: true });
+            }
+        } catch (err) {
+            return sendJson(res, 500, { success: false, error: err.message });
+        }
+    }
+
+    // --- Observability Diagnostic API Endpoints ---
+    if (pathname.startsWith("/api/observability/")) {
+        try {
+            await db.init();
+            const { storage } = require("../../packages/observability");
+
+            if (pathname === "/api/observability/runs" && method === "GET") {
+                const limit = parseInt(parsedUrl.query.limit || "10", 10);
+                const runs = await storage.getRecentRuns(limit);
+                return sendJson(res, 200, { success: true, runs });
+            }
+
+            if (pathname === "/api/observability/latest" && method === "GET") {
+                const portal = parsedUrl.query.portal || null;
+                const run = await storage.getLatestRun(portal);
+                return sendJson(res, 200, { success: true, run });
+            }
+
+            if (pathname.startsWith("/api/observability/run/") && method === "GET") {
+                const targetRunId = pathname.replace("/api/observability/run/", "");
+                const details = await storage.getRunDetails(targetRunId);
+                if (!details) return sendJson(res, 404, { success: false, error: "Run not found" });
+                return sendJson(res, 200, { success: true, ...details });
+            }
+
+            if (pathname.startsWith("/api/observability/application/") && method === "GET") {
+                const targetJobId = pathname.replace("/api/observability/application/", "");
+                const details = await storage.getJobApplicationDetails(targetJobId);
+                return sendJson(res, 200, { success: true, ...details });
             }
         } catch (err) {
             return sendJson(res, 500, { success: false, error: err.message });

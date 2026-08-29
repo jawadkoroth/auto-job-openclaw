@@ -6,14 +6,29 @@ const WeWorkRemotelyPlugin = require("../packages/plugins/weworkremotely");
 const ExternalApplicationRouter = require("../packages/router/ExternalApplicationRouter");
 const { checkLocationEligibility } = require("../packages/router/LocationEligibilityFilter");
 const intelligentJobRanker = require("../packages/router/IntelligentJobRanker");
+const { createRunLogger, createAttemptLogger, EVENT_TYPES } = require("../packages/observability");
 
 const DRY_RUN = process.env.DRY_RUN !== "false";
 const ALLOW_LIVE_APPLICATIONS = process.env.ALLOW_LIVE_APPLICATIONS === "true";
 const SINGLE_JOB_ALLOWLIST = process.env.SINGLE_JOB_ALLOWLIST || "";
 
 async function runWwrRunner() {
+    const runIdArg = process.argv.includes("--run-id") ? process.argv[process.argv.indexOf("--run-id") + 1] : process.env.RUN_ID;
+    const taskIdArg = process.argv.includes("--task-id") ? process.argv[process.argv.indexOf("--task-id") + 1] : process.env.TASK_ID;
+
+    const runLogger = createRunLogger({
+        portal: "weworkremotely",
+        action: "apply",
+        workerId: process.platform === "win32" ? "windows" : "oracle",
+        runId: runIdArg,
+        taskId: taskIdArg,
+        triggerType: DRY_RUN ? "DRY_RUN" : (taskIdArg ? "TELEGRAM_OR_DISPATCHED" : "SCHEDULED")
+    });
+    await runLogger.start();
+
     console.log("==================================================");
     console.log("WE WORK REMOTELY (WWR) PRODUCTION RUNNER");
+    console.log(`Run ID: ${runLogger.runId}`);
     console.log("==================================================");
     console.log(`DRY_RUN: ${DRY_RUN}`);
     console.log(`ALLOW_LIVE_APPLICATIONS: ${ALLOW_LIVE_APPLICATIONS}`);
@@ -241,6 +256,7 @@ async function runWwrRunner() {
         console.log("\nDRY_RUN=true: Discovery Active / Application Automation Inactive. No live submission attempted.");
     }
 
+    await runLogger.finish();
     await browser.close();
     process.exit(0);
 }

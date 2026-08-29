@@ -7,12 +7,15 @@ class TaskQueue {
      * @param {string} portal Portal name (e.g. 'naukri')
      * @param {string} action Action to execute (e.g. 'updateProfile')
      * @param {Object} args Custom arguments
+     * @param {string} [targetWorker]
+     * @param {string} [runId]
      * @returns {Promise<string>} Created task unique ID
      */
-    async push(portal, action, args = {}, targetWorker = null) {
+    async push(portal, action, args = {}, targetWorker = null, runId = null) {
         await db.init();
         const id = crypto.randomUUID();
-        const fullArgs = { ...args, targetWorker };
+        const effectiveRunId = runId || args.runId || `${(portal || 'task').toLowerCase()}-${new Date().toISOString().replace(/[-:T.]/g, '').slice(0, 14)}-${crypto.randomBytes(3).toString('hex')}`;
+        const fullArgs = { ...args, targetWorker, runId: effectiveRunId };
         const sql = `
             INSERT INTO tasks (id, portal, action, args, status, attempts, created_at, updated_at)
             VALUES (?, ?, ?, ?, 'pending', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -68,6 +71,7 @@ class TaskQueue {
         } catch (e) {
             task.args = {};
         }
+        task.runId = task.args.runId || null;
         task.status = "dispatched";
         return task;
     }

@@ -34,7 +34,38 @@ class CommandParser {
             return { intent: "HELP", isDeterministicCommand: true, rawText: text };
         }
 
-        // 3. System Commands
+        // 3. System & Observability Diagnostic Commands
+        if (normalized === "automation status" || normalized === "runs status") {
+            return { intent: "AUTOMATION_STATUS", isDeterministicCommand: true, rawText: text };
+        }
+
+        if (normalized.startsWith("automation last") || normalized.startsWith("last run") || normalized === "automation latest") {
+            const portal = this.extractPortal(normalized);
+            return { intent: "AUTOMATION_LAST", portal, isDeterministicCommand: true, rawText: text };
+        }
+
+        if (normalized === "automation runs" || normalized === "runs" || normalized === "list runs" || normalized === "recent runs") {
+            return { intent: "AUTOMATION_RUNS", isDeterministicCommand: true, rawText: text };
+        }
+
+        if (normalized.startsWith("automation logs") || normalized.startsWith("run logs") || normalized.startsWith("automation log")) {
+            const parts = trimmed.split(/\s+/);
+            const target = parts.length > 2 ? parts[2] : (parts.length > 1 && parts[0] === "run" ? parts[1] : null);
+            return { intent: "AUTOMATION_LOGS", target, isDeterministicCommand: true, rawText: text };
+        }
+
+        if (normalized.startsWith("application ") || normalized.startsWith("inspect app ") || normalized.startsWith("app ")) {
+            const parts = trimmed.split(/\s+/);
+            const jobId = parts[parts.length - 1];
+            return { intent: "APPLICATION_INSPECT", jobId, isDeterministicCommand: true, rawText: text };
+        }
+
+        if (normalized.startsWith("run ") || normalized.startsWith("inspect run ")) {
+            const parts = trimmed.split(/\s+/);
+            const runId = parts[parts.length - 1];
+            return { intent: "RUN_INSPECT", runId, isDeterministicCommand: true, rawText: text };
+        }
+
         if (normalized === "status" || normalized.includes("show status") || normalized.includes("system status")) {
             return { intent: "STATUS", isDeterministicCommand: true, rawText: text };
         }
@@ -89,7 +120,25 @@ class CommandParser {
             };
         }
 
-        // 5. Stop Intent (e.g. "stop naukri", "stop all", "stop")
+        // 5. Cancel Intent (e.g. "cancel", "cancel current", "cancel naukri", "cancel all pending", "cancel all")
+        if (
+            normalized === "cancel" ||
+            normalized === "cancel current" ||
+            normalized === "cancel all" ||
+            normalized === "cancel all pending" ||
+            normalized.startsWith("cancel ")
+        ) {
+            const portal = this.extractPortal(normalized);
+            const isAll = normalized.includes("all") || !portal;
+            return {
+                intent: "CANCEL",
+                portal: isAll ? "all" : portal,
+                isDeterministicCommand: true,
+                rawText: text
+            };
+        }
+
+        // 6. Stop Intent (e.g. "stop naukri", "stop all", "stop")
         if (normalized === "stop" || normalized.startsWith("stop") || normalized.includes("cancel job")) {
             const portal = this.extractPortal(normalized);
             return {
@@ -100,7 +149,7 @@ class CommandParser {
             };
         }
 
-        // 6. Start Automation Intent (e.g. "start naukri", "start naukri mobile", "start naukri oracle", "start naukri pc", "start hirist")
+        // 7. Start Automation Intent (e.g. "start naukri", "start naukri mobile", "start naukri oracle", "start naukri pc", "start hirist", "start linkedin")
         if (normalized.startsWith("start") || normalized.startsWith("run") || normalized.includes("apply on")) {
             const portal = this.extractPortal(normalized);
             if (portal) {
@@ -116,7 +165,7 @@ class CommandParser {
             }
         }
 
-        // 7. Single Known Portal Keyword (e.g. "naukri", "hirist", "cutshort", "linkedin")
+        // 8. Single Known Portal Keyword (e.g. "naukri", "hirist", "cutshort", "linkedin")
         const extractedPortal = this.extractPortal(normalized);
         if (extractedPortal && normalized.split(/\s+/).length <= 3 && !this.isConversationalPhrase(normalized)) {
             const targetWorker = this.extractWorker(normalized);
@@ -130,7 +179,7 @@ class CommandParser {
             };
         }
 
-        // Non-deterministic -> Unrecognized command (AI must be triggered via /ai)
+        // Non-deterministic -> Unrecognized command (Candidate answer or AI prompt)
         return { intent: "UNRECOGNIZED", isDeterministicCommand: false, rawText: text };
     }
 

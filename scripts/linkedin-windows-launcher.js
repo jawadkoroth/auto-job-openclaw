@@ -159,14 +159,23 @@ async function main() {
         ? path.join(__dirname, "run-linkedin-profile-refresh.js")
         : path.join(__dirname, "run-linkedin-production.js");
     
+    const runIdArg = args.includes("--run-id") ? args[args.indexOf("--run-id") + 1] : process.env.RUN_ID;
+    const taskIdArg = args.includes("--task-id") ? args[args.indexOf("--task-id") + 1] : process.env.TASK_ID;
+
     const passArgs = args.filter(a => a !== "--task" && a !== taskType);
+    if (runIdArg && !passArgs.includes("--run-id")) passArgs.push("--run-id", runIdArg);
+    if (taskIdArg && !passArgs.includes("--task-id")) passArgs.push("--task-id", taskIdArg);
 
     logger.info(`🚀 Launching production child worker script: node ${scriptToRun} ${passArgs.join(" ")}`);
 
     lock.release();
 
     const child = fork(scriptToRun, passArgs, {
-        env: process.env,
+        env: {
+            ...process.env,
+            RUN_ID: runIdArg || process.env.RUN_ID || "",
+            TASK_ID: taskIdArg || process.env.TASK_ID || ""
+        },
         stdio: "inherit"
     });
 

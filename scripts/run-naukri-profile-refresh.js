@@ -9,15 +9,30 @@ const NaukriSessionBootstrap = require("../packages/plugins/naukri/NaukriSession
 const NaukriConcurrencyLock = require("../packages/plugins/naukri/NaukriConcurrencyLock");
 const NaukriDiagnostics = require("../packages/plugins/naukri/NaukriDiagnostics");
 const oraclePersistence = require("../packages/persistence/NaukriOraclePersistence");
+const { createRunLogger, EVENT_TYPES } = require("../packages/observability");
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 (async () => {
     const executionHost = process.platform === "win32" ? "Windows PC" : "Oracle VM";
 
+    const runIdArg = process.argv.includes("--run-id") ? process.argv[process.argv.indexOf("--run-id") + 1] : process.env.RUN_ID;
+    const taskIdArg = process.argv.includes("--task-id") ? process.argv[process.argv.indexOf("--task-id") + 1] : process.env.TASK_ID;
+
+    const runLogger = createRunLogger({
+        portal: "naukri",
+        action: "updateProfile",
+        workerId: process.platform === "win32" ? "windows" : "oracle",
+        runId: runIdArg,
+        taskId: taskIdArg,
+        triggerType: taskIdArg ? "TELEGRAM_OR_DISPATCHED" : "SCHEDULED"
+    });
+    await runLogger.start();
+
     logger.info("==================================================");
     logger.info("[LIFECYCLE] START");
     logger.info("NAUKRI HARDENED PROFILE REFRESH RUNNER");
+    logger.info(`Run ID: ${runLogger.runId}`);
     logger.info(`Execution Host: ${executionHost}`);
     logger.info("Execution Time: " + new Date().toISOString());
     logger.info("==================================================\n");
@@ -298,9 +313,11 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         const nowIst = new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
         logger.info("✓ Naukri Profile Refresh Run Complete Successfully.");
         logger.info("[LIFECYCLE] FINISHED");
+        await runLogger.finish();
 
     } catch (err) {
         logger.error(`❌ Naukri Profile Refresh Error: ${err.message}`);
+        await runLogger.fail(err);
         await NaukriDiagnostics.persist(page, null, "RUNNER_EXCEPTION");
         process.exit(1);
     } finally {

@@ -16,6 +16,7 @@ const linkedinDiscovery = require("../packages/plugins/linkedin/LinkedInDiscover
 const linkedinApplyEngine = require("../packages/plugins/linkedin/LinkedInApplyEngine");
 const linkedinVerification = require("../packages/plugins/linkedin/LinkedInVerification");
 const oraclePersistence = require("../packages/plugins/linkedin/LinkedInPersistence");
+const { createRunLogger, createAttemptLogger, EVENT_TYPES } = require("../packages/observability");
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -27,8 +28,22 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
     const isDryRun = process.argv.includes("--dry-run") || process.env.DRY_RUN === "true";
     const executionHost = process.platform === "win32" ? "Windows PC" : "Oracle VM";
 
+    const runIdArg = process.argv.includes("--run-id") ? process.argv[process.argv.indexOf("--run-id") + 1] : process.env.RUN_ID;
+    const taskIdArg = process.argv.includes("--task-id") ? process.argv[process.argv.indexOf("--task-id") + 1] : process.env.TASK_ID;
+
+    const runLogger = createRunLogger({
+        portal: "linkedin",
+        action: "apply",
+        workerId: process.platform === "win32" ? "windows" : "oracle",
+        runId: runIdArg,
+        taskId: taskIdArg,
+        triggerType: isDryRun ? "DRY_RUN" : (taskIdArg ? "TELEGRAM_OR_DISPATCHED" : "SCHEDULED")
+    });
+    await runLogger.start();
+
     logger.info("==================================================");
     logger.info("LINKEDIN HARDENED PRODUCTION AUTOMATION RUNNER");
+    logger.info(`Run ID: ${runLogger.runId}`);
     logger.info(`Execution Host: ${executionHost}`);
     logger.info(`Mode: ${isDryRun ? "DRY RUN (No Submissions)" : "ACTIVE PRODUCTION (Live Submissions)"}`);
     logger.info(`Execution Time: ${new Date().toISOString()}`);
@@ -130,11 +145,13 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
             const isDup = await oraclePersistence.isDuplicateJob(jobId, job.url);
             if (isDup) {
                 logger.info(`[Filter] Job ID ${jobId} is already in Oracle DB / Outbox. Skipping.`);
+                await runLogger.recordRejection(job, "DUPLICATE", "Already in DB / Outbox");
                 continue;
             }
 
             await oraclePersistence.recordJob(job);
             validCandidates.push(job);
+            await runLogger.recordSelected(job, job.rankScore || 0);
 
             if (validCandidates.length >= MAX_APPLICATIONS_PER_RUN) break;
         }
@@ -151,6 +168,22 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
             logger.info(`Processing Job #${telemetry.Attempted}: '${job.title}' at '${job.company}' (ID: ${jobId})`);
             logger.info(`Rank Score: ${job.rankScore} | Reason: ${job.selectionReason}`);
 
+            const attemptLogger = createAttemptLogger({
+                runId: runLogger.runId,
+                taskId: runLogger.taskId,
+                portal: "linkedin",
+                jobId: jobId,
+                company: job.company,
+                title: job.title,
+                location: job.location,
+                experience: job.experience,
+                applyType: "NATIVE",
+                workerId: runLogger.workerId,
+                sourceUrl: job.url
+            });
+            await attemptLogger.logStep(EVENT_TYPES.APPLICATION_STARTED, { job });
+            attemptLogger.attachPage(page);
+
             await oraclePersistence.updateJobStatus(jobId, "APPLYING", 0);
 
             const result = await linkedinApplyEngine.applyJob(page, job, { dryRun: isDryRun });
@@ -161,6 +194,8 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
                 await oraclePersistence.updateJobStatus(jobId, "DRY_RUN_PASSED", 0);
                 await oraclePersistence.recordEvent(`evt_dry_${Date.now()}`, jobId, "linkedin", "DRY_RUN_PASSED", { jobTitle: job.title });
                 logger.info(`✅ [STATE_TRANSITION] Job ${jobId} | 'DRY_RUN_MODAL_DISMISSED' -> 'DRY_RUN_PASSED'`);
+                await attemptLogger.complete({ domConfirmed: true });
+                runLogger.recordAttemptOutcome({ verdict: "VERIFIED_APPLIED" });
                 continue;
             }
 
@@ -169,6 +204,8 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
                 await oraclePersistence.updateJobStatus(jobId, "WAITING_FOR_INPUT", 0);
                 await oraclePersistence.recordEvent(`evt_wfi_${Date.now()}`, jobId, "linkedin", "WAITING_FOR_INPUT", { question: result.questionText });
                 logger.warn(`⚠️ [STATE_TRANSITION] Job ${jobId} -> WAITING_FOR_INPUT.`);
+                await attemptLogger.complete({ isWaitingInput: true });
+                runLogger.recordAttemptOutcome({ verdict: "WAITING_FOR_INPUT" });
                 continue;
             }
 
@@ -176,6 +213,8 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
                 telemetry.SkippedExternal++;
                 await oraclePersistence.updateJobStatus(jobId, "SKIPPED_EXTERNAL_ONLY", 0);
                 logger.warn(`ℹ️ [STATE_TRANSITION] Job ${jobId} -> SKIPPED_EXTERNAL_ONLY (No Easy Apply button visible).`);
+                await attemptLogger.complete({ isExternalOnly: true });
+                runLogger.recordAttemptOutcome({ verdict: "SKIPPED_EXTERNAL_ONLY" });
                 continue;
             }
 
@@ -187,7 +226,11 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
                     await oraclePersistence.recordEvent(`evt_app_${Date.now()}`, jobId, "linkedin", "APPLICATION_SUBMITTED", { verified: true });
                     logger.info(`✅ [STATE_TRANSITION] Job ${jobId} | 'SUBMITTED' -> 'VERIFIED_APPLIED' (Authoritative Proof Verified)`);
 
+                    await attemptLogger.complete({ domConfirmed: true, reloadConfirmed: true });
+                    runLogger.recordAttemptOutcome({ verdict: "VERIFIED_APPLIED" });
+
                     const tgMsg = `<b>✅ LinkedIn Easy Apply Submitted & Verified</b>\n\n` +
+                        `• <b>Run ID</b>: <code>${runLogger.runId}</code>\n` +
                         `• <b>Title</b>: <code>${job.title}</code>\n` +
                         `• <b>Company</b>: <code>${job.company}</code>\n` +
                         `• <b>Rank Score</b>: <code>${job.rankScore}</code>\n` +
@@ -198,20 +241,26 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
                     telemetry.Failed++;
                     await oraclePersistence.updateJobStatus(jobId, "UNVERIFIED", 0);
                     logger.warn(`⚠️ [STATE_TRANSITION] Job ${jobId} | 'SUBMITTED' -> 'UNVERIFIED' (Root Cause: ${verifyResult.reason})`);
+                    await attemptLogger.complete({ applyClicked: true, domConfirmed: false });
+                    runLogger.recordAttemptOutcome({ verdict: "CLICKED_UNVERIFIED" });
                 }
             } else {
                 telemetry.Failed++;
                 await oraclePersistence.updateJobStatus(jobId, result.status || "FAILED", 0);
                 logger.error(`❌ [STATE_TRANSITION] Job ${jobId} -> FAILED (${result.status || result.error})`);
+                await attemptLogger.complete({ error: result.status || result.error });
+                runLogger.recordAttemptOutcome({ verdict: "APPLICATION_FAILED", reason: result.status || result.error });
             }
 
             await delay(2000);
         }
 
         saveTelemetry();
+        const runSummaryText = await runLogger.finish();
 
         // 5. Final Telegram Execution Summary Notification
         const summaryMsg = `<b>📊 LinkedIn Automation Run Summary</b>\n\n` +
+            `• <b>Run ID</b>: <code>${runLogger.runId}</code>\n` +
             `• <b>Host</b>: <code>${executionHost}</code>\n` +
             `• <b>Mode</b>: <code>${isDryRun ? "DRY_RUN" : "LIVE"}</code>\n` +
             `• <b>Discovered</b>: <code>${telemetry.Discovered}</code>\n` +
@@ -233,6 +282,7 @@ const MAX_APPLICATIONS_PER_DAY = parseInt(process.env.LINKEDIN_MAX_APPLICATIONS_
 
     } catch (err) {
         logger.error(`❌ Main LinkedIn execution error: ${err.message}`);
+        await runLogger.fail(err);
     } finally {
         await browser.close().catch(() => {});
         await oraclePersistence.flushOutbox().catch(() => {});

@@ -2,6 +2,7 @@ const EventEmitter = require("events");
 const eventBus = require("../events/EventBus");
 const logger = require("../logger");
 const config = require("../config");
+const { workerEventLogger } = require("../observability");
 
 class WorkerRegistry extends EventEmitter {
     constructor() {
@@ -78,12 +79,14 @@ class WorkerRegistry extends EventEmitter {
         const normId = this.normalizeWorkerId(id) || id;
         const worker = this.workers.get(normId);
         if (!worker) {
+            workerEventLogger.logHeartbeat(normId, metrics).catch(() => {});
             return this.registerWorker(normId, { ...metrics, status: "online", lastHeartbeat: Date.now() });
         }
         worker.lastHeartbeat = Date.now();
         if (worker.status === "offline") {
             worker.status = "online";
             logger.scheduler ? logger.scheduler.info(`[WorkerRegistry] Worker ${normId} recovered back to ONLINE state`) : null;
+            workerEventLogger.logStatus(normId, "online", metrics).catch(() => {});
             eventBus.emit("WorkerOnline", { workerId: normId });
         }
         if (metrics.status) worker.status = metrics.status;
@@ -94,6 +97,7 @@ class WorkerRegistry extends EventEmitter {
         if (metrics.lastTaskAt) worker.lastTaskAt = metrics.lastTaskAt;
         if (metrics.tasksCompleted) worker.metrics.tasksCompleted = metrics.tasksCompleted;
         if (metrics.tasksFailed) worker.metrics.tasksFailed = metrics.tasksFailed;
+        workerEventLogger.logHeartbeat(normId, metrics).catch(() => {});
         return worker;
     }
 

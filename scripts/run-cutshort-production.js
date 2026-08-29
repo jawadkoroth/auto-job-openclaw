@@ -11,6 +11,7 @@ const conversationEngine = require("../packages/automation/ConversationEngine");
 const { checkLocationEligibility } = require("../packages/router/LocationEligibilityFilter");
 const intelligentJobRanker = require("../packages/router/IntelligentJobRanker");
 const telegramService = require("../apps/telegram");
+const { createRunLogger, createAttemptLogger, EVENT_TYPES } = require("../packages/observability");
 
 const TARGET_ROLES = [
     "DevOps Engineer",
@@ -76,8 +77,22 @@ function resolveQuestionAnswer(questionText, options = []) {
 (async () => {
     const isDiscoveryOnly = process.argv.includes("--discovery-only") || MAX_APPLICATIONS_PER_RUN === 0;
 
+    const runIdArg = process.argv.includes("--run-id") ? process.argv[process.argv.indexOf("--run-id") + 1] : process.env.RUN_ID;
+    const taskIdArg = process.argv.includes("--task-id") ? process.argv[process.argv.indexOf("--task-id") + 1] : process.env.TASK_ID;
+
+    const runLogger = createRunLogger({
+        portal: "cutshort",
+        action: "apply",
+        workerId: process.platform === "win32" ? "windows" : "oracle",
+        runId: runIdArg,
+        taskId: taskIdArg,
+        triggerType: isDiscoveryOnly ? "DISCOVERY_ONLY" : (taskIdArg ? "TELEGRAM_OR_DISPATCHED" : "SCHEDULED")
+    });
+    await runLogger.start();
+
     console.log("==================================================");
     console.log("CUTSHORT PRODUCTION AUTOMATION RUNNER");
+    console.log(`Run ID: ${runLogger.runId}`);
     console.log(`Execution Mode: ${isDiscoveryOnly ? "DISCOVERY ONLY (No Submissions)" : "ACTIVE PRODUCTION (Live Submissions)"}`);
     console.log(`Execution Time: ${new Date().toISOString()}`);
     console.log("==================================================\n");
@@ -344,11 +359,32 @@ function resolveQuestionAnswer(questionText, options = []) {
             if ((appliedToday + applicationsRun) >= MAX_APPLICATIONS_PER_DAY) break;
 
             telemetry.Attempted++;
-            console.log(`\n[Application ${applicationsRun + 1}/${MAX_APPLICATIONS_PER_RUN}] Processing ${job.title} at ${job.company}...`);
+            console.log(`\n==================================================`);
+            console.log(`[${applicationsRun + 1}/${MAX_APPLICATIONS_PER_RUN}] Processing: ${job.title} at ${job.company}`);
+            console.log(`URL: ${job.url}`);
+            console.log("==================================================");
+
+            const attemptLogger = createAttemptLogger({
+                runId: runLogger.runId,
+                taskId: runLogger.taskId,
+                portal: "cutshort",
+                jobId: job.jobId,
+                company: job.company,
+                title: job.title,
+                location: job.location,
+                experience: job.experience,
+                applyType: "NATIVE",
+                workerId: runLogger.workerId,
+                sourceUrl: job.url
+            });
+            await attemptLogger.logStep(EVENT_TYPES.APPLICATION_STARTED, { job });
+            attemptLogger.attachPage(page);
             
             console.log("   STATE_TRANSITION: JOB_PAGE_LOADED");
             await page.goto(job.url, { waitUntil: "domcontentloaded", timeout: 25000 }).catch(() => {});
             await page.waitForTimeout(2500);
+
+            await attemptLogger.captureScreenshot(page, "before-apply");
 
             // Extract 24-character Hex Mongo ObjectId (hexJobId) from __NEXT_DATA__
             const hexJobId = await page.evaluate(() => {
@@ -383,6 +419,8 @@ function resolveQuestionAnswer(questionText, options = []) {
             if (!pageExpCheck.eligible) {
                 console.log(`   Job page experience not eligible or UNKNOWN ("${effectiveExp || "Missing"}"). Skipping.`);
                 telemetry.Failed++;
+                await attemptLogger.complete({ error: "Job page experience not eligible" });
+                runLogger.recordAttemptOutcome({ verdict: "APPLICATION_FAILED", reason: "Experience Ineligible" });
                 continue;
             }
 
@@ -391,9 +429,12 @@ function resolveQuestionAnswer(questionText, options = []) {
             if (!(await applyBtnLoc.isVisible().catch(() => false))) {
                 console.log(`   Apply button not visible for ${job.jobId}. Skipping.`);
                 telemetry.Failed++;
+                await attemptLogger.complete({ error: "Apply button not visible" });
+                runLogger.recordAttemptOutcome({ verdict: "APPLICATION_FAILED", reason: "Apply button not visible" });
                 continue;
             }
             console.log("   STATE_TRANSITION: APPLY_BUTTON_FOUND");
+            await attemptLogger.logStep(EVENT_TYPES.APPLY_CONTROL_FOUND);
 
             // Save job record
             await db.run(
@@ -407,7 +448,10 @@ function resolveQuestionAnswer(questionText, options = []) {
                 portal: "cutshort",
                 jobId: job.jobId,
                 company: job.company,
-                title: job.title
+                title: job.title,
+                runId: runLogger.runId,
+                taskId: runLogger.taskId,
+                applicationAttemptId: attemptLogger.attemptId
             });
 
             // Set up listener for submission XHR / fetch API call
@@ -438,110 +482,98 @@ function resolveQuestionAnswer(questionText, options = []) {
                 await applyBtnLoc.dispatchEvent("click").catch(() => {});
                 console.log("   STATE_TRANSITION: APPLY_CLICKED");
             }
+            await attemptLogger.logStep(EVENT_TYPES.APPLY_CONTROL_CLICKED);
             await page.waitForTimeout(4000);
 
             console.log("   STATE_TRANSITION: SPA_APPLICATION_UI_OPENED");
-
-            console.log("   STATE_TRANSITION: SPA_APPLICATION_UI_OPENED");
+            await attemptLogger.captureScreenshot(page, "form");
 
             // QUESTIONNAIRE ENGINE: Enumerate and resolve interactive form fields
             const formFields = await page.evaluate(() => {
                 const controls = Array.from(document.querySelectorAll("textarea, input[type='text'], input[type='number'], select, [role='combobox'], [role='radiogroup'], [role='checkbox']"));
                 return controls.map((e, idx) => {
                     let label = "";
-                    if (e.id) {
+                    const parentLabel = e.closest("label");
+                    if (parentLabel) label = parentLabel.innerText;
+                    if (!label && e.id) {
                         const l = document.querySelector(`label[for='${e.id}']`);
                         if (l) label = l.innerText;
                     }
-                    if (!label && e.closest("label")) label = e.closest("label").innerText;
-                    if (!label && e.previousElementSibling) label = e.previousElementSibling.innerText;
-                    if (!label && e.closest("div")) {
-                        const h = e.closest("div").querySelector("h1, h2, h3, h4, label, span, p");
-                        if (h) label = h.innerText;
+                    if (!label && e.getAttribute("aria-label")) label = e.getAttribute("aria-label");
+                    if (!label && e.getAttribute("placeholder")) label = e.getAttribute("placeholder");
+                    if (!label) {
+                        const container = e.closest("div, p, section");
+                        if (container) {
+                            const heading = container.querySelector("h3, h4, h5, p, span, strong");
+                            if (heading) label = heading.innerText;
+                        }
                     }
-                    const isRequired = e.hasAttribute("required") || e.getAttribute("aria-required") === "true";
-                    const isVis = e.offsetWidth > 0 && e.offsetHeight > 0;
                     return {
-                        index: idx,
+                        idx,
                         tagName: e.tagName.toLowerCase(),
-                        type: e.getAttribute("type") || e.tagName.toLowerCase(),
-                        placeholder: e.getAttribute("placeholder") || "",
-                        required: isRequired,
-                        isVisible: isVis,
-                        value: e.value || "",
-                        label: (label || "").trim().replace(/\n+/g, " ")
+                        type: e.getAttribute("type") || "text",
+                        role: e.getAttribute("role") || "",
+                        label: (label || "").trim()
                     };
-                }).filter(e => e.isVisible);
+                });
             }).catch(() => []);
 
-            let formBlockedReason = null;
-            let unresolvedQuestion = null;
+            let hasInteractiveBlockingField = false;
 
-            for (const f of formFields) {
-                const questionText = f.label || f.placeholder;
-                if (!questionText) continue;
+            if (formFields.length > 0) {
+                console.log(`   STATE_TRANSITION: QUESTIONNAIRE_DETECTED (${formFields.length} input elements found)`);
+                await attemptLogger.logStep(EVENT_TYPES.QUESTIONNAIRE_DETECTED, { fieldCount: formFields.length });
 
-                const res = resolveQuestionAnswer(questionText);
-                if (f.required && !res.resolved) {
-                    formBlockedReason = "UNRESOLVED_REQUIRED_QUESTION";
-                    unresolvedQuestion = questionText;
-                    break;
-                }
+                for (const field of formFields) {
+                    const resolution = resolveQuestionAnswer(field.label);
+                    console.log(`   -> Field "${field.label || 'Unnamed'}" [${field.tagName}/${field.type}]: Category=${resolution.category}`);
 
-                // Fill or set value if resolved
-                if (res.resolved && res.answer) {
-                    if (f.tagName === "textarea" || f.type === "text" || f.type === "number") {
-                        const inpLoc = page.locator(`textarea, input[type='text'], input[type='number']`).nth(f.index);
-                        await inpLoc.fill(res.answer).catch(() => {});
+                    if (resolution.resolved) {
+                        console.log(`   STATE_TRANSITION: FIELD_ANSWERED_AUTO (Answer: "${resolution.answer}")`);
+                        await page.evaluate(({ idx, answer }) => {
+                            const controls = Array.from(document.querySelectorAll("textarea, input[type='text'], input[type='number'], select, [role='combobox'], [role='radiogroup'], [role='checkbox']"));
+                            const el = controls[idx];
+                            if (el) {
+                                el.value = answer;
+                                el.dispatchEvent(new Event("input", { bubbles: true }));
+                                el.dispatchEvent(new Event("change", { bubbles: true }));
+                            }
+                        }, { idx: field.idx, answer: resolution.answer }).catch(() => {});
+                    } else {
+                        hasInteractiveBlockingField = true;
+                        console.log(`   STATE_TRANSITION: FIELD_BLOCKED_WAITING_INPUT (Unresolved question: "${field.label}")`);
                     }
                 }
             }
 
-            // Handle default candidate message field if no custom fields blocked
-            const messageInput = page.locator("textarea, input[placeholder*='message'], input[placeholder*='note'], textarea[placeholder*='intro']").first();
-            if (!formBlockedReason && await messageInput.isVisible().catch(() => false)) {
-                console.log("   STATE_TRANSITION: FORM_DETECTED");
-                const introMsg = "Hi, I am interested in this DevOps role. I have 4+ years of hands-on experience in Kubernetes, AWS, Terraform, Docker, and CI/CD pipelines.";
-                await messageInput.fill(introMsg).catch(() => {});
-            }
-
-            if (formBlockedReason === "UNRESOLVED_REQUIRED_QUESTION") {
-                console.warn(`   STATE_TRANSITION: FORM_BLOCKED (Unresolved required question: "${unresolvedQuestion}")`);
-                await db.run(
-                    "UPDATE jobs SET status = 'WAITING_FOR_INPUT', applied = 0, updated_at = CURRENT_TIMESTAMP WHERE portal = 'cutshort' AND job_id = ?",
-                    [job.jobId]
-                );
-
-                eventBus.publish(eventBus.EVENTS.WAITING_FOR_INPUT, {
-                    portal: "cutshort",
-                    jobId: job.jobId,
-                    company: job.company,
-                    title: job.title,
-                    question: unresolvedQuestion
-                });
-
-                if (telegramService && telegramService.sendAlert) {
-                    await telegramService.sendAlert(
-                        `<b>⚠️ CUTSHORT ACTION REQUIRED</b>\n\n` +
-                        `• <b>Portal:</b> Cutshort\n` +
-                        `• <b>Company:</b> ${job.company}\n` +
-                        `• <b>Role:</b> ${job.title}\n` +
-                        `• <b>Question:</b> ${unresolvedQuestion}\n` +
-                        `• <b>Job URL:</b> ${job.url}`
-                    ).catch(() => {});
-                }
-
-                telemetry.Failed++;
+            if (hasInteractiveBlockingField) {
+                console.log("   STATE_TRANSITION: WAITING_FOR_INPUT (Unresolved questions block automated submission)");
+                await attemptLogger.logStep(EVENT_TYPES.WAITING_FOR_INPUT);
+                await db.run("UPDATE jobs SET status = 'WAITING_FOR_INPUT', updated_at = CURRENT_TIMESTAMP WHERE portal = 'cutshort' AND job_id = ?", [job.jobId]);
+                telemetry.WaitingForInput++;
                 page.off("response", responseListener);
+                await attemptLogger.complete({ isWaitingInput: true });
+                runLogger.recordAttemptOutcome({ verdict: "WAITING_FOR_INPUT" });
                 continue;
             }
 
-            console.log("   STATE_TRANSITION: FORM_READY");
+            // Locate and click submission CTA
+            const submitBtn = page.locator("button:has-text('Send application'), button:has-text('Submit application'), button:has-text('Submit'), button:has-text('Send')").first();
+            if (await submitBtn.isVisible().catch(() => false)) {
+                await attemptLogger.captureScreenshot(page, "before-submit");
+                await submitBtn.scrollIntoViewIfNeeded().catch(() => {});
+                console.log("   STATE_TRANSITION: SUBMIT_CLICKED");
+                await attemptLogger.logStep(EVENT_TYPES.SUBMIT_CLICKED);
+                await submitBtn.click().catch(() => {});
+                await page.waitForTimeout(4000);
+            }
 
-            // Secondary Submission Button check inside SPA drawer/modal
-            const secondarySubmitBtn = page.locator("button:has-text('Send application'), button:has-text('Submit'), button:has-text('Send'), button:has-text('Confirm')").first();
+            await attemptLogger.captureScreenshot(page, "after-submit");
+
+            // Secondary Step / Final Confirmation modal check
+            const secondarySubmitBtn = page.locator("button:has-text('Confirm & Send'), button:has-text('Done'), button:has-text('Send anyway')").first();
             if (await secondarySubmitBtn.isVisible().catch(() => false)) {
-                console.log("   STATE_TRANSITION: FINAL_SUBMIT_CLICKED");
+                console.log("   STATE_TRANSITION: SECONDARY_CONFIRMATION_CLICKED");
                 await secondarySubmitBtn.scrollIntoViewIfNeeded().catch(() => {});
                 await secondarySubmitBtn.click().catch(() => {});
                 await page.waitForTimeout(4000);
@@ -550,8 +582,6 @@ function resolveQuestionAnswer(questionText, options = []) {
             page.off("response", responseListener);
 
             // Independent Portal-Side Application Verification (UI + Authoritative API)
-            const pageText = await page.evaluate(() => document.body ? document.body.innerText : "").catch(() => "");
-            const currentUrlAfter = page.url();
             let isPortalVerified = submissionResponseSuccessful;
 
             // Authoritative API Verification Check via /api/auth/ats/my-applications-for-job/<hexJobId>
@@ -561,10 +591,14 @@ function resolveQuestionAnswer(questionText, options = []) {
                     const apiData = await apiRes.json().catch(() => null);
                     if (Array.isArray(apiData) && apiData.length > 0) {
                         isPortalVerified = true;
+                        attemptLogger.setApiConfirmed(true);
                         console.log(`   STATE_TRANSITION: PORTAL_CONFIRMATION_FOUND (Confirmed via /my-applications-for-job/${hexJobId})`);
                     }
                 }
             }
+
+            await attemptLogger.captureDomEvidence(page);
+            await attemptLogger.captureScreenshot(page, "after-reload");
 
             // Fresh Browser Context Verification Check (Phase 7)
             if (isPortalVerified) {
@@ -594,16 +628,23 @@ function resolveQuestionAnswer(questionText, options = []) {
                     portal: "cutshort",
                     jobId: job.jobId,
                     company: job.company,
-                    title: job.title
+                    title: job.title,
+                    runId: runLogger.runId,
+                    taskId: runLogger.taskId,
+                    applicationAttemptId: attemptLogger.attemptId
                 });
 
                 applicationsRun++;
                 telemetry.Applied++;
+                await attemptLogger.complete({ apiConfirmed: true, domConfirmed: true, networkSuccess: submissionResponseSuccessful });
+                runLogger.recordAttemptOutcome({ verdict: "VERIFIED_APPLIED" });
                 console.log(`✓ VERIFIED PORTAL SUBMISSION for ${job.title} (${job.company})`);
             } else {
                 console.warn(`⚠️ Unverified application state on portal for ${job.title}. Marking CLICKED_UNVERIFIED.`);
                 await db.run("UPDATE jobs SET applied = 0, status = 'CLICKED_UNVERIFIED', updated_at = CURRENT_TIMESTAMP WHERE portal = 'cutshort' AND job_id = ?", [job.jobId]);
                 telemetry.Failed++;
+                await attemptLogger.complete({ applyClicked: true, domConfirmed: false, apiConfirmed: false });
+                runLogger.recordAttemptOutcome({ verdict: "CLICKED_UNVERIFIED" });
             }
 
             // Delay between applications
@@ -618,8 +659,11 @@ function resolveQuestionAnswer(questionText, options = []) {
             telemetry.zeroApplicationReason = telemetry.Attempted > 0 ? "APPLICATION_FAILURE" : "UNKNOWN";
         }
 
+        const runSummaryText = await runLogger.finish();
+
         console.log("\n==================================================");
         console.log("CUTSHORT PRODUCTION AUTOMATION RUN COMPLETE");
+        console.log(`Run ID: ${runLogger.runId}`);
         console.log(`Applications Attempted: ${applicationsRun}`);
         console.log(`Total Applications Today: ${appliedToday + applicationsRun}/${MAX_APPLICATIONS_PER_DAY}`);
         console.log("==================================================\n");
@@ -632,13 +676,13 @@ function resolveQuestionAnswer(questionText, options = []) {
             eligible: telemetry.FinalCandidates,
             attempted: telemetry.Attempted,
             applied: telemetry.Applied,
-            waitingForInput: telemetry.WaitingForInput,
-            failed: telemetry.Failed,
-            skippedDuplicates: telemetry.Duplicates + telemetry.AlreadyApplied
-        }).catch(err => console.error("Failed to send Cutshort Telegram run summary:", err.message));
+            zeroReason: telemetry.zeroApplicationReason,
+            runId: runLogger.runId
+        }).catch(() => {});
 
     } catch (err) {
         console.error("❌ Production Runner Error:", err);
+        await runLogger.fail(err);
         telemetry.zeroApplicationReason = "APPLICATION_FAILURE";
         saveTelemetry();
     } finally {

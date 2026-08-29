@@ -522,6 +522,12 @@ class TelegramService {
 
     /**
      * Central Natural Language & Multi-Mode Command Handler (Phase Y)
+     * Follows strict 5-layer routing hierarchy:
+     * 1. Security / Authorization (verified at listener entry)
+     * 2. Deterministic System / Automation Commands (ALWAYS first precedence)
+     * 3. Active WAITING_FOR_INPUT Question Answer
+     * 4. /ai Explicit AI Command
+     * 5. Unprefixed Conversational Message
      */
     async handleCommand(msg) {
         const text = msg.text || "";
@@ -534,282 +540,491 @@ class TelegramService {
         const db = require("../../packages/database");
 
         localLogger.info(`Received Telegram Command: "${text}" from User ID: ${msg.from ? msg.from.id : 'unknown'}`);
-
-        // =========================================================================
-        // MODE 1 — Automation Mode (Highest Priority)
-        // If ANY task or job is in WAITING_FOR_INPUT, all incoming messages belong to that task.
-        // =========================================================================
         await db.init();
-        const waitingJob = await db.get(
-            "SELECT * FROM jobs WHERE status = 'WAITING_FOR_INPUT' ORDER BY updated_at DESC LIMIT 1"
-        );
-        const waitingTask = await db.get(
-            "SELECT * FROM tasks WHERE status = 'WAITING_FOR_INPUT' ORDER BY updated_at DESC LIMIT 1"
-        );
 
-        if (waitingJob || waitingTask) {
-            const targetItem = waitingJob || waitingTask;
-            const questionText = targetItem.pending_question || targetItem.question || "Pending Automation Question";
-            const portal = targetItem.portal || "generic";
-            const jobId = targetItem.job_id || targetItem.id;
+        // =========================================================================
+        // PRIORITY 2 — Deterministic System / Automation Commands
+        // Recognized commands MUST take precedence over WAITING_FOR_INPUT.
+        // =========================================================================
+        const parsed = commandParser.parse(text);
 
-            localLogger.info(`[Automation Mode] Intercepted user answer for waiting question: "${questionText}" -> "${text}"`);
+        if (parsed.isDeterministicCommand && parsed.intent !== "AI") {
+            switch (parsed.intent) {
+                case "START": {
+                    const targetWorker = workerRegistry.getBestWorker(parsed.portal, parsed.targetWorker);
+                    const isOnline = workerRegistry.isWorkerOnline(targetWorker.id);
 
-            // 1. Record Answer into Knowledge Bank / Answer Bank
-            await candidateKnowledgeService.answerBank.saveAnswer(questionText, text, "TELEGRAM_USER_INPUT", "FACTUAL").catch(() => {});
+                    if (!isOnline && targetWorker.id !== "oracle") {
+                        await this.sendMessage(
+                            `❌ <b>Worker Unavailable</b>\n\n` +
+                            `• <b>Portal</b>: <code>${escapeHTML(parsed.portal)}</code>\n` +
+                            `• <b>Requested Worker</b>: <code>${escapeHTML(targetWorker.name || targetWorker.id)}</code>\n` +
+                            `• <b>Status</b>: <code>OFFLINE / STALE</code>\n\n` +
+                            `⚠️ The requested worker node is not connected. Please ensure the worker process is running.`
+                        );
+                        return;
+                    }
 
-            // 2. Update DB status to READY_TO_RESUME
-            if (waitingJob) {
-                await db.run(
-                    `UPDATE jobs SET 
-                        status = 'READY_TO_RESUME', 
-                        pending_suggested_answer = ?, 
-                        updated_at = CURRENT_TIMESTAMP 
-                     WHERE id = ?`,
-                    [text, waitingJob.id]
-                );
+                    const taskId = await taskQueue.push(parsed.portal, parsed.action || "apply", { limit: 10 }, targetWorker.id);
+                    
+                    await this.sendMessage(
+                        `🖥️ <b>${escapeHTML(parsed.portal.toUpperCase())} Job Automation Queued</b>\n\n` +
+                        `• <b>Portal</b>: <code>${escapeHTML(parsed.portal)}</code>\n` +
+                        `• <b>Worker</b>: <b>${escapeHTML(targetWorker.name || targetWorker.id)}</b>\n` +
+                        `• <b>Status</b>: <code>WAITING_FOR_WORKER</code>\n` +
+                        `• <b>Task ID</b>: <code>${taskId.substring(0, 8)}</code>`
+                    );
+                    
+                    await workerRegistry.execute(targetWorker.id, { taskId, portal: parsed.portal, action: parsed.action || "apply", limit: 10 });
+                    return;
+                }
+
+                case "REFRESH_PROFILE": {
+                    const targetWorker = workerRegistry.getBestWorker(parsed.portal, parsed.targetWorker);
+                    const isOnline = workerRegistry.isWorkerOnline(targetWorker.id);
+
+                    if (!isOnline && targetWorker.id !== "oracle") {
+                        await this.sendMessage(
+                            `❌ <b>Worker Unavailable</b>\n\n` +
+                            `• <b>Portal</b>: <code>${escapeHTML(parsed.portal)}</code>\n` +
+                            `• <b>Requested Worker</b>: <code>${escapeHTML(targetWorker.name || targetWorker.id)}</code>\n` +
+                            `• <b>Status</b>: <code>OFFLINE / STALE</code>\n\n` +
+                            `⚠️ The requested worker node is not connected.`
+                        );
+                        return;
+                    }
+
+                    const taskId = await taskQueue.push(parsed.portal, "updateProfile", {}, targetWorker.id);
+                    
+                    await this.sendMessage(
+                        `👤 <b>${escapeHTML(parsed.portal.toUpperCase())} Profile Refresh Queued</b>\n\n` +
+                        `• <b>Portal</b>: <code>${escapeHTML(parsed.portal)}</code>\n` +
+                        `• <b>Worker</b>: <b>${escapeHTML(targetWorker.name || targetWorker.id)}</b>\n` +
+                        `• <b>Status</b>: <code>WAITING_FOR_WORKER</code>\n` +
+                        `• <b>Task ID</b>: <code>${taskId.substring(0, 8)}</code>`
+                    );
+                    
+                    await workerRegistry.execute(targetWorker.id, { taskId, portal: parsed.portal, action: "updateProfile" });
+                    return;
+                }
+
+                case "CANCEL": {
+                    const portal = parsed.portal;
+                    const isAll = !portal || portal === "all";
+
+                    if (isAll) {
+                        await db.run(
+                            "UPDATE jobs SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP WHERE status IN ('WAITING_FOR_INPUT', 'READY_TO_RESUME', 'PENDING')"
+                        );
+                        await db.run(
+                            "UPDATE tasks SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE status IN ('pending', 'WAITING_FOR_INPUT', 'dispatched')"
+                        );
+                    } else {
+                        await db.run(
+                            "UPDATE jobs SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = ? AND status IN ('WAITING_FOR_INPUT', 'READY_TO_RESUME', 'PENDING')",
+                            [portal.toLowerCase()]
+                        );
+                        await db.run(
+                            "UPDATE tasks SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE LOWER(portal) = ? AND status IN ('pending', 'WAITING_FOR_INPUT', 'dispatched')",
+                            [portal.toLowerCase()]
+                        );
+                    }
+
+                    await taskQueue.cancelPending(portal);
+
+                    if (androidWorker && typeof androidWorker.stopJob === "function") {
+                        await androidWorker.stopJob(portal).catch(() => {});
+                    }
+
+                    const portalDisplay = isAll ? "All Pending Automation" : `${portal.toUpperCase()} Automation`;
+                    await this.sendMessage(
+                        `🛑 <b>Automation Cancelled</b>\n\n` +
+                        `• <b>Target</b>: <code>${escapeHTML(portalDisplay)}</code>\n` +
+                        `• <b>Status</b>: <code>CANCELLED</code>\n\n` +
+                        `ℹ️ Active waiting questionnaires and pending queue tasks have been safely cancelled.`
+                    );
+                    return;
+                }
+
+                case "STOP": {
+                    await androidWorker.stopJob(parsed.portal);
+                    await taskQueue.cancelPending(parsed.portal);
+                    await this.sendMessage(`🛑 <b>Automation Stopped</b>\n\n• Target Portal: <code>${escapeHTML(parsed.portal)}</code>\n• Pending queue cleared and active task terminated.`);
+                    return;
+                }
+
+                case "PAUSE": {
+                    androidWorker.pause();
+                    await this.sendMessage(`⏸️ <b>Android Worker Paused</b>\n\nWorker will not process queued tasks until resumed.`);
+                    return;
+                }
+
+                case "RESUME": {
+                    androidWorker.resume();
+                    await this.sendMessage(`▶️ <b>Android Worker Resumed</b>\n\nWorker is ready for incoming automation tasks.`);
+                    return;
+                }
+
+                case "AUTOMATION_STATUS": {
+                    const { storage } = require("../../packages/observability");
+                    const runs = await storage.getRecentRuns(5);
+                    let out = `<b>📊 Automation Runs Observability Status</b>\n\n`;
+                    if (runs.length === 0) {
+                        out += `<i>No recent automation runs recorded.</i>\n`;
+                    } else {
+                        for (const r of runs) {
+                            const statusEmoji = r.status === "COMPLETED" ? "✅" : (r.status === "FAILED" ? "❌" : "⏳");
+                            out += `${statusEmoji} <b>${escapeHTML(r.portal ? r.portal.toUpperCase() : 'UNKNOWN')}</b> [<code>${escapeHTML(r.run_id)}</code>]\n`;
+                            out += `• <b>Trigger</b>: <code>${escapeHTML(r.trigger_type || 'UNKNOWN')}</code> | <b>Worker</b>: <code>${escapeHTML(r.worker_id || 'UNKNOWN')}</code>\n`;
+                            out += `• <b>Discovered</b>: <code>${r.discovered_count}</code> | <b>Selected</b>: <code>${r.selected_count}</code> | <b>Applied</b>: <b>${r.applied_count}</b>\n`;
+                            if (r.zero_reason) out += `• <b>Zero Reason</b>: <code>${escapeHTML(r.zero_reason)}</code>\n`;
+                            out += `• <b>Duration</b>: <code>${r.duration_ms ? (r.duration_ms / 1000).toFixed(1) + 's' : 'In progress'}</code>\n\n`;
+                        }
+                    }
+                    await this.sendMessage(out);
+                    return;
+                }
+
+                case "AUTOMATION_LAST": {
+                    const { storage } = require("../../packages/observability");
+                    const portal = parsed.portal || null;
+                    const latest = await storage.getLatestRun(portal);
+                    if (!latest) {
+                        await this.sendMessage(`🔍 <b>No automation runs found</b>${portal ? ` for portal <code>${escapeHTML(portal)}</code>` : ''}.`);
+                        return;
+                    }
+                    let out = `<b>🔍 Last Automation Run Summary</b>\n\n`;
+                    out += `• <b>Run ID</b>: <code>${escapeHTML(latest.run_id)}</code>\n`;
+                    out += `• <b>Portal</b>: <b>${escapeHTML(latest.portal.toUpperCase())}</b>\n`;
+                    out += `• <b>Worker</b>: <code>${escapeHTML(latest.worker_id || 'windows')}</code>\n`;
+                    out += `• <b>Trigger</b>: <code>${escapeHTML(latest.trigger_type || 'SCHEDULED')}</code>\n`;
+                    out += `• <b>Status</b>: <code>${escapeHTML(latest.status)}</code>\n\n`;
+                    out += `• <b>Discovered</b>: <code>${latest.discovered_count}</code>\n`;
+                    out += `• <b>Selected</b>: <code>${latest.selected_count}</code>\n`;
+                    out += `• <b>Verified Applied</b>: <b>${latest.applied_count}</b>\n`;
+                    if (latest.rejections_json) {
+                        try {
+                            const rej = JSON.parse(latest.rejections_json);
+                            out += `• <b>Rejections Breakdown</b>: Role=${rej.role || 0}, Exp=${rej.experience || 0}, Loc=${rej.location || 0}, SRE=${rej.sre || 0}, Dup=${rej.duplicate || 0}\n`;
+                        } catch (e) {}
+                    }
+                    if (latest.zero_reason) {
+                        out += `• <b>Zero Reason</b>: <code>${escapeHTML(latest.zero_reason)}</code>\n`;
+                    }
+                    out += `• <b>Started</b>: <code>${latest.created_at}</code>\n`;
+                    if (latest.duration_ms) {
+                        out += `• <b>Duration</b>: <code>${(latest.duration_ms / 1000).toFixed(1)}s</code>\n`;
+                    }
+                    await this.sendMessage(out);
+                    return;
+                }
+
+                case "AUTOMATION_RUNS": {
+                    const { storage } = require("../../packages/observability");
+                    const runs = await storage.getRecentRuns(10);
+                    let out = `<b>📋 Recent Automation Runs (Last 10)</b>\n\n`;
+                    if (runs.length === 0) {
+                        out += `<i>No runs recorded yet.</i>\n`;
+                    } else {
+                        for (const r of runs) {
+                            const icon = r.status === "COMPLETED" ? (r.applied_count > 0 ? "🟢" : "🟡") : (r.status === "FAILED" ? "🔴" : "⚪");
+                            out += `${icon} <code>${escapeHTML(r.run_id)}</code>\n`;
+                            out += `   ${escapeHTML(r.portal)} | Applied: ${r.applied_count}/${r.selected_count} | Status: ${r.status}\n`;
+                        }
+                        out += `\n<i>Tip: Type <code>run &lt;run-id&gt;</code> to inspect details.</i>`;
+                    }
+                    await this.sendMessage(out);
+                    return;
+                }
+
+                case "AUTOMATION_LOGS": {
+                    const { storage } = require("../../packages/observability");
+                    const target = parsed.target;
+                    let targetRun = null;
+                    if (target && target.includes("-")) {
+                        targetRun = await storage.getRunDetails(target);
+                    } else {
+                        const latest = await storage.getLatestRun(target);
+                        if (latest) targetRun = await storage.getRunDetails(latest.run_id);
+                    }
+                    if (!targetRun) {
+                        await this.sendMessage(`⚠️ <b>No logs found</b> for the specified run or portal.`);
+                        return;
+                    }
+                    let out = `<b>📜 Automation Logs</b> [<code>${escapeHTML(targetRun.run.run_id)}</code>]\n\n`;
+                    if (targetRun.events && targetRun.events.length > 0) {
+                        const snippet = targetRun.events.slice(-15).map(e => `[${e.event_type}] ${e.message || ''}`).join("\n");
+                        out += `<pre>${escapeHTML(snippet)}</pre>`;
+                    } else {
+                        out += `<i>No structured event logs found for this run.</i>`;
+                    }
+                    await this.sendMessage(out);
+                    return;
+                }
+
+                case "APPLICATION_INSPECT": {
+                    const { storage } = require("../../packages/observability");
+                    const jobId = parsed.jobId;
+                    if (!jobId) {
+                        await this.sendMessage(`⚠️ Please specify a Job ID: <code>application &lt;job-id&gt;</code>`);
+                        return;
+                    }
+                    const details = await storage.getJobApplicationDetails(jobId);
+                    if (!details.job && details.attempts.length === 0) {
+                        await this.sendMessage(`🔍 No application records found for Job ID <code>${escapeHTML(jobId)}</code>.`);
+                        return;
+                    }
+                    const j = details.job || {};
+                    let out = `<b>🔍 Application Inspection: Job ID ${escapeHTML(jobId)}</b>\n\n`;
+                    out += `• <b>Title</b>: <code>${escapeHTML(j.title || 'Unknown')}</code>\n`;
+                    out += `• <b>Company</b>: <code>${escapeHTML(j.company || 'Unknown')}</code>\n`;
+                    out += `• <b>Portal</b>: <code>${escapeHTML(j.portal || 'Unknown')}</code>\n`;
+                    out += `• <b>Status</b>: <code>${escapeHTML(j.status || 'Unknown')}</code> (Applied: ${j.applied ? 'YES' : 'NO'})\n\n`;
+                    out += `<b>Attempts (${details.attempts.length}):</b>\n`;
+                    for (const a of details.attempts) {
+                        const vEmoji = a.verdict === "VERIFIED_APPLIED" ? "✅" : (a.verdict === "WAITING_FOR_INPUT" ? "⏳" : "❌");
+                        out += `${vEmoji} <code>${escapeHTML(a.attempt_id)}</code> [Run: <code>${escapeHTML(a.run_id)}</code>]\n`;
+                        out += `  • Verdict: <code>${escapeHTML(a.verdict)}</code> (Level: ${a.verification_level})\n`;
+                        if (a.failure_reason) out += `  • Reason: <code>${escapeHTML(a.failure_reason)}</code>\n`;
+                        if (a.verification_proof) out += `  • Proof: <code>${escapeHTML(a.verification_proof)}</code>\n`;
+                    }
+                    await this.sendMessage(out);
+                    return;
+                }
+
+                case "RUN_INSPECT": {
+                    const { storage } = require("../../packages/observability");
+                    const runId = parsed.runId;
+                    if (!runId) {
+                        await this.sendMessage(`⚠️ Please specify a Run ID: <code>run &lt;run-id&gt;</code>`);
+                        return;
+                    }
+                    const details = await storage.getRunDetails(runId);
+                    if (!details || !details.run) {
+                        await this.sendMessage(`🔍 Run ID <code>${escapeHTML(runId)}</code> not found.`);
+                        return;
+                    }
+                    const r = details.run;
+                    let out = `<b>🔍 Run Details: <code>${escapeHTML(runId)}</code></b>\n\n`;
+                    out += `• <b>Portal</b>: <b>${escapeHTML(r.portal.toUpperCase())}</b> | <b>Action</b>: <code>${escapeHTML(r.action)}</code>\n`;
+                    out += `• <b>Worker</b>: <code>${escapeHTML(r.worker_id)}</code> | <b>Trigger</b>: <code>${escapeHTML(r.trigger_type)}</code>\n`;
+                    out += `• <b>Status</b>: <code>${escapeHTML(r.status)}</code>\n\n`;
+                    out += `• <b>Discovered</b>: <code>${r.discovered_count}</code>\n`;
+                    out += `• <b>Selected</b>: <code>${r.selected_count}</code>\n`;
+                    out += `• <b>Verified Applied</b>: <b>${r.applied_count}</b>\n`;
+                    out += `• <b>Attempts Recorded</b>: <code>${details.attempts.length}</code>\n`;
+                    if (details.attempts.length > 0) {
+                        out += `\n<b>Attempted Jobs:</b>\n`;
+                        for (const a of details.attempts) {
+                            const vIcon = a.verdict === "VERIFIED_APPLIED" ? "✅" : "❌";
+                            out += `${vIcon} <b>${escapeHTML(a.title)}</b> (${escapeHTML(a.company)}) -> <code>${escapeHTML(a.verdict)}</code>\n`;
+                        }
+                    }
+                    await this.sendMessage(out);
+                    return;
+                }
+
+                case "WORKERS": {
+                    const workers = workerRegistry.getAllWorkers();
+                    let output = `<b>🖥️ OpenClaw Execution Worker Nodes</b>\n\n`;
+                    for (const w of workers) {
+                        const statusEmoji = w.status === "online" ? "🟢" : (w.status === "busy" ? "🟡" : "🔴");
+                        const batteryInfo = w.battery ? ` | 🔋 ${w.battery.level}%${w.battery.charging ? '⚡' : ''}` : "";
+                        const taskInfo = w.currentTask ? ` | ⚙️ Task: ${w.currentTask}` : "";
+                        output += `${statusEmoji} <b>${escapeHTML(w.name)}</b> (<code>${escapeHTML(w.id)}</code>)\n• Status: <code>${w.status.toUpperCase()}</code>${batteryInfo}${taskInfo}\n• Portals: <i>${w.capabilities.slice(0, 4).join(", ")}...</i>\n\n`;
+                    }
+                    await this.sendMessage(output);
+                    return;
+                }
+
+                case "HEALTH": {
+                    const health = await androidWorker.getHealth();
+                    const textOut = `<b>🏥 Android Worker Health Status</b>\n\n` +
+                        `• <b>Node State</b>: <code>${health.status.toUpperCase()}</code>\n` +
+                        `• <b>ADB Device</b>: <code>${health.connection.adbConnected ? 'CONNECTED' : 'EMULATED'}</code>\n` +
+                        `• <b>Chrome CDP</b>: <code>${health.connection.cdpConnected ? 'ACTIVE' : 'READY'}</code>\n` +
+                        `• <b>Battery Level</b>: <b>${health.battery.level}%</b> (${health.battery.charging ? 'Charging ⚡' : 'Discharging'})\n` +
+                        `• <b>Last Heartbeat</b>: <code>${health.lastHeartbeat}</code>`;
+                    await this.sendMessage(textOut);
+                    return;
+                }
+
+                case "STATUS": {
+                    const pendingCount = await taskQueue.getPendingCount();
+                    const workers = workerRegistry.getAllWorkers();
+                    const activeCount = workers.filter(w => w.status === "online" || w.status === "busy").length;
+                    const textOut = `<b>📊 OpenClaw System Status</b>\n\n` +
+                        `• <b>Pending Queue Tasks</b>: <code>${pendingCount}</code>\n` +
+                        `• <b>Active Execution Nodes</b>: <code>${activeCount}/${workers.length}</code>\n` +
+                        `• <b>System Engine</b>: <code>HEALTHY</code>`;
+                    await this.sendMessage(textOut);
+                    return;
+                }
+
+                case "LOGS": {
+                    const logs = androidWorker.getLogs(8);
+                    const logBlock = logs.length > 0 ? logs.join("\n") : "No recent log entries.";
+                    await this.sendMessage(`<b>📜 Android Worker Recent Logs</b>\n\n<pre>${escapeHTML(logBlock)}</pre>`);
+                    return;
+                }
+
+                case "SCREENSHOT": {
+                    const screenshots = androidWorker.getScreenshots();
+                    if (screenshots.length > 0) {
+                        const latest = screenshots[screenshots.length - 1];
+                        await this.sendPhoto(latest, `📸 <b>Latest Android Worker Screenshot</b>`);
+                    } else {
+                        await this.sendMessage(`📸 <b>Screenshot Query</b>: No screenshots captured yet.`);
+                    }
+                    return;
+                }
+
+                case "HEARTBEAT": {
+                    await androidWorker.sendHeartbeat();
+                    await this.sendMessage(`💓 <b>Heartbeat Triggered</b>\n\nHeartbeat ping sent to WorkerRegistry.`);
+                    return;
+                }
+
+                case "RESTART_WORKER": {
+                    androidWorker.resume();
+                    await androidWorker.sendHeartbeat();
+                    await this.sendMessage(`🔄 <b>Android Worker Restarted</b>\n\nWorker process re-initialized successfully.`);
+                    return;
+                }
+
+                case "HELP": {
+                    const helpText = `<b>🤖 OpenClaw Telegram Control</b>\n\n` +
+                        `<b>Automation Commands</b>\n` +
+                        `• <code>start naukri</code>\n` +
+                        `• <code>start linkedin</code>\n` +
+                        `• <code>start hirist</code>\n` +
+                        `• <code>start cutshort</code>\n` +
+                        `• <code>refresh naukri profile</code>\n\n` +
+                        `<b>Worker Selection</b>\n` +
+                        `• <code>start naukri pc</code>\n` +
+                        `• <code>start naukri mobile</code>\n` +
+                        `• <code>start naukri oracle</code>\n` +
+                        `• <code>start linkedin pc</code>\n\n` +
+                        `<b>Control & Cancellation</b>\n` +
+                        `• <code>cancel</code> / <code>cancel all pending</code>\n` +
+                        `• <code>stop</code> / <code>pause</code> / <code>resume</code>\n\n` +
+                        `<b>Status & Monitoring</b>\n` +
+                        `• <code>status</code> / <code>health</code> / <code>workers</code> / <code>logs</code>\n\n` +
+                        `<b>Observability & Diagnostics</b>\n` +
+                        `• <code>automation status</code>\n` +
+                        `• <code>automation last &lt;portal&gt;</code>\n` +
+                        `• <code>automation runs</code>\n` +
+                        `• <code>automation logs &lt;portal|run_id&gt;</code>\n` +
+                        `• <code>application &lt;job-id&gt;</code>\n` +
+                        `• <code>run &lt;run-id&gt;</code>\n\n` +
+                        `<b>AI Assistant</b>\n` +
+                        `• <code>/ai &lt;question&gt;</code>`;
+                    await this.sendMessage(helpText);
+                    return;
+                }
+
+                default:
+                    break;
             }
-            if (waitingTask) {
-                await db.run(
-                    `UPDATE tasks SET 
-                        status = 'READY_TO_RESUME', 
-                        result = ?, 
-                        updated_at = CURRENT_TIMESTAMP 
-                     WHERE id = ?`,
-                    [JSON.stringify({ answer: text }), waitingTask.id]
-                );
-            }
+        }
 
-            // 3. Emit event to notify waiting worker
-            eventBus.publish(eventBus.EVENTS.QUESTION_ANSWERED || "QuestionAnswered", {
-                portal,
-                jobId,
-                question: questionText,
-                answer: text,
-                source: "TELEGRAM_AUTOMATION_MODE"
-            });
-
-            // 4. Respond to Telegram user confirming response forwarded to automation
-            const safeQ = escapeHTML(questionText);
-            const safeA = escapeHTML(text);
-            const safePortal = escapeHTML(portal);
-            await this.sendMessage(
-                `<b>✅ Answer Forwarded to Automation</b>\n\n` +
-                `• <b>Portal</b>: <code>${safePortal}</code>\n` +
-                `• <b>Question</b>: <i>"${safeQ}"</i>\n` +
-                `• <b>Recorded Answer</b>: <code>${safeA}</code>\n\n` +
-                `⚙️ <i>Waiting worker notified. Task resuming...</i>`
+        // =========================================================================
+        // PRIORITY 3 — Active WAITING_FOR_INPUT Question Answer
+        // Only messages that are NOT recognized as system commands may be treated as questionnaire answers.
+        // =========================================================================
+        if (parsed.intent === "UNRECOGNIZED") {
+            const waitingJob = await db.get(
+                "SELECT * FROM jobs WHERE status = 'WAITING_FOR_INPUT' ORDER BY updated_at DESC, id DESC LIMIT 1"
+            );
+            const waitingTask = await db.get(
+                "SELECT * FROM tasks WHERE status = 'WAITING_FOR_INPUT' ORDER BY updated_at DESC, id DESC LIMIT 1"
             );
 
-            // Automation mode owns the conversation completely until completed/cancelled.
+            if (waitingJob || waitingTask) {
+                const targetItem = waitingJob || waitingTask;
+                const questionText = targetItem.pending_question || targetItem.question || "Pending Automation Question";
+                const portal = targetItem.portal || "generic";
+                const jobId = targetItem.job_id || targetItem.id;
+
+                localLogger.info(`[Automation Mode] Intercepted user answer for waiting question: "${questionText}" -> "${text}"`);
+
+                // 1. Record Answer into Knowledge Bank / Answer Bank
+                await candidateKnowledgeService.answerBank.saveAnswer(questionText, text, "TELEGRAM_USER_INPUT", "FACTUAL").catch(() => {});
+
+                // 2. Update DB status to READY_TO_RESUME
+                if (waitingJob) {
+                    await db.run(
+                        `UPDATE jobs SET 
+                            status = 'READY_TO_RESUME', 
+                            pending_suggested_answer = ?, 
+                            updated_at = CURRENT_TIMESTAMP 
+                         WHERE id = ?`,
+                        [text, waitingJob.id]
+                    );
+                }
+                if (waitingTask) {
+                    await db.run(
+                        `UPDATE tasks SET 
+                            status = 'READY_TO_RESUME', 
+                            result = ?, 
+                            updated_at = CURRENT_TIMESTAMP 
+                         WHERE id = ?`,
+                        [JSON.stringify({ answer: text }), waitingTask.id]
+                    );
+                }
+
+                // 3. Emit event to notify waiting worker
+                eventBus.publish(eventBus.EVENTS.QUESTION_ANSWERED || "QuestionAnswered", {
+                    portal,
+                    jobId,
+                    question: questionText,
+                    answer: text,
+                    source: "TELEGRAM_AUTOMATION_MODE"
+                });
+
+                // 4. Respond to Telegram user confirming response forwarded to automation
+                const safeQ = escapeHTML(questionText);
+                const safeA = escapeHTML(text);
+                const safePortal = escapeHTML(portal);
+                await this.sendMessage(
+                    `<b>✅ Answer Forwarded to Automation</b>\n\n` +
+                    `• <b>Portal</b>: <code>${safePortal}</code>\n` +
+                    `• <b>Question</b>: <i>"${safeQ}"</i>\n` +
+                    `• <b>Recorded Answer</b>: <code>${safeA}</code>\n\n` +
+                    `⚙️ <i>Waiting worker notified. Task resuming...</i>`
+                );
+                return;
+            }
+        }
+
+        // =========================================================================
+        // PRIORITY 4 — AI Mode (Explicit ONLY with /ai prefix)
+        // =========================================================================
+        if (parsed.intent === "AI") {
+            const aiService = require("../../packages/ai");
+            try {
+                const prompt = parsed.prompt || text;
+                if (!prompt) {
+                    await this.sendMessage(`🤖 <b>AI Assistant</b>\n\nPlease provide a question after <code>/ai</code> (e.g. <code>/ai Explain Docker networking</code>).`);
+                    return;
+                }
+                const aiReply = await aiService.chatCompletion(prompt);
+                await this.sendMessage(`<b>🤖 OpenClaw AI Assistant</b>\n\n${aiReply}`);
+            } catch (aiErr) {
+                localLogger.error(`AI Completion Error: ${aiErr.message}`);
+                await this.sendMessage(`⚠️ <b>AI Service Notice</b>\n\n<i>${escapeHTML(aiErr.message)}</i>\n\nℹ️ <b>System Note</b>: Deterministic automation commands remain 100% operational.`);
+            }
             return;
         }
 
         // =========================================================================
-        // MODE 2 — Command Mode (Second Priority)
-        // If no task is waiting, parse deterministic commands locally. Never AI.
+        // PRIORITY 5 — Unprefixed Conversational Message (No Command & No Waiting Task)
         // =========================================================================
-        const parsed = commandParser.parse(text);
-
-        switch (parsed.intent) {
-            case "START": {
-                const targetWorker = workerRegistry.getBestWorker(parsed.portal, parsed.targetWorker);
-                const isOnline = workerRegistry.isWorkerOnline(targetWorker.id);
-
-                if (!isOnline && targetWorker.id !== "oracle") {
-                    await this.sendMessage(
-                        `❌ <b>Worker Unavailable</b>\n\n` +
-                        `• <b>Portal</b>: <code>${escapeHTML(parsed.portal)}</code>\n` +
-                        `• <b>Requested Worker</b>: <code>${escapeHTML(targetWorker.name || targetWorker.id)}</code>\n` +
-                        `• <b>Status</b>: <code>OFFLINE / STALE</code>\n\n` +
-                        `⚠️ The requested worker node is not connected. Please ensure the worker process is running.`
-                    );
-                    break;
-                }
-
-                const taskId = await taskQueue.push(parsed.portal, parsed.action || "apply", { limit: 10 }, targetWorker.id);
-                
-                await this.sendMessage(
-                    `🖥️ <b>${escapeHTML(parsed.portal.toUpperCase())} Job Automation Queued</b>\n\n` +
-                    `• <b>Portal</b>: <code>${escapeHTML(parsed.portal)}</code>\n` +
-                    `• <b>Worker</b>: <b>${escapeHTML(targetWorker.name || targetWorker.id)}</b>\n` +
-                    `• <b>Status</b>: <code>WAITING_FOR_WORKER</code>\n` +
-                    `• <b>Task ID</b>: <code>${taskId.substring(0, 8)}</code>`
-                );
-                
-                await workerRegistry.execute(targetWorker.id, { taskId, portal: parsed.portal, action: parsed.action || "apply", limit: 10 });
-                break;
-            }
-
-            case "REFRESH_PROFILE": {
-                const targetWorker = workerRegistry.getBestWorker(parsed.portal, parsed.targetWorker);
-                const isOnline = workerRegistry.isWorkerOnline(targetWorker.id);
-
-                if (!isOnline && targetWorker.id !== "oracle") {
-                    await this.sendMessage(
-                        `❌ <b>Worker Unavailable</b>\n\n` +
-                        `• <b>Portal</b>: <code>${escapeHTML(parsed.portal)}</code>\n` +
-                        `• <b>Requested Worker</b>: <code>${escapeHTML(targetWorker.name || targetWorker.id)}</code>\n` +
-                        `• <b>Status</b>: <code>OFFLINE / STALE</code>\n\n` +
-                        `⚠️ The requested worker node is not connected.`
-                    );
-                    break;
-                }
-
-                const taskId = await taskQueue.push(parsed.portal, "updateProfile", {}, targetWorker.id);
-                
-                await this.sendMessage(
-                    `👤 <b>${escapeHTML(parsed.portal.toUpperCase())} Profile Refresh Queued</b>\n\n` +
-                    `• <b>Portal</b>: <code>${escapeHTML(parsed.portal)}</code>\n` +
-                    `• <b>Worker</b>: <b>${escapeHTML(targetWorker.name || targetWorker.id)}</b>\n` +
-                    `• <b>Status</b>: <code>WAITING_FOR_WORKER</code>\n` +
-                    `• <b>Task ID</b>: <code>${taskId.substring(0, 8)}</code>`
-                );
-                
-                await workerRegistry.execute(targetWorker.id, { taskId, portal: parsed.portal, action: "updateProfile" });
-                break;
-            }
-
-            case "HELP": {
-                const helpText = `<b>🤖 OpenClaw Telegram Control</b>\n\n` +
-                    `<b>Automation Commands</b>\n` +
-                    `• <code>start naukri</code>\n` +
-                    `• <code>start hirist</code>\n` +
-                    `• <code>start cutshort</code>\n` +
-                    `• <code>refresh naukri profile</code>\n\n` +
-                    `<b>Worker Selection</b>\n` +
-                    `• <code>start naukri pc</code>\n` +
-                    `• <code>start naukri mobile</code>\n` +
-                    `• <code>start naukri oracle</code>\n\n` +
-                    `<b>AI Assistant</b>\n` +
-                    `• <code>/ai &lt;question&gt;</code>\n\n` +
-                    `<b>Examples</b>\n` +
-                    `• <code>/ai explain docker</code>\n` +
-                    `• <code>start naukri</code>\n` +
-                    `• <code>workers</code>\n` +
-                    `• <code>status</code>`;
-                await this.sendMessage(helpText);
-                break;
-            }
-
-            case "STOP": {
-                await androidWorker.stopJob(parsed.portal);
-                await taskQueue.cancelPending(parsed.portal);
-                await this.sendMessage(`🛑 <b>Automation Stopped</b>\n\n• Target Portal: <code>${escapeHTML(parsed.portal)}</code>\n• Pending queue cleared and active task terminated.`);
-                break;
-            }
-
-            case "PAUSE": {
-                androidWorker.pause();
-                await this.sendMessage(`⏸️ <b>Android Worker Paused</b>\n\nWorker will not process queued tasks until resumed.`);
-                break;
-            }
-
-            case "RESUME": {
-                androidWorker.resume();
-                await this.sendMessage(`▶️ <b>Android Worker Resumed</b>\n\nWorker is ready for incoming automation tasks.`);
-                break;
-            }
-
-            case "WORKERS": {
-                const workers = workerRegistry.getAllWorkers();
-                let output = `<b>🖥️ OpenClaw Execution Worker Nodes</b>\n\n`;
-                for (const w of workers) {
-                    const statusEmoji = w.status === "online" ? "🟢" : (w.status === "busy" ? "🟡" : "🔴");
-                    const batteryInfo = w.battery ? ` | 🔋 ${w.battery.level}%${w.battery.charging ? '⚡' : ''}` : "";
-                    const taskInfo = w.currentTask ? ` | ⚙️ Task: ${w.currentTask}` : "";
-                    output += `${statusEmoji} <b>${escapeHTML(w.name)}</b> (<code>${escapeHTML(w.id)}</code>)\n• Status: <code>${w.status.toUpperCase()}</code>${batteryInfo}${taskInfo}\n• Portals: <i>${w.capabilities.slice(0, 4).join(", ")}...</i>\n\n`;
-                }
-                await this.sendMessage(output);
-                break;
-            }
-
-            case "HEALTH": {
-                const health = await androidWorker.getHealth();
-                const text = `<b>🏥 Android Worker Health Status</b>\n\n` +
-                    `• <b>Node State</b>: <code>${health.status.toUpperCase()}</code>\n` +
-                    `• <b>ADB Device</b>: <code>${health.connection.adbConnected ? 'CONNECTED' : 'EMULATED'}</code>\n` +
-                    `• <b>Chrome CDP</b>: <code>${health.connection.cdpConnected ? 'ACTIVE' : 'READY'}</code>\n` +
-                    `• <b>Battery Level</b>: <b>${health.battery.level}%</b> (${health.battery.charging ? 'Charging ⚡' : 'Discharging'})\n` +
-                    `• <b>Last Heartbeat</b>: <code>${health.lastHeartbeat}</code>`;
-                await this.sendMessage(text);
-                break;
-            }
-
-            case "STATUS": {
-                const pendingCount = await taskQueue.getPendingCount();
-                const workers = workerRegistry.getAllWorkers();
-                const activeCount = workers.filter(w => w.status === "online" || w.status === "busy").length;
-                const text = `<b>📊 OpenClaw System Status</b>\n\n` +
-                    `• <b>Pending Queue Tasks</b>: <code>${pendingCount}</code>\n` +
-                    `• <b>Active Execution Nodes</b>: <code>${activeCount}/${workers.length}</code>\n` +
-                    `• <b>System Engine</b>: <code>HEALTHY</code>`;
-                await this.sendMessage(text);
-                break;
-            }
-
-            case "LOGS": {
-                const logs = androidWorker.getLogs(8);
-                const logBlock = logs.length > 0 ? logs.join("\n") : "No recent log entries.";
-                await this.sendMessage(`<b>📜 Android Worker Recent Logs</b>\n\n<pre>${escapeHTML(logBlock)}</pre>`);
-                break;
-            }
-
-            case "SCREENSHOT": {
-                const screenshots = androidWorker.getScreenshots();
-                if (screenshots.length > 0) {
-                    const latest = screenshots[screenshots.length - 1];
-                    await this.sendPhoto(latest, `📸 <b>Latest Android Worker Screenshot</b>`);
-                } else {
-                    await this.sendMessage(`📸 <b>Screenshot Query</b>: No screenshots captured yet.`);
-                }
-                break;
-            }
-
-            case "HEARTBEAT": {
-                await androidWorker.sendHeartbeat();
-                await this.sendMessage(`💓 <b>Heartbeat Triggered</b>\n\nHeartbeat ping sent to WorkerRegistry.`);
-                break;
-            }
-
-            case "RESTART_WORKER": {
-                androidWorker.resume();
-                await androidWorker.sendHeartbeat();
-                await this.sendMessage(`🔄 <b>Android Worker Restarted</b>\n\nWorker process re-initialized successfully.`);
-                break;
-            }
-
-            // =========================================================================
-            // MODE 3 — AI Mode (Explicit ONLY)
-            // Triggers ONLY when message starts with /ai (e.g. /ai Explain Docker networking)
-            // =========================================================================
-            case "AI": {
-                const aiService = require("../../packages/ai");
-                try {
-                    const prompt = parsed.prompt || text;
-                    if (!prompt) {
-                        await this.sendMessage(`🤖 <b>AI Assistant</b>\n\nPlease provide a question after <code>/ai</code> (e.g. <code>/ai Explain Docker networking</code>).`);
-                        break;
-                    }
-                    const aiReply = await aiService.chatCompletion(prompt);
-                    await this.sendMessage(`<b>🤖 OpenClaw AI Assistant</b>\n\n${aiReply}`);
-                } catch (aiErr) {
-                    localLogger.error(`AI Completion Error: ${aiErr.message}`);
-                    await this.sendMessage(`⚠️ <b>AI Service Notice</b>\n\n<i>${escapeHTML(aiErr.message)}</i>\n\nℹ️ <b>System Note</b>: Deterministic automation commands remain 100% operational.`);
-                }
-                break;
-            }
-
-            default: {
-                // Non-command text when AI is NOT explicitly requested via /ai
-                await this.sendMessage(
-                    `❓ <b>Unrecognized Command</b>\n\n` +
-                    `AI questions require explicit <code>/ai</code> prefix (e.g. <code>/ai ${escapeHTML(text)}</code>).\n\n` +
-                    `Type <code>help</code> to view all available commands.`
-                );
-                break;
-            }
-        }
+        await this.sendMessage(
+            `❓ <b>Unrecognized Command</b>\n\n` +
+            `AI questions require explicit <code>/ai</code> prefix (e.g. <code>/ai ${escapeHTML(text)}</code>).\n\n` +
+            `Type <code>help</code> to view all available commands.`
+        );
     }
 
     startPolling(onMessageCallback) {

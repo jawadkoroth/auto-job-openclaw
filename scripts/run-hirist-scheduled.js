@@ -21,6 +21,7 @@ const browserPool = require("../packages/browser/BrowserPool");
 const { checkExperienceEligibility } = require("../packages/router/ExperienceEligibilityFilter");
 const { checkLocationEligibility } = require("../packages/router/LocationEligibilityFilter");
 const intelligentJobRanker = require("../packages/router/IntelligentJobRanker");
+const { createRunLogger, createAttemptLogger, EVENT_TYPES } = require("../packages/observability");
 
 function normalizeFailureReason(errMessage, statusReason) {
     const raw = String(statusReason || errMessage || "").toUpperCase();
@@ -57,7 +58,10 @@ function normalizeFailureReason(errMessage, statusReason) {
 (async () => {
     const runStart = Date.now();
     const startTimeStr = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
-    
+
+    const runIdArg = process.argv.includes("--run-id") ? process.argv[process.argv.indexOf("--run-id") + 1] : process.env.RUN_ID;
+    const taskIdArg = process.argv.includes("--task-id") ? process.argv[process.argv.indexOf("--task-id") + 1] : process.env.TASK_ID;
+
     // Effective execution mode resolution
     const dryRunEnv = process.env.DRY_RUN;
     const allowLiveEnv = process.env.ALLOW_LIVE_APPLICATIONS;
@@ -67,8 +71,19 @@ function normalizeFailureReason(errMessage, statusReason) {
     const isAllowLiveEffective = allowLiveEnv !== undefined ? (allowLiveEnv === "true") : (config.search.allowLiveApplications === true);
     const isLiveSubmissionAllowed = (!isDryRunEffective) && isAllowLiveEffective;
 
+    const runLogger = createRunLogger({
+        portal: "hirist",
+        action: "apply",
+        workerId: process.platform === "win32" ? "windows" : "oracle",
+        runId: runIdArg,
+        taskId: taskIdArg,
+        triggerType: isDryRunEffective ? "DRY_RUN" : (taskIdArg ? "TELEGRAM_OR_DISPATCHED" : "SCHEDULED")
+    });
+    await runLogger.start();
+
     console.log("==================================================");
     console.log("HIRIST SCHEDULED AUTOMATION RUNNER");
+    console.log(`Run ID: ${runLogger.runId}`);
     console.log(`Run Started: ${new Date().toISOString()}`);
     console.log(`Trigger Time: ${startTimeStr} IST`);
     console.log(`Portal: Hirist`);
@@ -199,12 +214,25 @@ function normalizeFailureReason(errMessage, statusReason) {
             const rankResult = intelligentJobRanker.rankJob(job);
 
             let rejectionReason = "NONE";
-            if (isDup) rejectionReason = "DUPLICATE_JOB";
-            else if (isSre) rejectionReason = "SRE_EXCLUDED";
-            else if (!matchesKeyword) rejectionReason = "KEYWORD_ROLE_MISMATCH";
-            else if (!expEval.eligible) rejectionReason = expEval.reason;
-            else if (!locEval.eligible) rejectionReason = locEval.reason;
-            else if (!rankResult.isEligible) rejectionReason = rankResult.ineligibleReason || "RANKER_INELIGIBLE";
+            if (isDup) {
+                rejectionReason = "DUPLICATE_JOB";
+                await runLogger.recordRejection(job, "DUPLICATE", "Duplicate job");
+            } else if (isSre) {
+                rejectionReason = "SRE_EXCLUDED";
+                await runLogger.recordRejection(job, "SRE", "SRE role excluded");
+            } else if (!matchesKeyword) {
+                rejectionReason = "KEYWORD_ROLE_MISMATCH";
+                await runLogger.recordRejection(job, "ROLE", "Keyword mismatch");
+            } else if (!expEval.eligible) {
+                rejectionReason = expEval.reason;
+                await runLogger.recordRejection(job, "EXPERIENCE", expEval.reason);
+            } else if (!locEval.eligible) {
+                rejectionReason = locEval.reason;
+                await runLogger.recordRejection(job, "LOCATION", locEval.reason);
+            } else if (!rankResult.isEligible) {
+                rejectionReason = rankResult.ineligibleReason || "RANKER_INELIGIBLE";
+                await runLogger.recordRejection(job, "OTHER", rejectionReason);
+            }
 
             const isFinalEligible = !isDup && !isSre && matchesKeyword && expEval.eligible && locEval.eligible && rankResult.isEligible;
 
@@ -216,6 +244,7 @@ function normalizeFailureReason(errMessage, statusReason) {
                     rankScore: rankResult.rankScore,
                     selectionReason: rankResult.selectionReason
                 });
+                await runLogger.recordSelected(job, rankResult.rankScore);
             } else {
                 rejectedJobsList.push({
                     ...job,
@@ -271,6 +300,22 @@ function normalizeFailureReason(errMessage, statusReason) {
         for (const job of eligibleJobsList) {
             applicationsAttempted++;
 
+            const attemptLogger = createAttemptLogger({
+                runId: runLogger.runId,
+                taskId: runLogger.taskId,
+                portal: "hirist",
+                jobId: job.job_id,
+                company: job.company,
+                title: job.title,
+                location: job.location,
+                experience: job.experience,
+                applyType: job.applyType || "NATIVE",
+                workerId: runLogger.workerId,
+                sourceUrl: job.url
+            });
+            await attemptLogger.logStep(EVENT_TYPES.APPLICATION_STARTED, { job });
+            if (page) attemptLogger.attachPage(page);
+
             let applyResult = null;
             let applyError = null;
             try {
@@ -290,6 +335,8 @@ function normalizeFailureReason(errMessage, statusReason) {
                         "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'DRY_RUN', 'Dry run validated') ON CONFLICT(portal, job_id) DO UPDATE SET status = 'DRY_RUN', reason = 'Dry run validated'",
                         ["hirist", job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
                     ).catch(() => {});
+                    await attemptLogger.complete({ domConfirmed: true });
+                    runLogger.recordAttemptOutcome({ verdict: "VERIFIED_APPLIED" });
                 } else if (statusReason === "submission_pending_verification" || job.status === "SUBMISSION_PENDING_VERIFICATION") {
                     applicationsSubmitted++;
                     applicationsPendingVerification++;
@@ -298,6 +345,8 @@ function normalizeFailureReason(errMessage, statusReason) {
                         "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'SUBMISSION_PENDING_VERIFICATION', 'Click executed, confirmation pending verification') ON CONFLICT(portal, job_id) DO UPDATE SET status = 'SUBMISSION_PENDING_VERIFICATION', applied = 1, reason = 'Click executed, confirmation pending verification'",
                         ["hirist", job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
                     ).catch(() => {});
+                    await attemptLogger.complete({ applyClicked: true, domConfirmed: false });
+                    runLogger.recordAttemptOutcome({ verdict: "SUBMISSION_PENDING_VERIFICATION" });
                 } else {
                     applicationsSubmitted++;
                     console.log(`[Hirist Scheduled] Job ${job.job_id} applied and verified.`);
@@ -305,16 +354,22 @@ function normalizeFailureReason(errMessage, statusReason) {
                         "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'VERIFIED_APPLIED', 'Successfully verified applied') ON CONFLICT(portal, job_id) DO UPDATE SET status = 'VERIFIED_APPLIED', applied = 1, reason = 'Successfully verified applied'",
                         ["hirist", job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
                     ).catch(() => {});
+                    await attemptLogger.complete({ domConfirmed: true, reloadConfirmed: true });
+                    runLogger.recordAttemptOutcome({ verdict: "VERIFIED_APPLIED" });
                 }
             } else if (statusReason === "questionnaire" || (applyResult && applyResult.status === "WAITING_FOR_INPUT")) {
                 applicationsWaitingInput++;
                 console.log(`[Hirist Scheduled] Job ${job.job_id} waiting for questionnaire input.`);
+                await attemptLogger.complete({ isWaitingInput: true });
+                runLogger.recordAttemptOutcome({ verdict: "WAITING_FOR_INPUT" });
             } else if (statusReason === "alreadyApplied") {
                 jobsSkippedDuplicate++;
                 await db.run(
                     "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'ALREADY_APPLIED', 'Already applied') ON CONFLICT(portal, job_id) DO UPDATE SET status = 'ALREADY_APPLIED', applied = 1, reason = 'Already applied'",
                     ["hirist", job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url]
                 ).catch(() => {});
+                await attemptLogger.complete({ domConfirmed: true });
+                runLogger.recordAttemptOutcome({ verdict: "VERIFIED_APPLIED" });
             } else {
                 applicationsFailed++;
                 const failCategory = normalizeFailureReason(applyError ? applyError.message : null, statusReason);
@@ -325,6 +380,8 @@ function normalizeFailureReason(errMessage, statusReason) {
                     "INSERT INTO jobs (portal, job_id, company, title, location, experience, salary, url, applied, status, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'FAILED', ?) ON CONFLICT(portal, job_id) DO UPDATE SET status = 'FAILED', reason = ?",
                     ["hirist", job.job_id, job.company, job.title, job.location, job.experience, job.salary, job.url, failCategory, failCategory]
                 ).catch(() => {});
+                await attemptLogger.complete({ error: failCategory });
+                runLogger.recordAttemptOutcome({ verdict: "APPLICATION_FAILED", reason: failCategory });
             }
 
             if (applicationsAttempted >= (config.search.maxApplicationsPerRun || 5)) {
@@ -334,6 +391,7 @@ function normalizeFailureReason(errMessage, statusReason) {
 
     } catch (err) {
         console.error(`[Hirist Scheduled Error] ${err.message}`);
+        await runLogger.fail(err);
     } finally {
         if (browserInstance) {
             await browserInstance.close().catch(() => {});
@@ -341,9 +399,11 @@ function normalizeFailureReason(errMessage, statusReason) {
     }
 
     const durationSec = ((Date.now() - runStart) / 1000).toFixed(1);
+    const runSummaryText = await runLogger.finish();
 
     console.log("==================================================");
     console.log("HIRIST SCHEDULED RUN SUMMARY");
+    console.log(`Run ID: ${runLogger.runId}`);
     console.log("==================================================");
     console.log(`Run Started: ${new Date(runStart).toISOString()}`);
     console.log(`Trigger Time: ${startTimeStr} IST`);
@@ -376,6 +436,7 @@ function normalizeFailureReason(errMessage, statusReason) {
     const appliedOrDryRunLabel = isDryRunEffective ? `<b>Dry Run Validated:</b> ${applicationsDryRunCount}` : `<b>Applied:</b> ${applicationsSubmitted}`;
 
     const tgSummary = `<b>Hirist Automation Complete</b>\n\n` +
+                      `<b>Run ID:</b> <code>${runLogger.runId}</code>\n` +
                       `<b>Run:</b> ${slotName}\n` +
                       `<b>Mode:</b> ${isLiveSubmissionAllowed ? "LIVE" : "DRY RUN"}\n` +
                       `<b>Jobs Discovered:</b> ${jobsDiscovered}\n` +

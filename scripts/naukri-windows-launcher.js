@@ -167,12 +167,25 @@ async function main() {
         ? path.join(__dirname, "run-naukri-profile-refresh.js")
         : path.join(__dirname, "run-naukri-production.js");
 
+    const runIdArg = args.includes("--run-id") ? args[args.indexOf("--run-id") + 1] : process.env.RUN_ID;
+    const taskIdArg = args.includes("--task-id") ? args[args.indexOf("--task-id") + 1] : process.env.TASK_ID;
+
     const passArgs = args.filter(a => a !== "--task" && a !== taskType);
+    if (runIdArg && !passArgs.includes("--run-id")) passArgs.push("--run-id", runIdArg);
+    if (taskIdArg && !passArgs.includes("--task-id")) passArgs.push("--task-id", taskIdArg);
+
     logger.info(`🚀 Launching child worker script: node ${scriptToRun} ${passArgs.join(" ")}`);
 
     lock.release(); // Release wrapper lock before delegating to runner script's own lock
 
-    const child = fork(scriptToRun, passArgs, { stdio: "inherit" });
+    const child = fork(scriptToRun, passArgs, {
+        stdio: "inherit",
+        env: {
+            ...process.env,
+            RUN_ID: runIdArg || process.env.RUN_ID || "",
+            TASK_ID: taskIdArg || process.env.TASK_ID || ""
+        }
+    });
     child.on("exit", (code) => {
         if (code === 0) {
             logger.info(`✅ Child worker script completed successfully. Marking slot(s) COMPLETED.`);

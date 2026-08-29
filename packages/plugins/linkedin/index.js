@@ -7,6 +7,15 @@ const LinkedInVerification = require("./LinkedInVerification");
 const linkedinPersistence = require("./LinkedInPersistence");
 
 class LinkedInPlugin extends BasePlugin {
+    constructor(context = {}) {
+        const defaultContext = {
+            logger: require("../../logger").plugin("linkedin"),
+            config: require("../../config"),
+            name: "linkedin"
+        };
+        super(context && context.logger ? context : defaultContext);
+    }
+
     async login(page) {
         this.logger.info("LinkedIn login via storageState session bootstrap.");
         return true;
@@ -29,13 +38,12 @@ class LinkedInPlugin extends BasePlugin {
     }
 }
 
-const pluginInstance = new LinkedInPlugin();
-pluginInstance.LinkedInSessionBootstrap = LinkedInSessionBootstrap;
-pluginInstance.LinkedInConcurrencyLock = LinkedInConcurrencyLock;
-pluginInstance.LinkedInDiscovery = LinkedInDiscovery;
-pluginInstance.LinkedInApplyEngine = LinkedInApplyEngine;
-pluginInstance.LinkedInVerification = LinkedInVerification;
-pluginInstance.persistence = linkedinPersistence;
+LinkedInPlugin.LinkedInSessionBootstrap = LinkedInSessionBootstrap;
+LinkedInPlugin.LinkedInConcurrencyLock = LinkedInConcurrencyLock;
+LinkedInPlugin.LinkedInDiscovery = LinkedInDiscovery;
+LinkedInPlugin.LinkedInApplyEngine = LinkedInApplyEngine;
+LinkedInPlugin.LinkedInVerification = LinkedInVerification;
+LinkedInPlugin.persistence = linkedinPersistence;
 
-module.exports = pluginInstance;
+module.exports = LinkedInPlugin;
 

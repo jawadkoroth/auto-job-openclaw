@@ -276,6 +276,95 @@ class Database {
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             `);
+            // Migration columns for application_events
+            await rawRun("ALTER TABLE application_events ADD COLUMN run_id TEXT").catch(() => {});
+            await rawRun("ALTER TABLE application_events ADD COLUMN task_id TEXT").catch(() => {});
+            await rawRun("ALTER TABLE application_events ADD COLUMN application_attempt_id TEXT").catch(() => {});
+            await rawRun("ALTER TABLE application_events ADD COLUMN worker_id TEXT").catch(() => {});
+            await rawRun("ALTER TABLE application_events ADD COLUMN status TEXT").catch(() => {});
+            await rawRun("ALTER TABLE application_events ADD COLUMN message TEXT").catch(() => {});
+            await rawRun("ALTER TABLE application_events ADD COLUMN duration_ms INTEGER DEFAULT 0").catch(() => {});
+
+            // Observability: Automation Runs Table
+            await rawRun(`
+                CREATE TABLE IF NOT EXISTS automation_runs (
+                    run_id TEXT PRIMARY KEY,
+                    portal TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    worker_id TEXT,
+                    task_id TEXT,
+                    status TEXT DEFAULT 'RUNNING',
+                    trigger_type TEXT DEFAULT 'SCHEDULED',
+                    discovered_count INTEGER DEFAULT 0,
+                    eligible_count INTEGER DEFAULT 0,
+                    selected_count INTEGER DEFAULT 0,
+                    attempts_count INTEGER DEFAULT 0,
+                    verified_applied_count INTEGER DEFAULT 0,
+                    pending_verification_count INTEGER DEFAULT 0,
+                    clicked_unverified_count INTEGER DEFAULT 0,
+                    waiting_input_count INTEGER DEFAULT 0,
+                    failed_count INTEGER DEFAULT 0,
+                    zero_reason TEXT,
+                    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    finished_at DATETIME,
+                    duration_ms INTEGER DEFAULT 0,
+                    summary_json TEXT
+                )
+            `);
+
+            // Observability: Worker Events Table
+            await rawRun(`
+                CREATE TABLE IF NOT EXISTS worker_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    worker_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    run_id TEXT,
+                    task_id TEXT,
+                    payload TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
+
+            // Observability: Application Attempts Table
+            await rawRun(`
+                CREATE TABLE IF NOT EXISTS application_attempts (
+                    attempt_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    task_id TEXT,
+                    portal TEXT NOT NULL,
+                    job_id TEXT NOT NULL,
+                    company TEXT,
+                    title TEXT,
+                    location TEXT,
+                    experience TEXT,
+                    apply_type TEXT DEFAULT 'NATIVE',
+                    worker_id TEXT,
+                    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    completed_at DATETIME,
+                    verdict TEXT DEFAULT 'IN_PROGRESS',
+                    verification_level TEXT DEFAULT 'NONE',
+                    application_id TEXT,
+                    source_url TEXT,
+                    destination_url TEXT,
+                    ats TEXT,
+                    error_code TEXT,
+                    error_message TEXT
+                )
+            `);
+
+            // Observability: Application Evidence Table
+            await rawRun(`
+                CREATE TABLE IF NOT EXISTS application_evidence (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    attempt_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    job_id TEXT,
+                    evidence_type TEXT NOT NULL,
+                    file_path TEXT,
+                    data_json TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
         })();
 
         return this.initPromise;

@@ -67,10 +67,17 @@ class EventBus extends EventEmitter {
      */
     async persistEvent(eventData) {
         await db.init();
-        const { eventId, eventType, jobId, conversationId, portal, ...rest } = eventData;
+        const { eventId, eventType, jobId, conversationId, portal, runId, run_id, taskId, task_id, applicationAttemptId, application_attempt_id, workerId, worker_id, status, message, durationMs, duration_ms, ...rest } = eventData;
         
         const portalStr = String(portal || "generic").toLowerCase();
         const jobIdStr = String(jobId || "N/A");
+        const effectiveRunId = runId || run_id || null;
+        const effectiveTaskId = taskId || task_id || null;
+        const effectiveAttemptId = applicationAttemptId || application_attempt_id || null;
+        const effectiveWorkerId = workerId || worker_id || null;
+        const effectiveStatus = status || null;
+        const effectiveMessage = message || null;
+        const effectiveDuration = durationMs || duration_ms || 0;
 
         if (["APPLICATION_STARTED", "APPLICATION_SUBMITTED", "QUESTIONNAIRE_FOUND", "QUESTIONNAIRE_SUBMITTED"].includes(eventType)) {
             const existing = await db.get(
@@ -84,15 +91,23 @@ class EventBus extends EventEmitter {
 
         await db.run(
             `INSERT INTO application_events (
-                event_id, job_id, conversation_id, portal, event_type, payload
-            ) VALUES (?, ?, ?, ?, ?, ?)`,
+                event_id, job_id, conversation_id, portal, event_type, payload,
+                run_id, task_id, application_attempt_id, worker_id, status, message, duration_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 eventId,
                 jobIdStr,
                 conversationId ? String(conversationId) : null,
                 portalStr,
                 eventType,
-                JSON.stringify(rest)
+                JSON.stringify(rest),
+                effectiveRunId,
+                effectiveTaskId,
+                effectiveAttemptId,
+                effectiveWorkerId,
+                effectiveStatus,
+                effectiveMessage,
+                effectiveDuration
             ]
         );
     }

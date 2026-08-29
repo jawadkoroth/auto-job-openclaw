@@ -53,8 +53,20 @@ class ScriptRunner {
         let stderr = "";
 
         return new Promise((resolve) => {
-            const childEnv = { ...process.env, PORTAL_ACTION: action, TASK_ARGS: JSON.stringify(args) };
-            const child = spawn("node", [scriptPath], {
+            const taskId = args.taskId || args.id || "";
+            const runId = args.runId || (args.args && args.args.runId) || "";
+            const childEnv = { 
+                ...process.env, 
+                PORTAL_ACTION: action, 
+                TASK_ARGS: JSON.stringify(args),
+                TASK_ID: taskId,
+                RUN_ID: runId
+            };
+            const cliArgs = [scriptPath];
+            if (runId) cliArgs.push("--run-id", runId);
+            if (taskId) cliArgs.push("--task-id", taskId);
+
+            const child = spawn("node", cliArgs, {
                 cwd: process.cwd(),
                 env: childEnv,
                 stdio: ["pipe", "pipe", "pipe"]

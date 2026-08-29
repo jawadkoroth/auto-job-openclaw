@@ -57,14 +57,31 @@ function registerCron(cronTime, label, portal, action, args = {}) {
     try {
         const workerRegistry = require("../../packages/worker/WorkerRegistry");
         const androidWorker = require("../../packages/worker/AndroidWorker");
+        const { createRunLogger } = require("../../packages/observability");
+
         new CronJob(cronTime, async () => {
             logger.scheduler.info(`Cron triggered: "${label}". Resolving target worker.`);
             const targetWorker = workerRegistry.getBestWorkerForPortal(portal);
-            const id = await taskQueue.push(portal, action, args, targetWorker.id);
-            logger.scheduler.info(`Task queued successfully: ${id} (Assigned Worker: ${targetWorker.id})`);
+            
+            // Create traced run instance
+            const runLogger = createRunLogger({
+                portal,
+                action,
+                workerId: targetWorker.id,
+                triggerType: "SCHEDULED"
+            });
+            await runLogger.start();
+
+            const runId = runLogger.runId;
+            const fullArgs = { ...args, runId };
+            const id = await taskQueue.push(portal, action, fullArgs, targetWorker.id, runId);
+            runLogger.taskId = id;
+            await runLogger.syncToDb();
+
+            logger.scheduler.info(`Task queued successfully: ${id} [Run: ${runId}] (Assigned Worker: ${targetWorker.id})`);
             
             if (targetWorker.id === "android") {
-                androidWorker.startJob(portal, action, { taskId: id, ...args });
+                androidWorker.startJob(portal, action, { taskId: id, runId, ...args });
             }
         }, null, true, "Asia/Kolkata");
         logger.scheduler.info(`Registered scheduler: "${label}" -> [${cronTime}]`);

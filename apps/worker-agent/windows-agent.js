@@ -40,10 +40,12 @@ console.log("==================================================\n");
 let currentTask = null;
 let isExecuting = false;
 
+const { workerEventLogger } = require("../../packages/observability");
+
 async function sendHeartbeat() {
     try {
         const status = isExecuting ? "busy" : "online";
-        await axios.post(`${ORACLE_SERVER_URL}/api/worker/heartbeat`, {
+        const metrics = {
             workerId: WORKER_ID,
             hostname: os.hostname(),
             platform: os.platform(),
@@ -51,7 +53,9 @@ async function sendHeartbeat() {
             status,
             currentTask: currentTask ? currentTask.id : null,
             lastHeartbeat: Date.now()
-        }, HTTP_CONFIG);
+        };
+        await workerEventLogger.logHeartbeat(WORKER_ID, metrics).catch(() => {});
+        await axios.post(`${ORACLE_SERVER_URL}/api/worker/heartbeat`, metrics, HTTP_CONFIG);
         console.log(`[Windows Agent] Heartbeat sent (${status})`);
     } catch (err) {
         console.warn(`[Windows Agent Warning] Heartbeat failed: ${err.message}`);
@@ -70,6 +74,7 @@ async function pollTask() {
         if (res.data && res.data.task) {
             const task = res.data.task;
             console.log(`[Windows Agent] Received Task #${task.id.substring(0, 8)}: portal=${task.portal}, action=${task.action}`);
+            await workerEventLogger.logTaskReceived(WORKER_ID, task.id, task.portal, task.action, task.runId).catch(() => {});
             await executeTask(task);
         }
     } catch (err) {
@@ -80,14 +85,20 @@ async function pollTask() {
 async function executeTask(task) {
     isExecuting = true;
     currentTask = task;
+    const runId = task.runId || (task.args && task.args.runId) || `windows-${task.portal}-${Date.now()}`;
+    const startTime = Date.now();
 
     try {
         // 1. Acknowledge Task
+        await workerEventLogger.logTaskAcknowledged(WORKER_ID, task.id, runId).catch(() => {});
         await axios.post(`${ORACLE_SERVER_URL}/api/worker/ack`, {
             taskId: task.id,
-            workerId: WORKER_ID
+            workerId: WORKER_ID,
+            runId
         }, HTTP_CONFIG).catch(() => {});
-        console.log(`[Windows Agent] Acknowledged Task #${task.id.substring(0, 8)}`);
+        console.log(`[Windows Agent] Acknowledged Task #${task.id.substring(0, 8)} [Run: ${runId}]`);
+
+        await workerEventLogger.logTaskStarted(WORKER_ID, task.id, runId, { portal: task.portal, action: task.action }).catch(() => {});
 
         // 2. Select Script
         let scriptPath = null;
@@ -95,34 +106,58 @@ async function executeTask(task) {
 
         if (task.portal === "naukri") {
             scriptPath = path.join(__dirname, "../../scripts/naukri-windows-launcher.js");
-            scriptArgs = ["--task", task.action === "updateProfile" ? "profile" : "jobs"];
+            scriptArgs = ["--task", task.action === "updateProfile" ? "profile" : "jobs", "--run-id", runId, "--task-id", task.id];
         } else if (task.portal === "linkedin") {
             scriptPath = path.join(__dirname, "../../scripts/linkedin-windows-launcher.js");
-            scriptArgs = ["--task", task.action === "updateProfile" ? "profile" : "jobs"];
+            scriptArgs = ["--task", task.action === "updateProfile" ? "profile" : "jobs", "--run-id", runId, "--task-id", task.id];
         } else {
-            scriptPath = path.join(__dirname, "../../scripts/run-naukri-production.js");
+            scriptPath = path.join(__dirname, `../../scripts/run-${task.portal}-production.js`);
+            if (!fs.existsSync(scriptPath)) {
+                scriptPath = path.join(__dirname, "../../scripts/run-naukri-production.js");
+            }
+            scriptArgs = ["--run-id", runId, "--task-id", task.id];
         }
 
         console.log(`[Windows Agent] Launching script: node ${scriptPath} ${scriptArgs.join(" ")}`);
+        await workerEventLogger.logLauncherStarted(WORKER_ID, task.id, runId, scriptPath).catch(() => {});
 
-        const child = fork(scriptPath, scriptArgs, { stdio: "inherit" });
+        const child = fork(scriptPath, scriptArgs, {
+            stdio: "inherit",
+            env: {
+                ...process.env,
+                RUN_ID: runId,
+                TASK_ID: task.id
+            }
+        });
 
         child.on("exit", async (code) => {
+            const durationMs = Date.now() - startTime;
             isExecuting = false;
             currentTask = null;
 
+            await workerEventLogger.logLauncherOutcome({
+                workerId: WORKER_ID,
+                taskId: task.id,
+                runId,
+                exitCode: code,
+                durationMs,
+                error: code === 0 ? null : `Process exited with code ${code}`
+            }).catch(() => {});
+
             if (code === 0) {
-                console.log(`[Windows Agent] Task #${task.id.substring(0, 8)} COMPLETED successfully.`);
+                console.log(`[Windows Agent] Task #${task.id.substring(0, 8)} COMPLETED successfully (${(durationMs / 1000).toFixed(1)}s).`);
                 await axios.post(`${ORACLE_SERVER_URL}/api/worker/complete`, {
                     taskId: task.id,
                     workerId: WORKER_ID,
-                    result: { success: true, exitCode: 0 }
+                    runId,
+                    result: { success: true, exitCode: 0, durationMs, portal: task.portal, action: task.action }
                 }, HTTP_CONFIG).catch(() => {});
             } else {
                 console.error(`[Windows Agent] Task #${task.id.substring(0, 8)} FAILED with exit code ${code}.`);
                 await axios.post(`${ORACLE_SERVER_URL}/api/worker/fail`, {
                     taskId: task.id,
                     workerId: WORKER_ID,
+                    runId,
                     error: `Process exited with error code ${code}`
                 }, HTTP_CONFIG).catch(() => {});
             }
@@ -132,9 +167,18 @@ async function executeTask(task) {
         console.error(`[Windows Agent Error] Execution failed: ${err.message}`);
         isExecuting = false;
         currentTask = null;
+        await workerEventLogger.logLauncherOutcome({
+            workerId: WORKER_ID,
+            taskId: task.id,
+            runId,
+            exitCode: 1,
+            durationMs: Date.now() - startTime,
+            error: err.message
+        }).catch(() => {});
         await axios.post(`${ORACLE_SERVER_URL}/api/worker/fail`, {
             taskId: task.id,
             workerId: WORKER_ID,
+            runId,
             error: err.message
         }, HTTP_CONFIG).catch(() => {});
     }
