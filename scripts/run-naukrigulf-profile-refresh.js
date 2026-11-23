@@ -36,6 +36,19 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     logger.info("Execution Time: " + new Date().toISOString());
     logger.info("==================================================\n");
 
+    const sendFailureAlert = async (classification, reason) => {
+        try {
+            const nowIst = new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
+            const tgMsg = `<b>⚠️ NaukriGulf Profile Refresh Failed</b>\n\n` +
+                `• <b>Portal</b>: <code>NaukriGulf</code>\n` +
+                `• <b>Classification</b>: <code>${classification}</code>\n` +
+                `• <b>Reason</b>: <code>${reason}</code>\n` +
+                `• <b>Executed From</b>: <code>${executionHost}</code>\n` +
+                `• <b>Time (IST)</b>: <code>${nowIst}</code>`;
+            await telegramService.sendMessage(tgMsg).catch(() => {});
+        } catch (e) {}
+    };
+
     const lock = new NaukriGulfConcurrencyLock("naukrigulf_profile_refresh.lock");
     if (!lock.acquire()) {
         logger.warn("⚠️ naukrigulf_profile_refresh runner is already executing. Exiting as SKIPPED_ALREADY_RUNNING.");
@@ -49,6 +62,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
     if (boot.status === "SESSION_EXPIRED") {
         logger.error("❌ Profile Refresh halted: Session expired. Re-authentication required.");
+        await sendFailureAlert("SESSION_EXPIRED", "Saved session expired or redirected to login.");
         lock.release();
         process.exit(1);
     }
@@ -56,6 +70,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     if (boot.status === "AKAMAI_BLOCKED") {
         logger.error("❌ Profile Refresh halted: Akamai 403 Access Denied during bootstrap.");
         await NaukriGulfDiagnostics.persist(boot.page, null, "BOOTSTRAP_AKAMAI_BLOCKED", "AKAMAI_TEMPORARY_BLOCK");
+        await sendFailureAlert("AKAMAI_TEMPORARY_BLOCK", "Akamai 403 Access Denied during bootstrap.");
         if (boot.browser) await boot.browser.close().catch(() => {});
         lock.release();
         process.exit(1);
@@ -63,6 +78,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
     if (boot.status !== "AUTHENTICATED" || !boot.page) {
         logger.error(`❌ Profile Refresh halted: Bootstrap failed with status ${boot.status}`);
+        await sendFailureAlert("BOOTSTRAP_FAILED", `Bootstrap returned status: ${boot.status}`);
         if (boot.browser) await boot.browser.close().catch(() => {});
         lock.release();
         process.exit(1);
@@ -81,11 +97,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         if (currentUrl.includes("/login") || currentUrl.includes("/nlogin/")) {
             logger.error("❌ Session redirect detected during profile navigation.");
             await NaukriGulfDiagnostics.persist(page, null, "PROFILE_AUTH_EXPIRED", "SESSION_EXPIRED");
-            const tgMsg = `<b>⚠️ NaukriGulf Profile Refresh Failed</b>\n\n` +
-                `• <b>Portal</b>: <code>NaukriGulf</code>\n` +
-                `• <b>Classification</b>: <code>SESSION_EXPIRED</code>\n` +
-                `• <b>Executed From</b>: <code>${executionHost}</code>`;
-            await telegramService.sendMessage(tgMsg).catch(() => {});
+            await sendFailureAlert("SESSION_EXPIRED", "Redirected to login during CV page navigation.");
             process.exit(1);
         }
 
@@ -98,20 +110,51 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
         // Click Edit button for CV Headline
         logger.info("[2/4] Opening CV Headline Edit Form...");
-        const editBtn = page.locator("h4:has-text('CV Headline') ~ button.edit-cta, .ec-heading:has-text('CV Headline') button.edit-cta, section#cvHeadline button.edit-cta").first();
-        if (await editBtn.count() === 0) {
+        const editBtnLocators = [
+            page.locator("h4:has-text('CV Headline') ~ button.edit-cta"),
+            page.locator(".ec-heading:has-text('CV Headline') button.edit-cta"),
+            page.locator("section#cvHeadline button.edit-cta"),
+            page.locator(":has-text('CV Headline') button:has-text('Edit')"),
+            page.locator("button.edit-cta")
+        ];
+
+        let editBtn = null;
+        for (const loc of editBtnLocators) {
+            if (await loc.count().catch(() => 0) > 0 && await loc.first().isVisible().catch(() => false)) {
+                editBtn = loc.first();
+                break;
+            }
+        }
+
+        if (!editBtn) {
             logger.error("❌ Edit button for CV Headline not found.");
             await NaukriGulfDiagnostics.persist(page, null, "EDIT_BUTTON_NOT_FOUND", "SELECTOR_CHANGED");
+            await sendFailureAlert("SELECTOR_CHANGED", "Edit button for CV Headline not found.");
             process.exit(1);
         }
 
         await editBtn.click();
         await delay(2000);
 
-        const textarea = page.locator("textarea#cvHeadline, textarea[name='cvHeadline']").first();
-        if (await textarea.count() === 0) {
+        const textareaLocators = [
+            page.locator("textarea#cvHeadline"),
+            page.locator("textarea[name='cvHeadline']"),
+            page.locator("section#cvHeadline textarea"),
+            page.locator("textarea")
+        ];
+
+        let textarea = null;
+        for (const loc of textareaLocators) {
+            if (await loc.count().catch(() => 0) > 0 && await loc.first().isVisible().catch(() => false)) {
+                textarea = loc.first();
+                break;
+            }
+        }
+
+        if (!textarea) {
             logger.error("❌ Textarea for CV Headline not found.");
             await NaukriGulfDiagnostics.persist(page, null, "TEXTAREA_NOT_FOUND", "SELECTOR_CHANGED");
+            await sendFailureAlert("SELECTOR_CHANGED", "Textarea for CV Headline not found.");
             process.exit(1);
         }
 
@@ -119,6 +162,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         if (!existingVal || existingVal.length < 5) {
             logger.error("❌ SAFETY INVARIANT VIOLATION: Existing headline content unreadable or empty. Aborting.");
             await NaukriGulfDiagnostics.persist(page, null, "UNREADABLE_BEFORE_HEADLINE", "SELECTOR_CHANGED");
+            await sendFailureAlert("UNREADABLE_BEFORE_HEADLINE", "Existing CV headline unreadable or empty.");
             process.exit(1);
         }
 
@@ -140,10 +184,25 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
             }
         });
 
-        const saveBtn = page.locator("section#cvHeadline button[type='submit'], section#cvHeadline .ng-btn.blue:has-text('Save'), button:has-text('Save')").first();
-        if (await saveBtn.count() === 0) {
+        const saveBtnLocators = [
+            page.locator("section#cvHeadline button[type='submit']"),
+            page.locator("section#cvHeadline .ng-btn.blue:has-text('Save')"),
+            page.locator("section#cvHeadline button:has-text('Save')"),
+            page.locator("button:has-text('Save')")
+        ];
+
+        let saveBtn = null;
+        for (const loc of saveBtnLocators) {
+            if (await loc.count().catch(() => 0) > 0 && await loc.first().isVisible().catch(() => false)) {
+                saveBtn = loc.first();
+                break;
+            }
+        }
+
+        if (!saveBtn) {
             logger.error("❌ Save button for CV Headline not found.");
             await NaukriGulfDiagnostics.persist(page, null, "SAVE_BUTTON_NOT_FOUND", "SELECTOR_CHANGED");
+            await sendFailureAlert("SELECTOR_CHANGED", "Save button for CV Headline not found.");
             process.exit(1);
         }
 
@@ -207,12 +266,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
                 after: reloadedHeadline
             });
 
-            const tgAlert = `<b>⚠️ PROFILE REFRESH INTEGRITY FAILURE</b>\n\n` +
-                `• <b>Portal</b>: <code>NaukriGulf</code>\n` +
-                `• <b>Status</b>: <code>INTEGRITY_FAILURE</code>\n` +
-                `• <b>Details</b>: Profile headline content altered unexpectedly during refresh.\n` +
-                `• <b>Executed From</b>: <code>${executionHost}</code>`;
-            await telegramService.sendMessage(tgAlert).catch(() => {});
+            await sendFailureAlert("INTEGRITY_FAILURE", "CV headline altered unexpectedly during refresh.");
             process.exit(1);
         }
 
@@ -249,6 +303,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         logger.error(`❌ NaukriGulf Profile Refresh Error: ${err.message}`);
         await runLogger.fail(err).catch(() => {});
         await NaukriGulfDiagnostics.persist(page, null, "RUNNER_EXCEPTION");
+        await sendFailureAlert("RUNNER_EXCEPTION", err.message);
         process.exit(1);
     } finally {
         if (context) await context.close().catch(() => {});
@@ -256,4 +311,3 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         lock.release();
     }
 })();
-

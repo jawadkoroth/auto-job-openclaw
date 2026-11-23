@@ -44,6 +44,19 @@ async function extractFreshness(page) {
     logger.info("Execution Time: " + new Date().toISOString());
     logger.info("==================================================\n");
 
+    const sendFailureAlert = async (classification, reason) => {
+        try {
+            const nowIst = new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
+            const tgMsg = `<b>⚠️ Foundit Profile Refresh Failed</b>\n\n` +
+                `• <b>Portal</b>: <code>Foundit</code>\n` +
+                `• <b>Classification</b>: <code>${classification}</code>\n` +
+                `• <b>Reason</b>: <code>${reason}</code>\n` +
+                `• <b>Executed From</b>: <code>${executionHost}</code>\n` +
+                `• <b>Time (IST)</b>: <code>${nowIst}</code>`;
+            await telegramService.sendMessage(tgMsg).catch(() => {});
+        } catch (e) {}
+    };
+
     const lock = new FounditConcurrencyLock("foundit_profile_refresh.lock");
     if (!lock.acquire()) {
         logger.warn("⚠️ foundit_profile_refresh runner is already executing. Exiting as SKIPPED_ALREADY_RUNNING.");
@@ -57,6 +70,7 @@ async function extractFreshness(page) {
 
     if (boot.status === "SESSION_EXPIRED") {
         logger.error("❌ Profile Refresh halted: Session expired. Re-authentication required.");
+        await sendFailureAlert("SESSION_EXPIRED", "Saved session expired or redirected to login.");
         lock.release();
         process.exit(1);
     }
@@ -64,6 +78,7 @@ async function extractFreshness(page) {
     if (boot.status === "AKAMAI_BLOCKED") {
         logger.error("❌ Profile Refresh halted: Akamai 403 Access Denied during bootstrap.");
         await FounditDiagnostics.persist(boot.page, null, "BOOTSTRAP_AKAMAI_BLOCKED", "AKAMAI_TEMPORARY_BLOCK");
+        await sendFailureAlert("AKAMAI_TEMPORARY_BLOCK", "Akamai 403 Access Denied during bootstrap.");
         if (boot.browser) await boot.browser.close().catch(() => {});
         lock.release();
         process.exit(1);
@@ -71,6 +86,7 @@ async function extractFreshness(page) {
 
     if (boot.status !== "AUTHENTICATED" || !boot.page) {
         logger.error(`❌ Profile Refresh halted: Bootstrap failed with status ${boot.status}`);
+        await sendFailureAlert("BOOTSTRAP_FAILED", `Bootstrap returned status: ${boot.status}`);
         if (boot.browser) await boot.browser.close().catch(() => {});
         lock.release();
         process.exit(1);
@@ -89,11 +105,7 @@ async function extractFreshness(page) {
         if (currentUrl.includes("/login") || currentUrl.includes("/rio/login")) {
             logger.error("❌ Session redirect detected during profile navigation.");
             await FounditDiagnostics.persist(page, null, "PROFILE_AUTH_EXPIRED", "SESSION_EXPIRED");
-            const tgMsg = `<b>⚠️ Foundit Profile Refresh Failed</b>\n\n` +
-                `• <b>Portal</b>: <code>Foundit</code>\n` +
-                `• <b>Classification</b>: <code>SESSION_EXPIRED</code>\n` +
-                `• <b>Executed From</b>: <code>${executionHost}</code>`;
-            await telegramService.sendMessage(tgMsg).catch(() => {});
+            await sendFailureAlert("SESSION_EXPIRED", "Redirected to login during profile navigation.");
             process.exit(1);
         }
 
@@ -103,20 +115,49 @@ async function extractFreshness(page) {
 
         // Click Edit button on Profile summary
         logger.info("[2/4] Opening Profile Summary Edit Form...");
-        const editBtn = page.locator("#PROFILE_SUMMARY_CONTENT #SECTION_EDIT_BUTTON").first();
-        if (await editBtn.count() === 0) {
+        const editBtnLocators = [
+            page.locator("#PROFILE_SUMMARY_CONTENT #SECTION_EDIT_BUTTON"),
+            page.locator("#PROFILE_SUMMARY_CONTENT button"),
+            page.locator(":has-text('Profile summary') button#SECTION_EDIT_BUTTON")
+        ];
+
+        let editBtn = null;
+        for (const loc of editBtnLocators) {
+            if (await loc.count().catch(() => 0) > 0 && await loc.first().isVisible().catch(() => false)) {
+                editBtn = loc.first();
+                break;
+            }
+        }
+
+        if (!editBtn) {
             logger.error("❌ Edit button for Profile Summary not found.");
             await FounditDiagnostics.persist(page, null, "EDIT_BUTTON_NOT_FOUND", "SELECTOR_CHANGED");
+            await sendFailureAlert("SELECTOR_CHANGED", "Edit button for Profile Summary not found.");
             process.exit(1);
         }
 
         await editBtn.click();
         await delay(2000);
 
-        const textarea = page.locator("textarea#summary, textarea[name='summary']").first();
-        if (await textarea.count() === 0) {
+        const textareaLocators = [
+            page.locator("textarea#summary"),
+            page.locator("textarea[name='summary']"),
+            page.locator("div.guic-modal-container textarea"),
+            page.locator("textarea")
+        ];
+
+        let textarea = null;
+        for (const loc of textareaLocators) {
+            if (await loc.count().catch(() => 0) > 0 && await loc.first().isVisible().catch(() => false)) {
+                textarea = loc.first();
+                break;
+            }
+        }
+
+        if (!textarea) {
             logger.error("❌ Textarea for Profile Summary not found.");
             await FounditDiagnostics.persist(page, null, "TEXTAREA_NOT_FOUND", "SELECTOR_CHANGED");
+            await sendFailureAlert("SELECTOR_CHANGED", "Textarea for Profile Summary not found.");
             process.exit(1);
         }
 
@@ -124,6 +165,7 @@ async function extractFreshness(page) {
         if (!existingVal || existingVal.length < 20) {
             logger.error("❌ SAFETY INVARIANT VIOLATION: Existing profile summary unreadable or too short. Aborting.");
             await FounditDiagnostics.persist(page, null, "UNREADABLE_BEFORE_SUMMARY", "SELECTOR_CHANGED");
+            await sendFailureAlert("UNREADABLE_BEFORE_SUMMARY", "Existing profile summary unreadable or too short.");
             process.exit(1);
         }
 
@@ -145,10 +187,23 @@ async function extractFreshness(page) {
             }
         });
 
-        const saveBtn = page.locator("div.guic-modal-container button:has-text('Save'), button:has-text('Save')").first();
-        if (await saveBtn.count() === 0) {
+        const saveBtnLocators = [
+            page.locator("div.guic-modal-container button:has-text('Save')"),
+            page.locator("button:has-text('Save')")
+        ];
+
+        let saveBtn = null;
+        for (const loc of saveBtnLocators) {
+            if (await loc.count().catch(() => 0) > 0 && await loc.first().isVisible().catch(() => false)) {
+                saveBtn = loc.first();
+                break;
+            }
+        }
+
+        if (!saveBtn) {
             logger.error("❌ Save button for Profile Summary modal not found.");
             await FounditDiagnostics.persist(page, null, "SAVE_BUTTON_NOT_FOUND", "SELECTOR_CHANGED");
+            await sendFailureAlert("SELECTOR_CHANGED", "Save button for Profile Summary modal not found.");
             process.exit(1);
         }
 
@@ -208,12 +263,7 @@ async function extractFreshness(page) {
                 after: reloadedSummary
             });
 
-            const tgAlert = `<b>⚠️ PROFILE REFRESH INTEGRITY FAILURE</b>\n\n` +
-                `• <b>Portal</b>: <code>Foundit</code>\n` +
-                `• <b>Status</b>: <code>INTEGRITY_FAILURE</code>\n` +
-                `• <b>Details</b>: Profile summary content altered unexpectedly during refresh.\n` +
-                `• <b>Executed From</b>: <code>${executionHost}</code>`;
-            await telegramService.sendMessage(tgAlert).catch(() => {});
+            await sendFailureAlert("INTEGRITY_FAILURE", "Profile summary altered unexpectedly during refresh.");
             process.exit(1);
         }
 
@@ -250,6 +300,7 @@ async function extractFreshness(page) {
         logger.error(`❌ Foundit Profile Refresh Error: ${err.message}`);
         await runLogger.fail(err).catch(() => {});
         await FounditDiagnostics.persist(page, null, "RUNNER_EXCEPTION");
+        await sendFailureAlert("RUNNER_EXCEPTION", err.message);
         process.exit(1);
     } finally {
         if (context) await context.close().catch(() => {});

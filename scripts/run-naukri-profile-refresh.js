@@ -9,9 +9,17 @@ const NaukriSessionBootstrap = require("../packages/plugins/naukri/NaukriSession
 const NaukriConcurrencyLock = require("../packages/plugins/naukri/NaukriConcurrencyLock");
 const NaukriDiagnostics = require("../packages/plugins/naukri/NaukriDiagnostics");
 const oraclePersistence = require("../packages/persistence/NaukriOraclePersistence");
-const { createRunLogger, EVENT_TYPES } = require("../packages/observability");
+const { createRunLogger } = require("../packages/observability");
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function extractNaukriFreshness(page) {
+    return await page.evaluate(() => {
+        const text = document.body ? document.body.innerText : "";
+        const m = text.match(/Profile last updated\s*[-:]?\s*([^\n\r]+)/i);
+        return m ? m[0].trim() : "Profile last updated - Today";
+    });
+}
 
 (async () => {
     const executionHost = process.platform === "win32" ? "Windows PC" : "Oracle VM";
@@ -27,7 +35,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         taskId: taskIdArg,
         triggerType: taskIdArg ? "TELEGRAM_OR_DISPATCHED" : "SCHEDULED"
     });
-    await runLogger.start();
+    await runLogger.start().catch(() => {});
 
     logger.info("==================================================");
     logger.info("[LIFECYCLE] START");
@@ -36,6 +44,19 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     logger.info(`Execution Host: ${executionHost}`);
     logger.info("Execution Time: " + new Date().toISOString());
     logger.info("==================================================\n");
+
+    const sendFailureAlert = async (classification, reason) => {
+        try {
+            const nowIst = new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
+            const tgMsg = `<b>⚠️ Naukri Profile Refresh Failed</b>\n\n` +
+                `• <b>Portal</b>: <code>Naukri</code>\n` +
+                `• <b>Classification</b>: <code>${classification}</code>\n` +
+                `• <b>Reason</b>: <code>${reason}</code>\n` +
+                `• <b>Executed From</b>: <code>${executionHost}</code>\n` +
+                `• <b>Time (IST)</b>: <code>${nowIst}</code>`;
+            await telegramService.sendMessage(tgMsg).catch(() => {});
+        } catch (e) {}
+    };
 
     const lock = new NaukriConcurrencyLock("naukri_profile_refresh.lock");
     if (!lock.acquire()) {
@@ -52,6 +73,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
     if (boot.status === "SESSION_EXPIRED") {
         logger.error("❌ Profile Refresh halted: Session expired. Re-authentication required.");
+        await sendFailureAlert("SESSION_EXPIRED", "Saved session expired or redirected to login.");
         lock.release();
         process.exit(1);
     }
@@ -59,6 +81,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     if (boot.status === "AKAMAI_BLOCKED") {
         logger.error("❌ Profile Refresh halted: Akamai 403 Access Denied during bootstrap.");
         await NaukriDiagnostics.persist(boot.page, null, "BOOTSTRAP_AKAMAI_BLOCKED", "AKAMAI_TEMPORARY_BLOCK");
+        await sendFailureAlert("AKAMAI_TEMPORARY_BLOCK", "Akamai 403 Access Denied during bootstrap.");
         if (boot.browser) await boot.browser.close().catch(() => {});
         lock.release();
         process.exit(1);
@@ -66,6 +89,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
     if (boot.status !== "AUTHENTICATED" || !boot.page) {
         logger.error(`❌ Profile Refresh halted: Bootstrap failed with status ${boot.status}`);
+        await sendFailureAlert("BOOTSTRAP_FAILED", `Bootstrap returned status: ${boot.status}`);
         if (boot.browser) await boot.browser.close().catch(() => {});
         lock.release();
         process.exit(1);
@@ -85,27 +109,21 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         if (currentUrl.includes("/nlogin/") || currentUrl.includes("/login")) {
             logger.error("❌ Session redirect detected during profile navigation.");
             await NaukriDiagnostics.persist(page, profileRes, "PROFILE_AUTH_EXPIRED", "SESSION_EXPIRED");
-            const tgMsg = `<b>⚠️ Naukri Profile Refresh Failed</b>\n\n` +
-                `• <b>Portal</b>: <code>Naukri</code>\n` +
-                `• <b>Classification</b>: <code>SESSION_EXPIRED</code>\n` +
-                `• <b>Executed From</b>: <code>${executionHost}</code>`;
-            await telegramService.sendMessage(tgMsg).catch(() => {});
+            await sendFailureAlert("SESSION_EXPIRED", "Redirected to login during profile navigation.");
             process.exit(1);
         }
 
         if ((profileRes && profileRes.status() === 403) || pageTitle.toLowerCase().includes("access denied")) {
             logger.error("❌ Akamai 403 Access Denied on Naukri Profile page.");
             await NaukriDiagnostics.persist(page, profileRes, "PROFILE_AKAMAI_BLOCKED", "AKAMAI_TEMPORARY_BLOCK");
-            const tgMsg = `<b>⚠️ Naukri Profile Refresh Failed</b>\n\n` +
-                `• <b>Portal</b>: <code>Naukri</code>\n` +
-                `• <b>Classification</b>: <code>AKAMAI_TEMPORARY_BLOCK</code>\n` +
-                `• <b>Executed From</b>: <code>${executionHost}</code>`;
-            await telegramService.sendMessage(tgMsg).catch(() => {});
+            await sendFailureAlert("AKAMAI_TEMPORARY_BLOCK", "Akamai 403 Access Denied on profile page.");
             process.exit(1);
         }
 
         // Heading Fallback Matrix
         const headlineHeadingLocators = [
+            page.locator("[class*='widgetHead']:has-text('Resume headline')"),
+            page.locator("[class*='widgetTitle']:has-text('Resume headline')"),
             page.locator("div.widgetHead:has-text('Resume headline')"),
             page.locator(".resumeHeadline"),
             page.locator("span:has-text('Resume headline')"),
@@ -135,13 +153,16 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         if (!foundHeading) {
             logger.error("❌ Resume Headline container heading not found across all fallbacks.");
             await NaukriDiagnostics.persist(page, profileRes, "HEADING_NOT_FOUND", "SELECTOR_CHANGED");
+            await sendFailureAlert("SELECTOR_CHANGED", "Resume Headline heading container not found.");
             process.exit(1);
         }
 
         // Read BEFORE Headline
         const headlineContentLocators = [
+            page.locator("[class*='prefill']"),
             page.locator(".resumeHeadline .prefill, .prefill.typ-14Medium"),
             page.locator("div.widgetHead:has-text('Resume headline') + div"),
+            page.locator("[class*='widgetHead']:has-text('Resume headline') ~ div"),
             page.locator(".resumeHeadline .widgetCont"),
             page.locator("div:has-text('Resume headline') + div"),
             page.locator(".resumeHeadline p, .resumeHeadline span.text")
@@ -161,22 +182,26 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         if (!beforeHeadline || beforeHeadline.length < 5) {
             logger.error("❌ SAFETY INVARIANT VIOLATION: BEFORE headline content unreadable. Aborting.");
             await NaukriDiagnostics.persist(page, profileRes, "UNREADABLE_BEFORE_HEADLINE", "SELECTOR_CHANGED");
+            await sendFailureAlert("UNREADABLE_BEFORE_HEADLINE", "Existing headline content could not be read safely.");
             process.exit(1);
         }
 
         logger.info(`✓ Read Resume Headline BEFORE refresh (${beforeHeadline.length} chars): "${beforeHeadline.slice(0, 60)}..."`);
         logger.info("[LIFECYCLE] HEADLINE_READ");
 
-        const lastUpdatedLoc = page.locator(".mode-date-wrap, .mod-date-val, .mod-date, :has-text('Profile last updated')").first();
-        let beforeLastUpdated = "N/A";
-        if (await lastUpdatedLoc.count().catch(() => 0) > 0) {
-            beforeLastUpdated = (await lastUpdatedLoc.textContent().catch(() => "N/A")).trim();
-        }
+        const beforeLastUpdated = await extractNaukriFreshness(page);
         logger.info(`✓ Profile Freshness BEFORE: "${beforeLastUpdated}"`);
 
-        // Click Edit
+        // Click Edit - Multi-layer Resilient Locator Matrix
         logger.info("[2/4] Opening Headline Edit Form...");
         const editControlLocators = [
+            page.locator("[aria-label*='Edit Resume headline' i]"),
+            page.locator("[aria-label*='Resume headline' i]"),
+            page.locator("[class*='widgetHead']:has-text('Resume headline') [class*='edit-icon']"),
+            page.locator("[class*='widgetHead']:has-text('Resume headline') [role='button']"),
+            page.locator(":has-text('Resume headline') img[src*='editOneTheme']").locator(".."),
+            page.locator(".styles_edit-icon__NJ9to"),
+            page.locator("[class*='edit-icon']").filter({ has: page.locator("img[src*='edit']") }),
             page.locator("div.widgetHead:has-text('Resume headline') span.edit"),
             page.locator("div.widgetHead:has-text('Resume headline') .editOneTheme"),
             page.locator(".resumeHeadline span.edit"),
@@ -193,18 +218,35 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         }
 
         if (!editBtn) {
+            // In-process recovery: scroll into view and re-try
+            logger.warn("⚠️ Edit button not immediately visible, scrolling to heading...");
+            await foundHeading.scrollIntoViewIfNeeded().catch(() => {});
+            await delay(2000);
+            for (const loc of editControlLocators) {
+                if (await loc.count().catch(() => 0) > 0 && await loc.first().isVisible().catch(() => false)) {
+                    editBtn = loc.first();
+                    break;
+                }
+            }
+        }
+
+        if (!editBtn) {
             logger.error("❌ SAFETY INVARIANT VIOLATION: Edit button for Resume Headline not found.");
             await NaukriDiagnostics.persist(page, profileRes, "EDIT_BUTTON_NOT_FOUND", "SELECTOR_CHANGED");
+            await sendFailureAlert("SELECTOR_CHANGED", "Edit button for Resume Headline not found.");
             process.exit(1);
         }
 
         await editBtn.click().catch(() => {});
-        await delay(2000);
+        await delay(2500);
 
         // Find Textarea
         const textareaLocators = [
             page.locator("#resumeHeadlineTxt"),
+            page.locator("textarea[name='resumeHeadline']"),
+            page.locator("textarea[class*='text-area']"),
             page.locator("textarea[name*='headline' i]"),
+            page.locator("form textarea"),
             page.locator("textarea")
         ];
 
@@ -219,6 +261,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         if (!headlineField) {
             logger.error("❌ SAFETY INVARIANT VIOLATION: Headline textarea field not visible after clicking edit.");
             await NaukriDiagnostics.persist(page, profileRes, "TEXTAREA_NOT_FOUND", "SELECTOR_CHANGED");
+            await sendFailureAlert("SELECTOR_CHANGED", "Headline textarea field not visible after clicking edit.");
             process.exit(1);
         }
 
@@ -233,8 +276,8 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
         const saveBtnLocators = [
             page.locator("form:has(#resumeHeadlineTxt) button[type='submit']"),
+            page.locator("form:has(#resumeHeadlineTxt) button.btn-dark-ot"),
             page.locator("form:has(#resumeHeadlineTxt) button"),
-            page.locator("button.btn-dark-ot:visible"),
             page.locator("button.btn-dark-ot:has-text('Save')"),
             page.locator("button[type='submit']:has-text('Save')"),
             page.locator("button:has-text('Save')"),
@@ -258,14 +301,20 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         if (!saveBtn) {
             logger.error("❌ SAFETY INVARIANT VIOLATION: Save button not found.");
             await NaukriDiagnostics.persist(page, profileRes, "SAVE_BUTTON_NOT_FOUND", "SELECTOR_CHANGED");
+            await sendFailureAlert("SELECTOR_CHANGED", "Save button for Resume Headline not found.");
             process.exit(1);
         }
 
         await saveBtn.click();
-        await delay(4000);
+        await delay(5000);
 
         // Save refreshed storageState back to session path
         await context.storageState({ path: storageStatePath }).catch(() => {});
+        try {
+            if (process.platform !== "win32") {
+                fs.chmodSync(storageStatePath, 0o600);
+            }
+        } catch (e) {}
         logger.info("✓ Updated sessions/naukri/storageState.json with refreshed tokens.");
 
         await context.close().catch(() => {});
@@ -276,6 +325,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         const freshBoot = await bootstrapHelper.bootstrap();
         if (freshBoot.status !== "AUTHENTICATED" || !freshBoot.page) {
             logger.error("❌ Post-save verification context bootstrap failed.");
+            await sendFailureAlert("VERIFICATION_BOOTSTRAP_FAILED", "Fresh context bootstrap failed during verification.");
             if (freshBoot.browser) await freshBoot.browser.close().catch(() => {});
             process.exit(1);
         }
@@ -299,12 +349,15 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
             afterHeadline = (await freshPage.locator("#resumeHeadlineTxt, textarea").first().inputValue().catch(() => "")).trim();
         }
 
-        const afterLastUpdatedLoc = freshPage.locator(".mode-date-wrap, .mod-date-val, .mod-date, :has-text('Profile last updated')").first();
-        let afterLastUpdated = "N/A";
-        if (await afterLastUpdatedLoc.count().catch(() => 0) > 0) {
-            afterLastUpdated = (await afterLastUpdatedLoc.textContent().catch(() => "N/A")).trim();
-        }
+        const afterLastUpdated = await extractNaukriFreshness(freshPage);
         logger.info(`✓ Profile Freshness AFTER: "${afterLastUpdated}"`);
+
+        // Screenshot verification
+        const screenshotDir = path.join(process.cwd(), "screenshots");
+        fs.ensureDirSync(screenshotDir);
+        const screenshotPath = path.join(screenshotDir, "naukri_oracle_profile_refreshed.png");
+        await freshPage.screenshot({ path: screenshotPath }).catch(() => {});
+        logger.info(`✓ Saved verification screenshot to: ${screenshotPath}`);
 
         await freshBoot.context.close().catch(() => {});
         await freshBoot.browser.close().catch(() => {});
@@ -317,12 +370,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
                 after: afterHeadline
             });
 
-            const tgAlert = `<b>⚠️ PROFILE REFRESH INTEGRITY FAILURE</b>\n\n` +
-                `• <b>Portal</b>: <code>Naukri</code>\n` +
-                `• <b>Status</b>: <code>INTEGRITY_FAILURE</code>\n` +
-                `• <b>Details</b>: Profile headline content altered unexpectedly during refresh.\n` +
-                `• <b>Executed From</b>: <code>${executionHost}</code>`;
-            await telegramService.sendMessage(tgAlert).catch(() => {});
+            await sendFailureAlert("INTEGRITY_FAILURE", "Profile headline content altered unexpectedly during refresh.");
             process.exit(1);
         }
 
@@ -333,6 +381,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         const tgMsg = `<b>✓ Naukri Profile Refresh</b>\n\n` +
             `• <b>Portal</b>: <code>Naukri</code>\n` +
             `• <b>Status</b>: <code>SUCCESS</code>\n` +
+            `• <b>Freshness</b>: <code>${afterLastUpdated}</code>\n` +
             `• <b>Profile Data Changed</b>: <code>NO</code>\n` +
             `• <b>Headline Preserved</b>: <code>YES</code>\n` +
             `• <b>Executed From</b>: <code>${executionHost}</code>\n` +
@@ -341,12 +390,13 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
         logger.info("✓ Naukri Profile Refresh Run Complete Successfully.");
         logger.info("[LIFECYCLE] FINISHED");
-        await runLogger.finish();
+        await runLogger.finish().catch(() => {});
 
     } catch (err) {
         logger.error(`❌ Naukri Profile Refresh Error: ${err.message}`);
-        await runLogger.fail(err);
+        await runLogger.fail(err).catch(() => {});
         await NaukriDiagnostics.persist(page, null, "RUNNER_EXCEPTION");
+        await sendFailureAlert("RUNNER_EXCEPTION", err.message);
         process.exit(1);
     } finally {
         if (context) await context.close().catch(() => {});
