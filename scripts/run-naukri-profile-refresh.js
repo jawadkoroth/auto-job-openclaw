@@ -140,6 +140,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
         // Read BEFORE Headline
         const headlineContentLocators = [
+            page.locator(".resumeHeadline .prefill, .prefill.typ-14Medium"),
             page.locator("div.widgetHead:has-text('Resume headline') + div"),
             page.locator(".resumeHeadline .widgetCont"),
             page.locator("div:has-text('Resume headline') + div"),
@@ -166,10 +167,18 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         logger.info(`✓ Read Resume Headline BEFORE refresh (${beforeHeadline.length} chars): "${beforeHeadline.slice(0, 60)}..."`);
         logger.info("[LIFECYCLE] HEADLINE_READ");
 
+        const lastUpdatedLoc = page.locator(".mode-date-wrap, .mod-date-val, .mod-date, :has-text('Profile last updated')").first();
+        let beforeLastUpdated = "N/A";
+        if (await lastUpdatedLoc.count().catch(() => 0) > 0) {
+            beforeLastUpdated = (await lastUpdatedLoc.textContent().catch(() => "N/A")).trim();
+        }
+        logger.info(`✓ Profile Freshness BEFORE: "${beforeLastUpdated}"`);
+
         // Click Edit
         logger.info("[2/4] Opening Headline Edit Form...");
         const editControlLocators = [
             page.locator("div.widgetHead:has-text('Resume headline') span.edit"),
+            page.locator("div.widgetHead:has-text('Resume headline') .editOneTheme"),
             page.locator(".resumeHeadline span.edit"),
             page.locator(".resumeHeadline .editOne"),
             page.locator("i.icon-edit, span.icon-edit")
@@ -223,6 +232,9 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         await delay(1000);
 
         const saveBtnLocators = [
+            page.locator("form:has(#resumeHeadlineTxt) button[type='submit']"),
+            page.locator("form:has(#resumeHeadlineTxt) button"),
+            page.locator("button.btn-dark-ot:visible"),
             page.locator("button.btn-dark-ot:has-text('Save')"),
             page.locator("button[type='submit']:has-text('Save')"),
             page.locator("button:has-text('Save')"),
@@ -287,6 +299,13 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
             afterHeadline = (await freshPage.locator("#resumeHeadlineTxt, textarea").first().inputValue().catch(() => "")).trim();
         }
 
+        const afterLastUpdatedLoc = freshPage.locator(".mode-date-wrap, .mod-date-val, .mod-date, :has-text('Profile last updated')").first();
+        let afterLastUpdated = "N/A";
+        if (await afterLastUpdatedLoc.count().catch(() => 0) > 0) {
+            afterLastUpdated = (await afterLastUpdatedLoc.textContent().catch(() => "N/A")).trim();
+        }
+        logger.info(`✓ Profile Freshness AFTER: "${afterLastUpdated}"`);
+
         await freshBoot.context.close().catch(() => {});
         await freshBoot.browser.close().catch(() => {});
 
@@ -311,6 +330,15 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
         logger.info("[LIFECYCLE] VERIFICATION_PASSED");
 
         const nowIst = new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" });
+        const tgMsg = `<b>✓ Naukri Profile Refresh</b>\n\n` +
+            `• <b>Portal</b>: <code>Naukri</code>\n` +
+            `• <b>Status</b>: <code>SUCCESS</code>\n` +
+            `• <b>Profile Data Changed</b>: <code>NO</code>\n` +
+            `• <b>Headline Preserved</b>: <code>YES</code>\n` +
+            `• <b>Executed From</b>: <code>${executionHost}</code>\n` +
+            `• <b>Time (IST)</b>: <code>${nowIst}</code>`;
+        await telegramService.sendMessage(tgMsg).catch(e => logger.error(`Telegram error: ${e.message}`));
+
         logger.info("✓ Naukri Profile Refresh Run Complete Successfully.");
         logger.info("[LIFECYCLE] FINISHED");
         await runLogger.finish();

@@ -1,0 +1,11 @@
+[Unit]
+Description=Foundit Profile Refresh Service (Preserves Data, Updates Freshness)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/automation
+ExecStart=/usr/bin/node /home/ubuntu/automation/scripts/run-foundit-profile-refresh.js
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,11 @@
+[Unit]
+Description=NaukriGulf Profile Refresh 09:45 & 14:15 IST Timer
+
+[Timer]
+OnCalendar=*-*-* 04:15:00 UTC
+OnCalendar=*-*-* 08:45:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+

@@ -1,0 +1,10 @@
+[Unit]
+Description=Foundit Profile Refresh 09:37 & 14:10 IST Timer
+
+[Timer]
+OnCalendar=*-*-* 04:07:00 UTC
+OnCalendar=*-*-* 08:40:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
